@@ -10,11 +10,12 @@ alwaysApply: true
 ## 铁律
 
 - Python ≥ 3.10。全部代码带类型注解。`ruff check src tests` 必须通过。
-- 核心依赖只允许 `httpx`、`pydantic`。测试只用 `pytest`、`pytest-cov`。不引入其他依赖。
+- 核心依赖只允许 `httpx`、`pydantic`、`pyyaml`。测试只用 `pytest`、`pytest-cov`。不引入其他依赖。
 - 所有 LLM 交互必须经过 `LLMClientProtocol`。业务模块禁止直接发 HTTP。
 - 接口签名必须与 `docs/03-模块实现规格.md` 完全一致，不得增删改参数名、返回类型或异常类型。
 - 提示词模板必须与 `pocket-agent-docs/04-运行时提示词模板.md` 逐字一致，不得改写、翻译或“优化”。
-- 目录结构遵循 `docs/02-技术架构设计.md` §5：`src/<模块>/` 按功能分目录，禁止再套一层 `src/pocket_agent/`；安装映射为 `pocket_agent.*`。
+- 目录结构遵循 `docs/02-技术架构设计.md` §5：`src/<模块>/` 按功能分目录，禁止再套一层 `src/pocket_agent/`；安装映射为 `pocket_agent.*`（如 `src/runtime/` → `pocket_agent.runtime`）。
+- 插件纪律：每个注册必须返回 disposer；卸载测试须验证注册项消失；能力切分从消费方开始；拒绝过度拆分。
 - 每写一个模块，同步写对应单元测试。账本、压缩、护栏用 MockLLM，不依赖真实 LLM。
 
 ## 禁止

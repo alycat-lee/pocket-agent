@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "httpx",
     "pydantic",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,7 @@ packages = [
     "pocket_agent.session",
     "pocket_agent.checkpoint",
     "pocket_agent.writer",
+    "pocket_agent.runtime",
 ]
 
 [tool.pytest.ini_options]
