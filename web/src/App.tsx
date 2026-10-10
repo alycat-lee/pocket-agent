@@ -88,6 +88,7 @@ export default function App() {
   const [promptBudget, setPromptBudget] = useState(5200);
   const [runId, setRunId] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
+  const esGenRef = useRef(0);
   const tickRef = useRef<number | null>(null);
   const runStarted = useRef<number>(0);
   const turnCounter = useRef(0);
@@ -146,12 +147,27 @@ export default function App() {
   }, [reloadSessions, checkHealth]);
 
   useEffect(() => {
+    // 切会话：切断上一会话 SSE，避免 EventSource 自动重连再跑一轮
+    esGenRef.current += 1;
+    if (esRef.current) {
+      esRef.current.close();
+      esRef.current = null;
+    }
+    if (tickRef.current) {
+      window.clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+    setSoftError(null);
+    setRunId(null);
+    setStatus(EMPTY_STATUS);
+    setApproval(null);
     setView(getSessionView(sessionId));
     setMode(getMode(sessionId));
     setPermission(getPermission(sessionId));
     setMessages([]);
     setRecords([]);
     setFocusId(null);
+    setFollowTail(true);
     void loadTrajectory(sessionId).catch(() => undefined);
   }, [sessionId, loadTrajectory]);
 
@@ -168,6 +184,8 @@ export default function App() {
   }, [status.settlementUntil]);
 
   const closeEs = () => {
+    // 递增世代，丢弃关闭/重连带来的迟到 onerror / 事件
+    esGenRef.current += 1;
     if (esRef.current) {
       esRef.current.close();
       esRef.current = null;
@@ -294,7 +312,9 @@ export default function App() {
       } else if (event === "error") {
         const msg = String(data.message || "error");
         const conn =
-          /connect|connection|llama|ECONNREFUSED|超时|unreachable/i.test(msg);
+          /connect|connection|llama|ECONNREFUSED|超时|unreachable|502|503|504|Bad Gateway|server error\s*5\d\d/i.test(
+            msg,
+          );
         if (conn) {
           setOffline(true);
           setSoftError(null);
@@ -364,6 +384,7 @@ export default function App() {
     }, 250);
 
     closeEs();
+    const gen = ++esGenRef.current;
     const es = openChatEventSource({
       message: text,
       sessionId,
@@ -383,6 +404,7 @@ export default function App() {
     ];
     for (const name of names) {
       es.addEventListener(name, (ev) => {
+        if (gen !== esGenRef.current || esRef.current !== es) return;
         try {
           const payload = JSON.parse((ev as MessageEvent).data) as Record<
             string,
@@ -395,17 +417,26 @@ export default function App() {
       });
     }
     es.onerror = () => {
-      // answer.done 后服务端关闭流会触发 onerror；仅在仍 running 时视为异常
+      // 立即关闭，禁止浏览器对同一 /chat URL 自动重连（会重复跑任务）
+      if (esRef.current === es) {
+        es.close();
+        esRef.current = null;
+      }
+      if (gen !== esGenRef.current) return;
+      if (tickRef.current) {
+        window.clearInterval(tickRef.current);
+        tickRef.current = null;
+      }
       setStatus((s) => {
         if (!s.running) return s;
         void checkHealth().then((llm) => {
+          if (gen !== esGenRef.current) return;
           if (!llm) setOffline(true);
           else setSoftError("连接中断，请重试。");
         });
         return { ...s, running: false, phase: "" };
       });
       setRunId(null);
-      closeEs();
     };
   };
 
@@ -421,6 +452,7 @@ export default function App() {
 
   const newSession = () => {
     const id = `s-${Date.now().toString(36)}`;
+    setSoftError(null);
     setSessions((prev) => [{ session_id: id, title: id }, ...prev]);
     setSessionId(id);
     setPage("session");
