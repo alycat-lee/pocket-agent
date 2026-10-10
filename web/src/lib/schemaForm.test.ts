@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFormControls,
-  coerceFormValue,
   groupControls,
   type SchemaField,
 } from "./schemaForm";
