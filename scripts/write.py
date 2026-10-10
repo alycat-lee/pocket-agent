@@ -53,11 +53,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         material = path.read_text(encoding="utf-8")
 
-    # 思考模型会先占 completion 预算写 reasoning，留足余量避免 content 被截空
+    # 按单段目标设 max_tokens（思考模型先耗 reasoning）；过大总字数靠多段叠加
+    section_target = AgentConfig().section_char_target
     config = AgentConfig(
         base_url=args.base_url,
-        max_tokens=max(1024, args.chars // 2),
-        timeout=180.0,
+        max_tokens=max(1536, section_target * 3),
+        timeout=300.0,
     )
     llm = LlamaCppClient(config)
     writer = LongWriter(config, llm)
@@ -79,21 +80,30 @@ def main(argv: list[str] | None = None) -> int:
 
     metrics = WriterMetrics()
     sections = writer.last_sections
+    window = config.overlap_max
     pair_overlaps = [
-        metrics.ngram_overlap(a, b, n=3) for a, b in itertools.pairwise(sections)
+        metrics.seam_ngram_overlap(a, b, n=3, window=window)
+        for a, b in itertools.pairwise(sections)
     ]
     max_pair = max(pair_overlaps) if pair_overlaps else 0.0
     conflicts = metrics.numeric_consistency(article)
     coverage = metrics.outline_coverage(writer.last_outline, article)
+    ratio = len(article) / args.chars if args.chars else 0.0
 
     print("\n===== 连贯性指标 =====")
-    print(f"段间 3-gram 重叠率（最大）: {max_pair:.2%}")
+    print(f"接缝 3-gram 重叠率（最大，窗={window}）: {max_pair:.2%}")
     print(f"数字一致性冲突数: {len(conflicts)}")
     if conflicts:
         for item in conflicts:
             print(f"  - {item}")
     print(f"大纲覆盖率: {coverage:.2%}")
-    print(f"总字数: {len(article)}")
+    print(f"总字数: {len(article)} / 目标 {args.chars}（{ratio:.1%}）")
+    print(f"段落数: {len(sections)}")
+    if ratio < 0.85:
+        print(
+            "警告：总字数不足目标 85%，可提高 --chars 分段后重试或检查模型 max_tokens。",
+            file=sys.stderr,
+        )
 
     if args.output is not None:
         out = args.output if args.output.is_absolute() else Path.cwd() / args.output

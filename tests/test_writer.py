@@ -87,12 +87,47 @@ def test_outline_fallback(mock_llm_factory: type) -> None:
     assert "兜底段三正文" in text
 
 
+def test_outline_padded_when_too_few_sections(mock_llm_factory: type) -> None:
+    """LLM 只给 2 段时，应按 total/section_char_target 补齐段数。"""
+    outline = {
+        "sections": [
+            {"title": "只有一段", "points": ["a"]},
+            {"title": "只有二段", "points": ["b"]},
+        ]
+    }
+    # 1500/500=3 → 需补第3段
+    llm = mock_llm_factory(
+        [
+            outline,
+            "第一段正文内容。",
+            "第二段正文内容。",
+            "第三段正文内容。",
+        ]
+    )
+    writer = LongWriter(AgentConfig(section_char_target=500), llm)
+    writer.write("补齐测试", total_chars=1500)
+    assert len(writer.last_outline) == 3
+    assert writer.last_outline[2].title == "第3部分"
+    assert all(s.target_chars == 500 for s in writer.last_outline)
+
+
 def test_metrics() -> None:
     metrics = WriterMetrics()
 
     # Jaccard：abcde vs cdefg，n=3 → {abc,bcd,cde} vs {cde,def,efg} → 交1并5 = 0.2
     assert metrics.ngram_overlap("abcde", "cdefg", n=3) == 0.2
     assert metrics.ngram_overlap("", "abc", n=3) == 0.0
+
+    # 接缝窗：去重后窗内重叠应显著低于去重前
+    a = ("甲" * 100) + "接缝句唯一。"
+    b = "接缝句唯一。" + ("乙" * 100)
+    before = metrics.seam_ngram_overlap(a, b, n=3, window=80)
+    b2 = trim_overlap(a, b, 80)
+    assert not b2.startswith("接缝句唯一")
+    after = metrics.seam_ngram_overlap(a, b2, n=3, window=80)
+    assert before > 0.05
+    assert after < before
+    assert after < 0.05
 
     conflicts = metrics.numeric_consistency(
         "利润率为15%。营收为100万。另一处利润率为18%。营收为100万。"

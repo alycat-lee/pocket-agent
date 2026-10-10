@@ -219,7 +219,12 @@ def run_writer_eval(*, base_url: str, runs: int, output: Path) -> int:
     if REPORT_PATH.is_file():
         material = REPORT_PATH.read_text(encoding="utf-8")[:2000]
 
-    config = AgentConfig(base_url=base_url, max_tokens=1024)
+    section_target = AgentConfig().section_char_target
+    config = AgentConfig(
+        base_url=base_url,
+        max_tokens=max(1536, section_target * 3),
+        timeout=300.0,
+    )
     llm = LlamaCppClient(config)
     metrics = WriterMetrics()
     rows: list[dict[str, Any]] = []
@@ -234,13 +239,21 @@ def run_writer_eval(*, base_url: str, runs: int, output: Path) -> int:
             return 2
 
         sections = writer.last_sections
+        window = config.overlap_max
         pair_overlaps = [
-            metrics.ngram_overlap(a, b, n=3) for a, b in itertools.pairwise(sections)
+            metrics.seam_ngram_overlap(a, b, n=3, window=window)
+            for a, b in itertools.pairwise(sections)
         ]
         max_pair = max(pair_overlaps) if pair_overlaps else 0.0
         conflicts = metrics.numeric_consistency(article)
         coverage = metrics.outline_coverage(writer.last_outline, article)
-        ok = max_pair < 0.05 and len(conflicts) == 0 and coverage >= 0.90
+        char_ok = len(article) >= int(3000 * 0.85)
+        ok = (
+            max_pair < 0.05
+            and len(conflicts) == 0
+            and coverage >= 0.90
+            and char_ok
+        )
         row = {
             "success": ok,
             "max_ngram_overlap": max_pair,

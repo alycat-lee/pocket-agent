@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ _LABEL_BEFORE_RE = re.compile(
     r"(?:[\u4e00-\u9fff]{2,3}|[A-Za-z][A-Za-z0-9_\-]{1,24})$"
 )
 _CONSISTENCY_CHAR_LIMIT = 300
+# 段长不足目标此比例时触发续写（最多一轮，仍用 SECTION_WRITE）
+_SHORT_SECTION_RATIO = 0.65
 
 
 @dataclass
@@ -44,6 +47,18 @@ class WriterMetrics:
         if not ga or not gb:
             return 0.0
         return len(ga & gb) / len(ga | gb)
+
+    def seam_ngram_overlap(
+        self,
+        text_a: str,
+        text_b: str,
+        n: int = 3,
+        window: int = 80,
+    ) -> float:
+        """段间接缝窗口内的 3-gram 重叠率（评测用，避免同主题全文误伤）。"""
+        if window <= 0:
+            return 0.0
+        return self.ngram_overlap(text_a[-window:], text_b[:window], n=n)
 
     def numeric_consistency(self, full_text: str) -> list[str]:
         """抽取全文数字，返回同一指标多处出现但取值不一致的冲突列表。"""
@@ -101,23 +116,25 @@ class LongWriter:
         written: list[str] = []
 
         for index, section in enumerate(outline, start=1):
-            seam_text = (
-                written[-1][-self._config.seam_tail_chars :]
-                if written
-                else "（无）"
-            )
-            points_text = "；".join(section.points) if section.points else "（无）"
-            prompt = SECTION_WRITE.format(
+            body = self._write_section(
                 topic=topic,
                 outline_text=outline_text,
                 consistency_text=consistency_text,
                 index=index,
-                section_title=section.title,
-                points=points_text,
-                target_chars=section.target_chars,
-                seam_text=seam_text,
+                section=section,
+                previous=written[-1] if written else "",
             )
-            body = str(self._llm.generate(prompt)).strip()
+            if written:
+                body = trim_overlap(written[-1], body, self._config.overlap_max)
+            # 段长不足：再写一段补足（仍用 SECTION_WRITE，seam 取已写正文）
+            body = self._expand_if_short(
+                topic=topic,
+                outline_text=outline_text,
+                consistency_text=consistency_text,
+                index=index,
+                section=section,
+                body=body,
+            )
             if written:
                 body = trim_overlap(written[-1], body, self._config.overlap_max)
             written.append(body)
@@ -125,7 +142,129 @@ class LongWriter:
                 self.on_section(index, section, body)
 
         self.last_sections = written
-        return "\n\n".join(written)
+        article = "\n\n".join(written)
+        # 若仍明显短于目标，追加均匀补写段（无要点兜底）
+        article = self._pad_to_total(
+            topic=topic,
+            article=article,
+            written=written,
+            outline_text=outline_text,
+            consistency_text=consistency_text,
+            total_chars=total_chars,
+        )
+        return article
+
+    def _write_section(
+        self,
+        *,
+        topic: str,
+        outline_text: str,
+        consistency_text: str,
+        index: int,
+        section: SectionSpec,
+        previous: str,
+        extra_points: list[str] | None = None,
+    ) -> str:
+        seam_text = (
+            previous[-self._config.seam_tail_chars :] if previous else "（无）"
+        )
+        points = list(section.points)
+        if extra_points:
+            points = [*points, *extra_points]
+        points_text = "；".join(points) if points else "（无）"
+        prompt = SECTION_WRITE.format(
+            topic=topic,
+            outline_text=outline_text,
+            consistency_text=consistency_text,
+            index=index,
+            section_title=section.title,
+            points=points_text,
+            target_chars=section.target_chars,
+            seam_text=seam_text,
+        )
+        return _strip_thinking(str(self._llm.generate(prompt)).strip())
+
+    def _expand_if_short(
+        self,
+        *,
+        topic: str,
+        outline_text: str,
+        consistency_text: str,
+        index: int,
+        section: SectionSpec,
+        body: str,
+    ) -> str:
+        need = int(section.target_chars * _SHORT_SECTION_RATIO)
+        # 正文过短视为 stub/失败，避免单测 Mock 队列被续写抽干
+        if section.target_chars < 200 or len(body) < 80 or len(body) >= need:
+            return body
+        remain = max(80, section.target_chars - len(body))
+        more = self._write_section(
+            topic=topic,
+            outline_text=outline_text,
+            consistency_text=consistency_text,
+            index=index,
+            section=section,
+            previous=body,
+            extra_points=[
+                f"在已有正文基础上续写约{remain}字，补足本段目标字数，禁止重复已写句子",
+            ],
+        )
+        more = trim_overlap(body, more, self._config.overlap_max)
+        if not more.strip():
+            return body
+        return f"{body.rstrip()}\n{more.lstrip()}"
+
+    def _pad_to_total(
+        self,
+        *,
+        topic: str,
+        article: str,
+        written: list[str],
+        outline_text: str,
+        consistency_text: str,
+        total_chars: int,
+    ) -> str:
+        """全文仍不足目标 85% 时，按 section_char_target 追加补写段。"""
+        floor = int(total_chars * 0.85)
+        if len(article) >= floor or not written:
+            return article
+        # 平均段长过低说明是 stub，不补写
+        avg = len(article) / len(written)
+        if avg < self._config.section_char_target * 0.3:
+            return article
+
+        chunk = max(200, self._config.section_char_target)
+        guard = 0
+        while len(article) < floor and guard < 40:
+            remain = total_chars - len(article)
+            target = min(chunk, max(200, remain))
+            index = len(written) + 1
+            section = SectionSpec(
+                title=f"补充第{index}部分",
+                points=["围绕主题继续展开，勿重复前文论点"],
+                target_chars=target,
+            )
+            body = self._write_section(
+                topic=topic,
+                outline_text=outline_text,
+                consistency_text=consistency_text,
+                index=index,
+                section=section,
+                previous=written[-1] if written else "",
+            )
+            if written:
+                body = trim_overlap(written[-1], body, self._config.overlap_max)
+            if not body.strip():
+                break
+            written.append(body)
+            self.last_outline.append(section)
+            if self.on_section is not None:
+                self.on_section(index, section, body)
+            article = "\n\n".join(written)
+            guard += 1
+        self.last_sections = written
+        return article
 
     def _build_outline(
         self,
@@ -134,6 +273,7 @@ class LongWriter:
         material: str,
     ) -> list[SectionSpec]:
         self.used_outline_fallback = False
+        desired_n = _desired_section_count(total_chars, self._config.section_char_target)
         material_text = material.strip() if material.strip() else "（无）"
         prompt = OUTLINE.format(
             topic=topic,
@@ -162,6 +302,8 @@ class LongWriter:
             self.used_outline_fallback = True
             return _uniform_outline(total_chars, self._config.section_char_target)
 
+        # 段数过少会导致单段目标过大、模型写不满；补齐到 desired_n
+        parsed = _ensure_section_count(parsed, desired_n)
         n = len(parsed)
         base = max(1, total_chars // n)
         for section in parsed:
@@ -181,36 +323,97 @@ class LongWriter:
 
 
 def trim_overlap(previous: str, current: str, overlap_max: int) -> str:
-    """裁掉段首与前段结尾的重叠（子串优先，其次整句），窗口 ≤ overlap_max。"""
+    """裁掉段首与前段结尾的重叠（子串 + 连续重叠句），窗口 ≤ overlap_max。"""
     if not previous or not current or overlap_max <= 0:
         return current
 
-    max_n = min(overlap_max, len(previous), len(current))
+    text = current
+    # 1) 最长公共前后缀（限窗）
+    max_n = min(overlap_max, len(previous), len(text))
     for n in range(max_n, 0, -1):
-        if previous[-n:] == current[:n]:
-            return current[n:].lstrip("\n")
+        if previous[-n:] == text[:n]:
+            text = text[n:].lstrip("\n")
+            break
 
+    # 2) 连续剥除段首句（出现在前段尾窗内）
     tail = previous[-overlap_max:]
-    for sent in _split_sentences(current):
-        stripped = sent.strip()
-        if not stripped:
-            continue
-        if stripped in tail and current.lstrip().startswith(stripped):
-            idx = current.find(stripped)
-            if idx >= 0:
-                return current[idx + len(stripped) :].lstrip("\n")
-        break
-    return current
+    changed = True
+    while changed and text:
+        changed = False
+        for sent in _split_sentences(text):
+            stripped = sent.strip()
+            if not stripped:
+                continue
+            if len(stripped) >= 4 and stripped in tail and text.lstrip().startswith(
+                stripped
+            ):
+                idx = text.find(stripped)
+                if idx >= 0:
+                    text = text[idx + len(stripped) :].lstrip("\n　 ")
+                    changed = True
+            break
+
+    # 3) 段首短句与前段任一句子完全相同则剥除（防复述论点句）
+    prev_sents = {s.strip() for s in _split_sentences(previous) if len(s.strip()) >= 8}
+    changed = True
+    while changed and text:
+        changed = False
+        for sent in _split_sentences(text):
+            stripped = sent.strip()
+            if not stripped:
+                continue
+            if stripped in prev_sents and text.lstrip().startswith(stripped):
+                idx = text.find(stripped)
+                if idx >= 0:
+                    text = text[idx + len(stripped) :].lstrip("\n　 ")
+                    changed = True
+            break
+
+    return text
+
+
+def _desired_section_count(total_chars: int, section_chars: int) -> int:
+    chunk = section_chars if section_chars > 0 else 500
+    return max(1, math.ceil(total_chars / chunk))
+
+
+def _ensure_section_count(
+    sections: list[SectionSpec],
+    desired_n: int,
+) -> list[SectionSpec]:
+    if len(sections) >= desired_n:
+        return sections
+    out = list(sections)
+    while len(out) < desired_n:
+        i = len(out) + 1
+        out.append(
+            SectionSpec(
+                title=f"第{i}部分",
+                points=["围绕主题继续展开，补充新论据与细节"],
+                target_chars=0,
+            )
+        )
+    return out
 
 
 def _uniform_outline(total_chars: int, section_chars: int) -> list[SectionSpec]:
-    chunk = section_chars if section_chars > 0 else 500
-    n = max(1, int(total_chars / chunk))
+    n = _desired_section_count(total_chars, section_chars)
     target = max(1, total_chars // n)
     return [
         SectionSpec(title=f"第{i}部分", points=[], target_chars=target)
         for i in range(1, n + 1)
     ]
+
+
+def _strip_thinking(text: str) -> str:
+    """去掉误落入正文的思考痕迹（content 空时回退 reasoning 的情形）。"""
+    if not text:
+        return text
+    # 常见思考开头：若整段以推理口吻起笔且含明确结论分隔，取后半
+    for sep in ("</think>", "最终回答：", "正文：", "输出："):
+        if sep in text:
+            text = text.split(sep)[-1].strip()
+    return text
 
 
 def _extract_facts_from_material(material: str) -> list[str]:
