@@ -59,3 +59,38 @@ ROLLING_SUMMARY: str = """把这段对话历史压缩为不超过 {limit} 字的
 {turns_text}
 
 只输出摘要本身。"""
+
+OUTLINE: str = """为主题「{topic}」生成一篇约 {total_chars} 字文章的大纲。
+每段给出标题和 2~3 个要点，每段约 {section_chars} 字。
+参考材料：{material}
+
+只输出 JSON。"""
+
+OUTLINE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "sections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "points": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["title", "points"],
+            },
+        }
+    },
+    "required": ["sections"],
+}
+
+SECTION_WRITE: str = """你正在逐段撰写文章「{topic}」。
+全文大纲：{outline_text}
+必须保持一致的事实：{consistency_text}
+
+请撰写第 {index} 段「{section_title}」，要点：{points}
+要求：约 {target_chars} 字；承接上文，不要重复前文已写内容。
+
+上文结尾：{seam_text}
+
+只输出本段正文。"""

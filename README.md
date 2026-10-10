@@ -117,6 +117,14 @@ py -3.13 scripts/clean.py
 
 pytest 已默认 `--cache-clear`；Agent 跑完测试/检查后也会自动执行上述清理。
 
+### 长文本生成
+
+```bash
+py -3.13 scripts/write.py "新能源汽车行业分析" --chars 3000 \
+  --material tests/fixtures/report.txt --output article.md
+py -3.13 scripts/eval.py --writer
+```
+
 ### 真机集成与评测
 
 需先启动 llama-server（`-c 8192 --flash-attn --cache-reuse 256 --port 8080`）：
@@ -125,6 +133,7 @@ pytest 已默认 `--cache-clear`；Agent 跑完测试/检查后也会自动执�
 py -3.13 -m pytest tests/test_integration.py -v --integration
 py -3.13 scripts/eval.py --runs 3
 py -3.13 scripts/eval.py --runs 3 --baseline
+py -3.13 scripts/eval.py --writer
 ```
 
 集成测试默认跳过，必须显式加 `--integration`。

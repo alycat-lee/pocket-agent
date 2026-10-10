@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import re
 import statistics
@@ -19,6 +20,7 @@ from pocket_agent.ledger import CallLedger, canonical_json
 from pocket_agent.llm_client import LlamaCppClient, LLMConnectionError
 from pocket_agent.runner import AgentRunner, StopReason
 from pocket_agent.tools import ToolRegistry
+from pocket_agent.writer import LongWriter, WriterMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = REPO_ROOT / "tests" / "fixtures" / "report.txt"
@@ -210,14 +212,96 @@ def _print_table(title: str, by_task: dict[str, dict[str, float]]) -> None:
         print(" | ".join(row))
 
 
+def run_writer_eval(*, base_url: str, runs: int, output: Path) -> int:
+    """长文本评测：3000 字 × runs，检查段间重叠 / 数字一致性 / 大纲覆盖。"""
+    topic = "新能源汽车行业分析"
+    material = ""
+    if REPORT_PATH.is_file():
+        material = REPORT_PATH.read_text(encoding="utf-8")[:2000]
+
+    config = AgentConfig(base_url=base_url, max_tokens=1024)
+    llm = LlamaCppClient(config)
+    metrics = WriterMetrics()
+    rows: list[dict[str, Any]] = []
+
+    for i in range(runs):
+        print(f"==> writer run {i + 1}/{runs}")
+        writer = LongWriter(config, llm)
+        try:
+            article = writer.write(topic, total_chars=3000, material=material)
+        except LLMConnectionError as exc:
+            print(f"连接失败: {exc}", file=sys.stderr)
+            return 2
+
+        sections = writer.last_sections
+        pair_overlaps = [
+            metrics.ngram_overlap(a, b, n=3) for a, b in itertools.pairwise(sections)
+        ]
+        max_pair = max(pair_overlaps) if pair_overlaps else 0.0
+        conflicts = metrics.numeric_consistency(article)
+        coverage = metrics.outline_coverage(writer.last_outline, article)
+        ok = max_pair < 0.05 and len(conflicts) == 0 and coverage >= 0.90
+        row = {
+            "success": ok,
+            "max_ngram_overlap": max_pair,
+            "numeric_conflicts": conflicts,
+            "outline_coverage": coverage,
+            "chars": len(article),
+            "sections": len(sections),
+            "fallback": writer.used_outline_fallback,
+        }
+        rows.append(row)
+        print(
+            f"  overlap={max_pair:.2%} conflicts={len(conflicts)} "
+            f"coverage={coverage:.2%} chars={len(article)} ok={ok}"
+        )
+
+        # 人工抽检：打印前两个接缝附近
+        if i == 0 and len(sections) >= 2:
+            print("\n===== 人工抽检接缝 1 =====")
+            print(sections[0][-120:])
+            print("---")
+            print(sections[1][:120])
+        if i == 0 and len(sections) >= 3:
+            print("\n===== 人工抽检接缝 2 =====")
+            print(sections[1][-120:])
+            print("---")
+            print(sections[2][:120])
+
+    success_rate = sum(1 for r in rows if r["success"]) / len(rows) if rows else 0.0
+    payload = {
+        "mode": "writer",
+        "base_url": base_url,
+        "runs": runs,
+        "success_rate": success_rate,
+        "raw": rows,
+    }
+    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\nwriter success_rate={success_rate:.2%} saved: {output}")
+    if success_rate < 1.0:
+        print("WARNING: 部分 writer 评测未达标", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="pocket-agent 真机评测")
-    parser.add_argument("--runs", type=int, default=10, help="每个任务重复次数")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=None,
+        help="重复次数（框架评测默认 10；--writer 默认 5）",
+    )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument(
         "--baseline",
         action="store_true",
         help="同时跑裸自由 Agent 基线并输出对比表",
+    )
+    parser.add_argument(
+        "--writer",
+        action="store_true",
+        help="长文本评测模式：3000 字 × runs，检查连贯性指标",
     )
     parser.add_argument(
         "--output",
@@ -249,13 +333,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"连接 LLM 失败：{exc}", file=sys.stderr)
         return 2
 
+    if args.writer:
+        return run_writer_eval(
+            base_url=args.base_url,
+            runs=args.runs if args.runs is not None else 5,
+            output=args.output,
+        )
+
+    runs = args.runs if args.runs is not None else 10
     pocket_raw: dict[str, list[dict[str, Any]]] = {t["id"]: [] for t in TASKS}
     baseline_raw: dict[str, list[dict[str, Any]]] = {t["id"]: [] for t in TASKS}
 
     for meta in TASKS:
         task_id, task = meta["id"], meta["task"]
-        print(f"==> pocket-agent: {task_id} x{args.runs}")
-        for i in range(args.runs):
+        print(f"==> pocket-agent: {task_id} x{runs}")
+        for i in range(runs):
             try:
                 row = run_pocket_once(task_id, task, base_url=args.base_url)
             except LLMConnectionError as exc:
@@ -274,13 +366,13 @@ def main(argv: list[str] | None = None) -> int:
                 }
             pocket_raw[task_id].append(row)
             print(
-                f"  [{i + 1}/{args.runs}] success={row['success']} "
+                f"  [{i + 1}/{runs}] success={row['success']} "
                 f"dup={row['dup_call_rate']:.0%} steps={row['steps']}"
             )
 
         if args.baseline:
-            print(f"==> baseline: {task_id} x{args.runs}")
-            for i in range(args.runs):
+            print(f"==> baseline: {task_id} x{runs}")
+            for i in range(runs):
                 try:
                     row = run_baseline_once(task, base_url=args.base_url)
                 except Exception as exc:  # noqa: BLE001
@@ -296,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 baseline_raw[task_id].append(row)
                 print(
-                    f"  [{i + 1}/{args.runs}] success={row['success']} "
+                    f"  [{i + 1}/{runs}] success={row['success']} "
                     f"dup={row['dup_call_rate']:.0%} steps={row['steps']}"
                 )
 
@@ -305,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload: dict[str, Any] = {
         "base_url": args.base_url,
-        "runs": args.runs,
+        "runs": runs,
         "pocket_agent": {"by_task": pocket_metrics, "raw": pocket_raw},
     }
 
