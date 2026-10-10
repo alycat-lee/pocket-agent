@@ -36,6 +36,42 @@ class MockLLM:
         return item
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--integration",
+        action="store_true",
+        default=False,
+        help="运行真机集成测试（需要 llama-server）",
+    )
+    parser.addoption(
+        "--stress",
+        action="store_true",
+        default=False,
+        help="运行专项压测（Phase 9）",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "integration: 需要 llama-server 的真机集成测试")
+    config.addinivalue_line("markers", "stress: 专项压测，默认跳过")
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config,
+    items: list[pytest.Item],
+) -> None:
+    if not config.getoption("--integration"):
+        skip_integration = pytest.mark.skip(reason="需要 --integration 且 llama-server 可用")
+        for item in items:
+            if "integration" in item.keywords:
+                item.add_marker(skip_integration)
+    if not config.getoption("--stress"):
+        skip_stress = pytest.mark.skip(reason="需要 --stress")
+        for item in items:
+            if "stress" in item.keywords:
+                item.add_marker(skip_stress)
+
+
 @pytest.fixture
 def mock_llm_factory() -> type[MockLLM]:
     return MockLLM

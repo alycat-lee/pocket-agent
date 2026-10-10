@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""pocket-agent 真机评测：框架模式 vs 裸自由 Agent 基线。"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import statistics
+import sys
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import httpx
+from pocket_agent.config import AgentConfig
+from pocket_agent.demo_tools import register_demo_tools
+from pocket_agent.ledger import CallLedger, canonical_json
+from pocket_agent.llm_client import LlamaCppClient, LLMConnectionError
+from pocket_agent.runner import AgentRunner, StopReason
+from pocket_agent.tools import ToolRegistry
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REPORT_PATH = REPO_ROOT / "tests" / "fixtures" / "report.txt"
+DEFAULT_BASE_URL = "http://localhost:8080/v1"
+
+TASKS: list[dict[str, str]] = [
+    {"id": "one_step", "task": "现在几点了"},
+    {"id": "two_city", "task": "查询北京和上海的天气并告诉我温差"},
+    {"id": "three_city", "task": "查北京、上海、广州天气，算最高最低温差"},
+    {
+        "id": "long_file",
+        "task": f"读取 {REPORT_PATH.as_posix()} 并总结要点",
+    },
+    {"id": "many_tools", "task": "北京天气怎么样"},
+]
+
+
+def _make_registry(config: AgentConfig, *, many_tools: bool) -> ToolRegistry:
+    registry = ToolRegistry(config)
+    register_demo_tools(registry)
+    if many_tools:
+        for i in range(11):
+            idx = i
+
+            def _fn(query: str = "", *, _idx: int = idx) -> str:
+                return f"placeholder-{_idx}:{query}"
+
+            _fn.__name__ = f"placeholder_{idx}"
+            registry.register(_fn, short_desc=f"占位工具{idx}")
+    return registry
+
+
+def _unique_fps(steps: list[Any]) -> set[str]:
+    ledger = CallLedger()
+    return {
+        ledger.fingerprint(s.tool_name, s.args)
+        for s in steps
+        if getattr(s, "tool_name", "") != "(format_error)"
+    }
+
+
+def run_pocket_once(task_id: str, task: str, *, base_url: str) -> dict[str, Any]:
+    config = AgentConfig(base_url=base_url)
+    registry = _make_registry(config, many_tools=(task_id == "many_tools"))
+    runner = AgentRunner(config, LlamaCppClient(config), registry)
+    result = runner.run(task)
+    fps = _unique_fps(result.steps)
+    real_calls = result.stats["real_calls"]
+    dup_rate = 0.0 if real_calls == len(fps) else 1.0
+    success = (
+        result.stop_reason == StopReason.MODEL_DONE
+        and dup_rate == 0.0
+        and result.stats["prompt_tokens_max"] <= 3500
+        and bool(result.answer.strip())
+    )
+    return {
+        "success": success,
+        "dup_call_rate": dup_rate,
+        "intercepts": result.stats["intercepts"],
+        "steps": result.stats["total_steps"],
+        "prompt_tokens": result.stats["prompt_tokens_max"],
+        "real_calls": real_calls,
+        "stop_reason": result.stop_reason.value,
+        "answer": result.answer,
+    }
+
+
+def _chat(base_url: str, messages: list[dict[str, str]], *, timeout: float = 60.0) -> str:
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    payload = {
+        "model": "local-model",
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 512,
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(url, json=payload)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+
+
+def _demo_tool_fns() -> dict[str, Callable[..., str]]:
+    """裸循环直接调用的工具函数表（复用 demo_tools 注册结果）。"""
+    registry = ToolRegistry(AgentConfig())
+    register_demo_tools(registry)
+    return {t.name: t.fn for t in registry.all()}
+
+
+def run_baseline_once(task: str, *, base_url: str) -> dict[str, Any]:
+    """裸自由 Agent Loop（约 30 行）：无账本/压缩/护栏，重复也会真实调用。"""
+    tools = _demo_tool_fns()
+    tool_names = ", ".join(tools)
+    messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                f"可用工具: {tool_names}。"
+                '调用格式: CALL name {"arg":"v"}；结束: FINAL 回答。不要解释。'
+            ),
+        },
+        {"role": "user", "content": task},
+    ]
+    real_calls = 0
+    dup_calls = 0
+    seen: set[str] = set()
+    answer = ""
+    for _ in range(8):
+        content = _chat(base_url, messages)
+        messages.append({"role": "assistant", "content": content})
+        if "FINAL" in content:
+            answer = content.split("FINAL", 1)[-1].strip(" :\n")
+            break
+        match = re.search(r"CALL\s+(\w+)\s+(\{.*\})", content, flags=re.DOTALL)
+        if not match:
+            messages.append({"role": "user", "content": "请用 CALL 或 FINAL 格式。"})
+            continue
+        name, raw_args = match.group(1), match.group(2)
+        try:
+            args = json.loads(raw_args)
+        except json.JSONDecodeError:
+            messages.append({"role": "user", "content": "参数 JSON 无效，请重试。"})
+            continue
+        if name not in tools:
+            messages.append({"role": "user", "content": f"未知工具 {name}"})
+            continue
+        fp = name + canonical_json(args)
+        if fp in seen:
+            dup_calls += 1
+        seen.add(fp)
+        real_calls += 1
+        result_text = tools[name](**args)
+        messages.append({"role": "user", "content": f"工具结果: {result_text}"})
+    else:
+        answer = messages[-1]["content"] if messages else ""
+    dup_rate = (dup_calls / real_calls) if real_calls else 0.0
+    success = bool(answer.strip()) and real_calls >= 1
+    return {
+        "success": success,
+        "dup_call_rate": dup_rate,
+        "intercepts": 0,
+        "steps": real_calls,
+        "prompt_tokens": 0,
+        "real_calls": real_calls,
+        "stop_reason": "baseline_done",
+        "answer": answer,
+    }
+
+
+def _aggregate(rows: list[dict[str, Any]]) -> dict[str, float]:
+    if not rows:
+        return {
+            "success_rate": 0.0,
+            "dup_call_rate": 0.0,
+            "avg_intercepts": 0.0,
+            "avg_steps": 0.0,
+            "avg_prompt_tokens": 0.0,
+        }
+    return {
+        "success_rate": sum(1 for r in rows if r["success"]) / len(rows),
+        "dup_call_rate": statistics.fmean(r["dup_call_rate"] for r in rows),
+        "avg_intercepts": statistics.fmean(r["intercepts"] for r in rows),
+        "avg_steps": statistics.fmean(r["steps"] for r in rows),
+        "avg_prompt_tokens": statistics.fmean(r["prompt_tokens"] for r in rows),
+    }
+
+
+def _print_table(title: str, by_task: dict[str, dict[str, float]]) -> None:
+    print()
+    print(title)
+    headers = [
+        "task",
+        "success_rate",
+        "dup_call_rate",
+        "avg_intercepts",
+        "avg_steps",
+        "avg_prompt_tokens",
+    ]
+    print(" | ".join(f"{h:>16}" for h in headers))
+    print("-+-".join("-" * 16 for _ in headers))
+    for task_id, metrics in by_task.items():
+        row = [
+            f"{task_id:>16}",
+            f"{metrics['success_rate']:>16.2%}",
+            f"{metrics['dup_call_rate']:>16.2%}",
+            f"{metrics['avg_intercepts']:>16.2f}",
+            f"{metrics['avg_steps']:>16.2f}",
+            f"{metrics['avg_prompt_tokens']:>16.1f}",
+        ]
+        print(" | ".join(row))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="pocket-agent 真机评测")
+    parser.add_argument("--runs", type=int, default=10, help="每个任务重复次数")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="同时跑裸自由 Agent 基线并输出对比表",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=REPO_ROOT / "eval_results.json",
+        help="结果 JSON 路径",
+    )
+    args = parser.parse_args(argv)
+
+    probe_url = f"{args.base_url.rstrip('/')}/chat/completions"
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            probe = client.post(
+                probe_url,
+                json={
+                    "model": "local-model",
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                },
+            )
+        if probe.status_code != 200:
+            print(
+                f"llama-server 不可用（{probe_url} -> HTTP {probe.status_code}）。"
+                "请先启动：llama-server -c 8192 --flash-attn --cache-reuse 256 --port 8080",
+                file=sys.stderr,
+            )
+            return 2
+    except httpx.HTTPError as exc:
+        print(f"连接 LLM 失败：{exc}", file=sys.stderr)
+        return 2
+
+    pocket_raw: dict[str, list[dict[str, Any]]] = {t["id"]: [] for t in TASKS}
+    baseline_raw: dict[str, list[dict[str, Any]]] = {t["id"]: [] for t in TASKS}
+
+    for meta in TASKS:
+        task_id, task = meta["id"], meta["task"]
+        print(f"==> pocket-agent: {task_id} x{args.runs}")
+        for i in range(args.runs):
+            try:
+                row = run_pocket_once(task_id, task, base_url=args.base_url)
+            except LLMConnectionError as exc:
+                print(f"连接失败: {exc}", file=sys.stderr)
+                return 2
+            except Exception as exc:  # noqa: BLE001
+                row = {
+                    "success": False,
+                    "dup_call_rate": 1.0,
+                    "intercepts": 0,
+                    "steps": 0,
+                    "prompt_tokens": 0,
+                    "real_calls": 0,
+                    "stop_reason": "error",
+                    "answer": str(exc),
+                }
+            pocket_raw[task_id].append(row)
+            print(
+                f"  [{i + 1}/{args.runs}] success={row['success']} "
+                f"dup={row['dup_call_rate']:.0%} steps={row['steps']}"
+            )
+
+        if args.baseline:
+            print(f"==> baseline: {task_id} x{args.runs}")
+            for i in range(args.runs):
+                try:
+                    row = run_baseline_once(task, base_url=args.base_url)
+                except Exception as exc:  # noqa: BLE001
+                    row = {
+                        "success": False,
+                        "dup_call_rate": 1.0,
+                        "intercepts": 0,
+                        "steps": 0,
+                        "prompt_tokens": 0,
+                        "real_calls": 0,
+                        "stop_reason": "error",
+                        "answer": str(exc),
+                    }
+                baseline_raw[task_id].append(row)
+                print(
+                    f"  [{i + 1}/{args.runs}] success={row['success']} "
+                    f"dup={row['dup_call_rate']:.0%} steps={row['steps']}"
+                )
+
+    pocket_metrics = {k: _aggregate(v) for k, v in pocket_raw.items()}
+    _print_table("pocket-agent metrics", pocket_metrics)
+
+    payload: dict[str, Any] = {
+        "base_url": args.base_url,
+        "runs": args.runs,
+        "pocket_agent": {"by_task": pocket_metrics, "raw": pocket_raw},
+    }
+
+    if args.baseline:
+        baseline_metrics = {k: _aggregate(v) for k, v in baseline_raw.items()}
+        _print_table("baseline (naked loop) metrics", baseline_metrics)
+        print()
+        print("comparison (pocket - baseline):")
+        for task_id, p in pocket_metrics.items():
+            b = baseline_metrics[task_id]
+            print(
+                f"  {task_id}: success_delta="
+                f"{p['success_rate'] - b['success_rate']:+.2%} "
+                f"dup_delta={p['dup_call_rate'] - b['dup_call_rate']:+.2%}"
+            )
+        payload["baseline"] = {"by_task": baseline_metrics, "raw": baseline_raw}
+
+    args.output.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"\nresults saved: {args.output}")
+
+    # 框架模式要求平均重复调用率为 0
+    max_dup = max(m["dup_call_rate"] for m in pocket_metrics.values())
+    if max_dup > 0:
+        print(f"WARNING: pocket-agent dup_call_rate > 0 (max={max_dup:.2%})", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

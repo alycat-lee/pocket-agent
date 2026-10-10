@@ -38,6 +38,10 @@ packages = [
 testpaths = ["tests"]
 # 缓存每次清空；临时目录放到仓库内，便于 scripts/clean.py 清理
 addopts = "--cache-clear --basetemp=.pytest_tmp"
+markers = [
+    "integration: 需要 llama-server 的真机集成测试",
+    "stress: 专项压测，默认跳过",
+]
 
 [tool.ruff]
 target-version = "py310"
