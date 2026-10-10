@@ -9,6 +9,10 @@ dist/
 build/
 web/node_modules/
 web/dist/
+src/plugins/static/assets/
+src/plugins/static/index.html
+src/plugins/static/favicon.svg
+src/plugins/static/icons.svg
 .coverage
 .coverage.*
 htmlcov/
