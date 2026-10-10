@@ -16,3 +16,5 @@ eval_results.json
 .checkpoints/
 settings.json
 article.md
+
+x.txt
