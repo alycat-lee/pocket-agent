@@ -94,3 +94,6 @@ SECTION_WRITE: str = """你正在逐段撰写文章「{topic}」。
 上文结尾：{seam_text}
 
 只输出本段正文。"""
+
+SESSION_TITLE: str = """为以下对话生成一个不超过 12 个字的会话标题，只输出标题本身。
+用户：{user_input}"""

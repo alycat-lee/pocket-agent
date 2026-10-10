@@ -156,3 +156,59 @@ def test_write_op_cross_turn(mock_llm_factory: type) -> None:
     read_steps = [s for s in mgr.last_result.steps if s.tool_name == "read_note"]
     assert write_steps and write_steps[0].from_cache is True
     assert read_steps and read_steps[0].from_cache is False
+
+
+def test_auto_rename_after_first_turn(mock_llm_factory: type) -> None:
+    """首轮后自动生成标题；emit session.renamed 事件。"""
+    cfg = AgentConfig(max_steps=3)
+    registry = ToolRegistry(cfg)
+    llm = mock_llm_factory(["回答1", "北京天气查询"])
+    runner = AgentRunner(cfg, llm, registry)
+
+    renamed_events: list[dict] = []
+
+    class _CaptureEvents:
+        def emit(self, event: str, payload: dict) -> None:
+            if event == "session.renamed":
+                renamed_events.append(payload)
+
+    mgr = SessionManager(cfg, llm, runner, events=_CaptureEvents())
+    mgr.chat("s1", "北京天气怎么样")
+
+    state = mgr.get_state("s1")
+    assert state.title == "北京天气查询"
+    assert len(renamed_events) == 1
+    assert renamed_events[0]["session_id"] == "s1"
+    assert renamed_events[0]["title"] == "北京天气查询"
+    # list_sessions 返回 title
+    rows = mgr.list_sessions()
+    assert rows[0]["title"] == "北京天气查询"
+
+
+def test_auto_rename_fallback_on_llm_failure(mock_llm_factory: type) -> None:
+    """标题生成失败时回退为用户输入前 12 字截断。"""
+    cfg = AgentConfig(max_steps=3)
+    registry = ToolRegistry(cfg)
+    # 标题生成抛异常
+    llm = mock_llm_factory(["回答1", RuntimeError("title gen failed")])
+    runner = AgentRunner(cfg, llm, registry)
+
+    class _NullEvents:
+        def emit(self, event: str, payload: dict) -> None: ...
+
+    mgr = SessionManager(cfg, llm, runner, events=_NullEvents())
+    mgr.chat("s1", "这是一个很长的用户输入超过十二个字")
+
+    state = mgr.get_state("s1")
+    assert state.title == "这是一个很长的用户输入超过十二个字"[:12]
+
+
+def test_no_auto_rename_without_events(mock_llm_factory: type) -> None:
+    """无事件总线时不触发标题生成（不消耗 MockLLM 队列）。"""
+    cfg = AgentConfig(max_steps=3)
+    registry = ToolRegistry(cfg)
+    llm = mock_llm_factory(["回答1"])
+    runner = AgentRunner(cfg, llm, registry)
+    mgr = SessionManager(cfg, llm, runner)  # events=None
+    mgr.chat("s1", "北京天气")
+    assert mgr.get_state("s1").title == "新会话"

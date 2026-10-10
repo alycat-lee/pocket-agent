@@ -36,6 +36,7 @@ class DeepSeekClient:
         top_p: float = 0.9,
         max_tokens: int = 512,
         timeout: float = 60.0,
+        trust_env: bool = True,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -44,6 +45,8 @@ class DeepSeekClient:
         self._top_p = top_p
         self._max_tokens = max_tokens
         self._timeout = timeout
+        # 云端可能需要代理（trust_env=True 默认）；本地云端混跑时可覆盖
+        self._trust_env = trust_env
 
     def generate(self, prompt: str) -> str:
         return self._complete(prompt, response_format=None)
@@ -112,7 +115,9 @@ class DeepSeekClient:
         last_error: Exception | None = None
         for attempt in range(_MAX_ATTEMPTS):
             try:
-                with httpx.Client(timeout=self._timeout) as client:
+                with httpx.Client(
+                    timeout=self._timeout, trust_env=self._trust_env
+                ) as client:
                     response = client.post(url, json=payload, headers=headers)
             except httpx.RequestError as exc:
                 last_error = exc
@@ -208,6 +213,7 @@ class LlmDeepSeekPlugin:
             top_p=ac.top_p,
             max_tokens=ac.max_tokens,
             timeout=ac.timeout,
+            trust_env=bool(config.get("trust_env", True)),
         )
 
         if bool(config.get("route", False)):

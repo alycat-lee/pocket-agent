@@ -107,6 +107,30 @@ export function fetchHealth(): Promise<{
   return json("/api/health");
 }
 
+export function fetchHealthLlm(): Promise<{
+  ok: boolean;
+  base_url: string;
+  latency_ms: number;
+  error: string;
+}> {
+  return json("/api/health/llm");
+}
+
+export function testProvider(body: {
+  base_url: string;
+  api_key?: string;
+  model?: string;
+  timeout?: number;
+}): Promise<{
+  ok: boolean;
+  connect_ms: number;
+  generate_ms: number;
+  model_list: string[];
+  error: string;
+}> {
+  return json("/api/providers/test", { method: "POST", body: JSON.stringify(body) });
+}
+
 /** EventSource 消费 SSE；overrides 以 query JSON 传递。 */
 export function openChatEventSource(opts: {
   message: string;

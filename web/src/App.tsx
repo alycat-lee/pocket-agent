@@ -4,7 +4,7 @@ import {
   exportSession,
   fetchConfig,
   fetchEvents,
-  fetchHealth,
+  fetchHealthLlm,
   fetchSessions,
   openChatEventSource,
   stopRun,
@@ -105,11 +105,11 @@ export default function App() {
 
   const checkHealth = useCallback(async () => {
     try {
-      const h = await fetchHealth();
+      const h = await fetchHealthLlm();
       setBaseUrl(h.base_url);
-      setOffline(!h.llm);
-      setOfflineDetail(h.llm ? null : h.message || h.hint || "LLM 不可用");
-      return h.llm;
+      setOffline(!h.ok);
+      setOfflineDetail(h.ok ? null : h.error || "LLM 不可用");
+      return h.ok;
     } catch (e) {
       setOffline(true);
       setOfflineDetail(e instanceof Error ? e.message : String(e));

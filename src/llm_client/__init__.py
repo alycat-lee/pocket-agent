@@ -120,7 +120,9 @@ class LlamaCppClient:
 
         for attempt in range(_MAX_ATTEMPTS):
             try:
-                with httpx.Client(timeout=self._config.timeout) as client:
+                # 本地 provider 必须 trust_env=False，否则系统代理（HTTP_PROXY/HTTPS_PROXY）
+                # 会劫持 localhost 请求，导致 502 Bad Gateway（代理返回的，非 llama-server）
+                with httpx.Client(timeout=self._config.timeout, trust_env=False) as client:
                     response = client.post(url, json=payload)
             except httpx.RequestError as exc:
                 last_error = exc

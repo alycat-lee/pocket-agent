@@ -18,5 +18,5 @@ class SessionPlugin:
         ac = agent_config_from(config)
         llm = ctx.require("llm")
         agent = ctx.require("agent")
-        manager = SessionManager(ac, llm, agent)
+        manager = SessionManager(ac, llm, agent, events=ctx)
         ctx.provide("sessions", manager)

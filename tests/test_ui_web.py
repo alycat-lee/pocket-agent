@@ -13,7 +13,13 @@ from pocket_agent.config import AgentConfig
 from pocket_agent.plugins.agent_loop import AgentLoopPlugin
 from pocket_agent.plugins.session_plugin import SessionPlugin
 from pocket_agent.plugins.tools_core import ToolsCorePlugin
-from pocket_agent.plugins.ui_web import ApprovalBroker, UiWebPlugin, build_app
+from pocket_agent.plugins.ui_web import (
+    ApprovalBroker,
+    UiWebPlugin,
+    build_app,
+    probe_llm_full,
+    probe_provider,
+)
 from pocket_agent.runtime import Context
 from pocket_agent.tools import ToolRegistry, tool
 
@@ -368,3 +374,58 @@ def _port_open(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.2)
         return sock.connect_ex((host, port)) == 0
+
+
+def test_api_health_llm_returns_structured_fields() -> None:
+    ctx = Context()
+    _mount_stack(ctx, [-1, "x"])
+    broker = ApprovalBroker(timeout_sec=1)
+    app = build_app(ctx, broker=broker)
+    res = asyncio.run(_get_json(app, "/api/health/llm"))
+    assert set(res.keys()) >= {"ok", "base_url", "latency_ms", "error"}
+    assert isinstance(res["latency_ms"], int)
+    # llama-server 未启动时 ok=False，error 给可操作文案
+    if not res["ok"]:
+        assert res["error"]
+    ctx.unmount_all()
+
+
+def test_probe_llm_full_refused_connection() -> None:
+    """探测未监听端口 → ok=False，error 含'未启动'。"""
+    result = probe_llm_full("http://127.0.0.1:1/v1", timeout=0.5)
+    assert result["ok"] is False
+    assert "未启动" in result["error"] or "refused" in result["error"].lower() or "连接" in result["error"]
+
+
+def test_providers_test_endpoint_returns_latency() -> None:
+    ctx = Context()
+    _mount_stack(ctx, [-1, "x"])
+    broker = ApprovalBroker(timeout_sec=1)
+    app = build_app(ctx, broker=broker)
+    transport = httpx.ASGITransport(app=app)
+    async def call() -> dict:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.post(
+                "/api/providers/test",
+                json={"base_url": "http://127.0.0.1:1/v1", "timeout": 1.0},
+            )
+            assert r.status_code == 200
+            return r.json()
+    res = asyncio.run(call())
+    assert res["ok"] is False
+    assert res["connect_ms"] >= 0
+    assert res["error"]
+    ctx.unmount_all()
+
+
+def test_providers_test_local_forces_trust_env_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """本地地址的 provider test 不走系统代理。"""
+    monkeypatch.setenv("HTTP_PROXY", "http://evil-proxy:9999")
+    result = probe_provider(
+        "http://127.0.0.1:1/v1", timeout=0.5
+    )
+    assert result["ok"] is False
+    # 不应因代理劫持而返回代理错误
+    assert "evil-proxy" not in result["error"]

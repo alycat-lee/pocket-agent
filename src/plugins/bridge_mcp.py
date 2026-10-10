@@ -301,7 +301,10 @@ class SseMcpClient:
         self._responses: dict[int, dict[str, Any]] = {}
         self._closed = False
         self._endpoint: str | None = None
-        self._client = httpx.Client(timeout=timeout, headers=self._headers)
+        # MCP server 通常是本地 stdio/sse，强制直连避免代理劫持
+        self._client = httpx.Client(
+            timeout=timeout, headers=self._headers, trust_env=False
+        )
         self._stop = threading.Event()
         self._reader = threading.Thread(
             target=self._sse_loop,

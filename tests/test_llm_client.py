@@ -232,3 +232,39 @@ def test_mock_llm_queue_and_prompts(mock_llm_factory: type) -> None:
     assert llm.prompts == ["p1", "p2", "p3"]
     with pytest.raises(AssertionError, match="exhausted"):
         llm.generate("p4")
+
+
+def test_local_client_ignores_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP_PROXY 环境变量不得劫持本地 llama.cpp 请求（trust_env=False）。"""
+    monkeypatch.setenv("HTTP_PROXY", "http://evil-proxy:9999")
+    monkeypatch.setenv("HTTPS_PROXY", "http://evil-proxy:9999")
+    monkeypatch.setenv("ALL_PROXY", "http://evil-proxy:9999")
+
+    config = AgentConfig(base_url="http://localhost:8000/v1")
+    client = LlamaCppClient(config)
+
+    captured: dict[str, object] = {}
+
+    real_init = httpx.Client.__init__
+
+    def _spy_init(self: httpx.Client, **kwargs: object) -> None:
+        captured["trust_env"] = kwargs.get("trust_env")
+        real_init(self, **kwargs)
+
+    mock_http = MagicMock()
+    mock_http.post.side_effect = [_openai_response("ok")]
+    mock_http.__enter__.return_value = mock_http
+    mock_http.__exit__.return_value = None
+
+    with patch("pocket_agent.llm_client.httpx.Client") as mock_cls:
+        mock_cls.return_value = mock_http
+        mock_cls.side_effect = lambda **kw: (
+            captured.__setitem__("kwargs", kw),
+            mock_http,
+        )[-1]
+        result = client.generate("hi")
+
+    assert result == "ok"
+    # trust_env=False → httpx 不读取 HTTP_PROXY 环境变量
+    kwargs = captured.get("kwargs", {})
+    assert kwargs.get("trust_env") is False

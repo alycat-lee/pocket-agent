@@ -5,8 +5,12 @@ from dataclasses import dataclass, field
 from pocket_agent.config import AgentConfig
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError
-from pocket_agent.prompts import REWRITE_QUERY, ROLLING_SUMMARY
-from pocket_agent.runner import AgentRunner, StepRecord
+from pocket_agent.prompts import (
+    REWRITE_QUERY,
+    ROLLING_SUMMARY,
+    SESSION_TITLE,
+)
+from pocket_agent.runner import AgentRunner, EventEmitter, StepRecord
 
 
 @dataclass
@@ -23,6 +27,7 @@ class SessionState:
     turns: list[TurnRecord] = field(default_factory=list)  # 最近 keep_full_turns 轮
     rolling_summary: str = ""  # 更早轮次的滚动摘要
     write_op_ledger: CallLedger = field(default_factory=CallLedger)
+    title: str = "新会话"
 
 
 class SessionManager:
@@ -31,10 +36,12 @@ class SessionManager:
         config: AgentConfig,
         llm: LLMClientProtocol,
         runner: AgentRunner,
+        events: EventEmitter | None = None,
     ) -> None:
         self._config = config
         self._llm = llm
         self._runner = runner
+        self._events = events
         self._sessions: dict[str, SessionState] = {}
         # 测试可观测字段
         self.last_rewritten: str = ""
@@ -53,6 +60,7 @@ class SessionManager:
         return [
             {
                 "session_id": state.session_id,
+                "title": state.title,
                 "turns": len(state.turns),
                 "rolling_summary": state.rolling_summary,
             }
@@ -85,8 +93,38 @@ class SessionManager:
             answer=str(result.answer),
         )
         state.turns.append(turn)
+        self._maybe_rename(state, user_input)
         self._maybe_roll_summary(state)
         return result.answer
+
+    def _maybe_rename(self, state: SessionState, user_input: str) -> None:
+        """首轮问答完成后自动生成会话标题；失败回退为用户输入前 12 字截断。
+
+        仅在接入事件总线时触发——单元测试无 events 时不消耗 MockLLM 队列。
+        """
+        if self._events is None:
+            return
+        # 仅在首轮后、标题仍为默认值时触发
+        if len(state.turns) != 1 or state.title != "新会话":
+            return
+        title = ""
+        try:
+            prompt = SESSION_TITLE.format(user_input=user_input)
+            raw = str(self._llm.generate(prompt)).strip()
+            # 取首行、去引号、限 12 字
+            title = raw.splitlines()[0].strip().strip("\"'""") if raw else ""
+            if title:
+                title = title[:12]
+        except Exception:  # noqa: BLE001 — 标题生成永不阻塞主流程
+            title = ""
+        if not title:
+            title = user_input[:12]
+        state.title = title
+        if self._events is not None:
+            self._events.emit(
+                "session.renamed",
+                {"session_id": state.session_id, "title": title},
+            )
 
     def _rewrite_if_needed(self, state: SessionState, user_input: str) -> str:
         if not state.turns and not state.rolling_summary:

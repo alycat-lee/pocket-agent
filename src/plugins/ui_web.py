@@ -10,7 +10,9 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
+import httpx
 from pocket_agent.config import (
     AgentConfig,
     extract_base_from_pocket,
@@ -33,8 +35,191 @@ _BUS_EVENTS = (
     "step.intercepted",
     "answer.done",
     "approval.required",
+    "session.renamed",
 )
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
+
+
+def _is_local_addr(base_url: str) -> bool:
+    """判断是否为本地地址（localhost/127.0.0.1/0.0.0.0/::1）。"""
+    parsed = urlparse(base_url if "://" in base_url else f"http://{base_url}")
+    host = (parsed.hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1", ""}
+
+
+def probe_llm_full(
+    base_url: str,
+    *,
+    timeout: float = 2.0,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """HTTP 探测 LLM 端点；返回 {ok, base_url, latency_ms, error}。
+
+    本地地址强制 trust_env=False，避免系统代理劫持 localhost。
+    """
+    t0 = time.perf_counter()
+    root = base_url.rstrip("/") if base_url else ""
+    if not root:
+        return {
+            "ok": False,
+            "base_url": base_url,
+            "latency_ms": 0,
+            "error": "base_url 为空",
+        }
+    parsed = urlparse(root if "://" in root else f"http://{root}")
+    origin = f"{parsed.scheme or 'http'}://{parsed.hostname or '127.0.0.1'}"
+    if parsed.port:
+        origin = f"{origin}:{parsed.port}"
+    candidates = [f"{root}/models", f"{origin}/v1/models", f"{origin}/health"]
+    urls: list[str] = []
+    for item in candidates:
+        if item not in urls:
+            urls.append(item)
+    local = _is_local_addr(root)
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    last_err = "unreachable"
+    for url in urls:
+        try:
+            with httpx.Client(timeout=timeout, trust_env=not local) as client:
+                resp = client.get(url, headers=headers)
+            latency = int((time.perf_counter() - t0) * 1000)
+            if 200 <= resp.status_code < 500:
+                return {
+                    "ok": True,
+                    "base_url": base_url,
+                    "latency_ms": latency,
+                    "error": "",
+                }
+            last_err = f"HTTP {resp.status_code}"
+        except httpx.ConnectError as exc:
+            if "refused" in str(exc).lower() or "[errno 111]" in str(exc).lower():
+                last_err = "连接被拒绝：llama-server 未启动或端口不对"
+            else:
+                last_err = f"连接失败：{exc}"
+        except httpx.TimeoutException:
+            last_err = "连接超时：服务响应过慢或防火墙拦截"
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500:
+                last_err = (
+                    f"HTTP {exc.response.status_code}：推理服务异常，"
+                    "请重启 llama-server"
+                )
+            else:
+                last_err = f"HTTP {exc.response.status_code}"
+        except Exception as exc:  # noqa: BLE001
+            last_err = str(exc)
+    return {
+        "ok": False,
+        "base_url": base_url,
+        "latency_ms": int((time.perf_counter() - t0) * 1000),
+        "error": last_err,
+    }
+
+
+def probe_provider(
+    base_url: str,
+    *,
+    api_key: str | None = None,
+    model: str | None = None,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    """测试 provider：先 GET /models 测连通，再发 max_tokens=1 测生成。"""
+    root = base_url.rstrip("/") if base_url else ""
+    if not root:
+        return {
+            "ok": False,
+            "connect_ms": 0,
+            "generate_ms": 0,
+            "model_list": [],
+            "error": "base_url 为空",
+        }
+    local = _is_local_addr(root)
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    headers["Content-Type"] = "application/json"
+    # 1) 连通：GET /models（或 /v1/models）
+    models_url = (
+        f"{root}/models"
+        if root.endswith("/v1")
+        else f"{root}/v1/models"
+    )
+    connect_ms = 0
+    model_list: list[str] = []
+    try:
+        t0 = time.perf_counter()
+        with httpx.Client(timeout=timeout, trust_env=not local) as client:
+            resp = client.get(models_url, headers=headers)
+        connect_ms = int((time.perf_counter() - t0) * 1000)
+        if resp.status_code >= 400:
+            return {
+                "ok": False,
+                "connect_ms": connect_ms,
+                "generate_ms": 0,
+                "model_list": [],
+                "error": f"连通失败：HTTP {resp.status_code} {resp.text[:200]}",
+            }
+        data = resp.json()
+        items = data.get("data") or data.get("models") or []
+        model_list = [
+            str(m.get("id") or m.get("model") or m.get("name") or "")
+            for m in items
+            if isinstance(m, dict)
+        ]
+        model_list = [m for m in model_list if m]
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "connect_ms": connect_ms,
+            "generate_ms": 0,
+            "model_list": [],
+            "error": f"连通失败：{exc}",
+        }
+    # 2) 生成：POST /chat/completions max_tokens=1
+    chat_url = (
+        f"{root}/chat/completions"
+        if root.endswith("/v1")
+        else f"{root}/v1/chat/completions"
+    )
+    use_model = model or (model_list[0] if model_list else "local-model")
+    payload = {
+        "model": use_model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+    }
+    generate_ms = 0
+    try:
+        t0 = time.perf_counter()
+        with httpx.Client(timeout=timeout, trust_env=not local) as client:
+            resp = client.post(chat_url, json=payload, headers=headers)
+        generate_ms = int((time.perf_counter() - t0) * 1000)
+        if resp.status_code >= 400:
+            return {
+                "ok": False,
+                "connect_ms": connect_ms,
+                "generate_ms": generate_ms,
+                "model_list": model_list,
+                "error": (
+                    f"生成失败：HTTP {resp.status_code} {resp.text[:200]}"
+                ),
+            }
+        return {
+            "ok": True,
+            "connect_ms": connect_ms,
+            "generate_ms": generate_ms,
+            "model_list": model_list,
+            "error": "",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "connect_ms": connect_ms,
+            "generate_ms": generate_ms,
+            "model_list": model_list,
+            "error": f"生成失败：{exc}",
+        }
 
 
 class ChatIn(BaseModel):
@@ -53,6 +238,13 @@ class ResumeIn(BaseModel):
 class ApproveIn(BaseModel):
     approval_id: str = ""
     approved: bool = False
+
+
+class ProviderTestIn(BaseModel):
+    base_url: str
+    api_key: str | None = None
+    model: str | None = None
+    timeout: float = 10.0
 
 
 class ApprovalBroker:
@@ -161,46 +353,10 @@ def build_app(
         if ctx.has("agent"):
             ctx.require("agent").apply_config(config)
 
-    def _probe_llm(base_url: str, timeout: float = 1.0) -> tuple[bool, str]:
-        """HTTP 探测 LLM 是否可用（端口开着但 502 仍判为不可用）。"""
-        import urllib.error
-        import urllib.request
-        from urllib.parse import urlparse
-
-        root = base_url.rstrip("/")
-        parsed = urlparse(root if "://" in root else f"http://{root}")
-        origin = f"{parsed.scheme or 'http'}://{parsed.hostname or '127.0.0.1'}"
-        if parsed.port:
-            origin = f"{origin}:{parsed.port}"
-        candidates = [
-            f"{root}/models",
-            f"{origin}/v1/models",
-            f"{origin}/health",
-            f"{root}/health",
-        ]
-        urls: list[str] = []
-        for item in candidates:
-            if item not in urls:
-                urls.append(item)
-        last = "unreachable"
-        for url in urls:
-            try:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    code = int(resp.status)
-                    if 200 <= code < 500:
-                        return True, ""
-                    last = f"HTTP {code}"
-            except urllib.error.HTTPError as exc:
-                if exc.code in {401, 403, 404}:
-                    return True, ""
-                if exc.code >= 500:
-                    last = f"HTTP {exc.code} (推理服务异常，请重启 llama-server)"
-                else:
-                    last = f"HTTP {exc.code}"
-            except Exception as exc:  # noqa: BLE001
-                last = str(exc)
-        return False, last
+    def _probe_llm(base_url: str, timeout: float = 2.0) -> tuple[bool, str]:
+        """HTTP 探测 LLM 是否可用；返回 (ok, 可操作错误文案)。"""
+        result = probe_llm_full(base_url, timeout=timeout)
+        return result["ok"], result["error"]
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
@@ -224,6 +380,20 @@ def build_app(
                 else "启动 llama-server 后点击重试；示例：./llama-server -m model.gguf --port 8080"
             ),
         }
+
+    @app.get("/api/health/llm")
+    def api_health_llm() -> dict[str, Any]:
+        cfg = _resolved_config()
+        return probe_llm_full(cfg.base_url, timeout=2.0)
+
+    @app.post("/api/providers/test")
+    def api_providers_test(body: ProviderTestIn) -> dict[str, Any]:
+        return probe_provider(
+            body.base_url,
+            api_key=body.api_key or None,
+            model=body.model or None,
+            timeout=body.timeout or 10.0,
+        )
 
     @app.get("/sessions")
     def sessions() -> list[dict[str, Any]]:
