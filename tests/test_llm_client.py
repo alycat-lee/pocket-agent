@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-
 from pocket_agent.config import AgentConfig
 from pocket_agent.llm_client import LlamaCppClient, LLMConnectionError, LLMFormatError
 

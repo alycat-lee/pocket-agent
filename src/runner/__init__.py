@@ -86,16 +86,63 @@ class AgentRunner:
                     minimum=-1,
                     maximum=len(candidates) - 1,
                 )
-            except LLMFormatError:
-                stop_reason = StopReason.MODEL_DONE
-                break
+            except LLMFormatError as exc:
+                # 本步作废：记入历史，计 1 次拦截计入护栏，不向上抛
+                result = f"[格式错误] {exc}"
+                steps.append(
+                    StepRecord(
+                        step=step,
+                        tool_name="(format_error)",
+                        args={},
+                        result=result,
+                        from_cache=False,
+                        error=result,
+                    )
+                )
+                intercepts += 1
+                logger.debug(
+                    "step=%s tool=(format_error) args={{}} cache=miss "
+                    "tokens≈%s elapsed=%.3fs",
+                    step,
+                    self._compressor.estimate_tokens(choose_prompt),
+                    time.perf_counter() - t0,
+                )
+                verdict = self._guard.on_step(
+                    step,
+                    f"format_error:{exc}",
+                    intercepted=True,
+                )
+                if verdict.should_stop:
+                    stop_reason = StopReason(verdict.reason)
+                    break
+                continue
 
             if choice == -1:
                 stop_reason = StopReason.MODEL_DONE
                 break
             if choice < 0 or choice >= len(candidates):
-                stop_reason = StopReason.MODEL_DONE
-                break
+                # 越界编号：同样按本步作废 + 拦截处理
+                result = f"[格式错误] choice out of range: {choice}"
+                steps.append(
+                    StepRecord(
+                        step=step,
+                        tool_name="(format_error)",
+                        args={"choice": choice},
+                        result=result,
+                        from_cache=False,
+                        error=result,
+                    )
+                )
+                intercepts += 1
+                verdict = self._guard.on_step(
+                    step,
+                    f"format_error:choice={choice}",
+                    intercepted=True,
+                )
+                if verdict.should_stop:
+                    stop_reason = StopReason(verdict.reason)
+                    break
+                continue
 
             tool = candidates[choice]
             fill_prompt = self._build_fill_prompt(task, state, tool)

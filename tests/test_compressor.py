@@ -4,7 +4,6 @@ import math
 import re
 
 import pytest
-
 from pocket_agent.compressor import ContextCompressor
 from pocket_agent.config import AgentConfig
 
