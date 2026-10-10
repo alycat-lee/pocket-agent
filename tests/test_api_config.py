@@ -157,11 +157,12 @@ def test_schema_endpoint(tmp_path: Path) -> None:
     res = asyncio.run(_request(app, "GET", "/api/config/schema"))
     assert res.status_code == 200
     keys = {item["key"] for item in res.json()}
-    assert "temperature" in keys
-    # deprecated 项不再返回（Phase 22：schema 剔除废弃项）
+    assert "max_steps" in keys
+    # 整个模型组标记 deprecated，不再返回
     assert "api_key" not in keys
     assert "base_url" not in keys
     assert "model" not in keys
+    assert "temperature" not in keys
     assert "route_cloud" not in keys
     ctx.unmount_all()
 

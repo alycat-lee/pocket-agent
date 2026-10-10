@@ -1,7 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { TrajectoryRecord } from "../api/types";
 import { formatMs } from "../lib/format";
-import { VirtualList } from "./VirtualList";
 
 interface Props {
   records: TrajectoryRecord[];
@@ -31,6 +30,9 @@ export function TrajectoryView({
   onExport,
 }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+
   const selected =
     records.find((r) => r.id === (selectedId || focusId)) || null;
 
@@ -44,6 +46,37 @@ export function TrajectoryView({
       }),
     [records],
   );
+
+  // 锚定底部 & 跟随尾部
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (followTail) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [records.length, followTail]);
+
+  // 检测上滚 → 暂停跟随 + 显示回到底部按钮
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const atBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      if (!atBottom && followTail) {
+        onFollowChange(false);
+      }
+      setShowScrollBtn(!atBottom);
+    };
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [followTail, onFollowChange]);
+
+  // 切到轨迹标签时锚定底部
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [focusId]);
 
   return (
     <div className="trajectory">
@@ -65,7 +98,7 @@ export function TrajectoryView({
         )}
       </div>
       <div className="traj-body">
-        <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div className="traj-list-flow" ref={scrollRef}>
           {hasMore ? (
             <div className="traj-load-earlier">
               <button
@@ -78,49 +111,55 @@ export function TrajectoryView({
               </button>
             </div>
           ) : null}
-          <VirtualList
-            items={records}
-            followTail={followTail}
-            onFollowChange={onFollowChange}
-            scrollToKey={focusId}
-            getKey={(r) => r.id}
-            renderRow={(r, index) => {
-              const prevTurn = index > 0 ? records[index - 1]?.turn : null;
-              const showTurn = r.turn !== prevTurn;
-              return (
-                <div>
-                  {showTurn ? (
-                    <div className="turn-header">轮次 {r.turn}</div>
-                  ) : null}
-                  <button
-                    type="button"
-                    className={`record ${selected?.id === r.id ? "selected" : ""}`}
-                    onClick={() => setSelectedId(r.id)}
-                  >
-                    <span className="record-step">
-                      {r.stepIndex != null ? `S${r.stepIndex}` : "—"}
-                    </span>
-                    <span>
-                      <div className="record-title">{r.title}</div>
-                      <div className="record-meta">
-                        {r.inProgress
-                          ? "进行中 · 开始标记"
-                          : `耗时 ${formatMs(r.elapsedMs)} · TTFT ${formatMs(r.ttftMs)}`}
-                        {r.errorCode ? ` · ${r.errorCode}` : ""}
-                      </div>
-                    </span>
-                    <span className="badges">
-                      {r.badges.map((b) => (
-                        <span key={b} className={`badge ${b}`}>
-                          {BADGE_LABEL[b]}
-                        </span>
-                      ))}
-                    </span>
-                  </button>
-                </div>
-              );
-            }}
-          />
+          {records.map((r, index) => {
+            const prevTurn = index > 0 ? records[index - 1]?.turn : null;
+            const showTurn = r.turn !== prevTurn;
+            return (
+              <div key={r.id}>
+                {showTurn ? (
+                  <div className="turn-header">轮次 {r.turn}</div>
+                ) : null}
+                <button
+                  type="button"
+                  className={`record ${selected?.id === r.id ? "selected" : ""}`}
+                  onClick={() => setSelectedId(r.id)}
+                >
+                  <span className="record-step">
+                    {r.stepIndex != null ? `S${r.stepIndex}` : "—"}
+                  </span>
+                  <span>
+                    <div className="record-title">{r.title}</div>
+                    <div className="record-meta">
+                      {r.inProgress
+                        ? "进行中 · 开始标记"
+                        : `耗时 ${formatMs(r.elapsedMs)} · TTFT ${formatMs(r.ttftMs)}`}
+                      {r.errorCode ? ` · ${r.errorCode}` : ""}
+                    </div>
+                  </span>
+                  <span className="badges">
+                    {r.badges.map((b) => (
+                      <span key={b} className={`badge ${b}`}>
+                        {BADGE_LABEL[b]}
+                      </span>
+                    ))}
+                  </span>
+                </button>
+              </div>
+            );
+          })}
+          {showScrollBtn ? (
+            <button
+              type="button"
+              className="scroll-to-bottom"
+              onClick={() => {
+                const el = scrollRef.current;
+                if (el) el.scrollTop = el.scrollHeight;
+                onFollowChange(true);
+              }}
+            >
+              回到底部
+            </button>
+          ) : null}
         </div>
         <aside className="inspector">
           <h3>记录检查器</h3>

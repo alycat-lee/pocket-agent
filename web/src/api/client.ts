@@ -190,6 +190,14 @@ export function updateRouting(body: {
   return json("/api/routing", { method: "PUT", body: JSON.stringify(body) });
 }
 
+export function deleteSession(
+  sessionId: string,
+): Promise<{ ok: boolean; session_id: string }> {
+  return json(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
+}
+
 export function fetchWorkspaces(): Promise<{
   available: boolean;
   workspaces: Array<{ id: string; name: string; root: string }>;

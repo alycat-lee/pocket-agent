@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   approve,
   bindSessionWorkspace,
+  deleteSession,
   exportSession,
   fetchConfig,
   fetchEvents,
@@ -334,6 +335,14 @@ export default function App() {
           setIntent(mode);
           setIntentConfidence(conf);
         }
+      } else if (event === "session.renamed") {
+        const sid = String(data.session_id || "");
+        const title = String(data.title || "新会话");
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === sid ? { ...s, title } : s,
+          ),
+        );
       } else if (event === "error") {
         const msg = String(data.message || "error");
         const conn =
@@ -435,6 +444,7 @@ export default function App() {
       "answer.done",
       "approval.required",
       "intent.detected",
+      "session.renamed",
       "error",
     ];
     for (const name of names) {
@@ -488,7 +498,7 @@ export default function App() {
   const newSession = () => {
     const id = `s-${Date.now().toString(36)}`;
     setSoftError(null);
-    setSessions((prev) => [{ session_id: id, title: id }, ...prev]);
+    setSessions((prev) => [{ session_id: id, title: "新会话" }, ...prev]);
     setSessionId(id);
     setPage("session");
   };
@@ -501,6 +511,19 @@ export default function App() {
         page={page}
         onSelectSession={setSessionId}
         onNewSession={newSession}
+        onDeleteSession={(id) => {
+          void (async () => {
+            try {
+              await deleteSession(id);
+              setSessions((prev) => prev.filter((s) => s.session_id !== id));
+              if (sessionId === id) {
+                setSessionId("default");
+              }
+            } catch {
+              /* ignore */
+            }
+          })();
+        }}
         onPage={setPage}
       />
       <main className="main">

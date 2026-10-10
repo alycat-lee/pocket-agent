@@ -81,7 +81,9 @@ export function SettingsPage({ onConfigSaved }: Props) {
         >
           模型
         </button>
-        {groups.map((g) => (
+        {groups
+          .filter((g) => g.group !== "模型")
+          .map((g) => (
           <button
             key={g.group}
             type="button"

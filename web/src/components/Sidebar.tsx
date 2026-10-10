@@ -1,4 +1,4 @@
-import { GearSix, Plus, PuzzlePiece } from "@phosphor-icons/react";
+import { GearSix, Plus, PuzzlePiece, Trash } from "@phosphor-icons/react";
 import type { SessionInfo } from "../api/types";
 
 export type PageId = "session" | "settings" | "plugins";
@@ -9,6 +9,7 @@ interface Props {
   page: PageId;
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
+  onDeleteSession: (id: string) => void;
   onPage: (p: PageId) => void;
 }
 
@@ -18,6 +19,7 @@ export function Sidebar({
   page,
   onSelectSession,
   onNewSession,
+  onDeleteSession,
   onPage,
 }: Props) {
   return (
@@ -38,21 +40,37 @@ export function Sidebar({
         </button>
         <div className="session-list">
           {sessions.map((s) => (
-            <button
+            <div
               key={s.session_id}
-              type="button"
-              className={`session-item ${
+              className={`session-row ${
                 page === "session" && activeSession === s.session_id
                   ? "active"
                   : ""
               }`}
-              onClick={() => {
-                onPage("session");
-                onSelectSession(s.session_id);
-              }}
             >
-              {s.title || s.session_id}
-            </button>
+              <button
+                type="button"
+                className="session-item"
+                onClick={() => {
+                  onPage("session");
+                  onSelectSession(s.session_id);
+                }}
+              >
+                {s.title || s.session_id}
+              </button>
+              <button
+                type="button"
+                className="session-delete"
+                title="删除会话"
+                aria-label={`删除会话 ${s.title || s.session_id}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteSession(s.session_id);
+                }}
+              >
+                <Trash size={12} />
+              </button>
+            </div>
           ))}
         </div>
       </div>
