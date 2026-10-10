@@ -4,6 +4,7 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from pocket_agent.config import AgentConfig
 from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError
@@ -21,6 +22,12 @@ _LABEL_BEFORE_RE = re.compile(
 _CONSISTENCY_CHAR_LIMIT = 300
 # 段长不足目标此比例时触发续写（最多一轮，仍用 SECTION_WRITE）
 _SHORT_SECTION_RATIO = 0.65
+# 单段允许略超目标；全文硬顶
+_SECTION_MAX_RATIO = 1.05
+_ARTICLE_MAX_RATIO = 1.08
+_ARTICLE_MIN_RATIO = 0.85
+_MIN_TRIM_CHARS = 4
+_SEAM_TARGET = 0.05
 
 
 @dataclass
@@ -114,8 +121,18 @@ class LongWriter:
         outline_text = _format_outline(outline)
         consistency_text = _serialize_facts(card.facts) or "（无）"
         written: list[str] = []
+        n_sections = len(outline)
+        hard_cap = int(total_chars * _ARTICLE_MAX_RATIO)
 
         for index, section in enumerate(outline, start=1):
+            used = sum(len(s) for s in written)
+            if used >= hard_cap:
+                break
+            remain_sections = n_sections - index + 1
+            # 按剩余预算动态下调本段目标，抑制超写
+            budget = max(80, (total_chars - used) // max(remain_sections, 1))
+            section.target_chars = min(section.target_chars, budget)
+
             body = self._write_section(
                 topic=topic,
                 outline_text=outline_text,
@@ -125,8 +142,12 @@ class LongWriter:
                 previous=written[-1] if written else "",
             )
             if written:
-                body = trim_overlap(written[-1], body, self._config.overlap_max)
-            # 段长不足：再写一段补足（仍用 SECTION_WRITE，seam 取已写正文）
+                body = trim_overlap(
+                    written[-1],
+                    body,
+                    self._config.overlap_max,
+                    seam_search=self._config.seam_tail_chars,
+                )
             body = self._expand_if_short(
                 topic=topic,
                 outline_text=outline_text,
@@ -136,14 +157,27 @@ class LongWriter:
                 body=body,
             )
             if written:
-                body = trim_overlap(written[-1], body, self._config.overlap_max)
+                body = trim_overlap(
+                    written[-1],
+                    body,
+                    self._config.overlap_max,
+                    seam_search=self._config.seam_tail_chars,
+                )
+            body = clip_to_target(body, section.target_chars, _SECTION_MAX_RATIO)
+            # 累计将破硬顶时，本段再裁一刀
+            room = hard_cap - used
+            if room <= 0:
+                break
+            if len(body) > room:
+                body = clip_to_target(body, room, 1.0)
+            if not body.strip():
+                continue
             written.append(body)
             if self.on_section is not None:
                 self.on_section(index, section, body)
 
         self.last_sections = written
         article = "\n\n".join(written)
-        # 若仍明显短于目标，追加均匀补写段（无要点兜底）
         article = self._pad_to_total(
             topic=topic,
             article=article,
@@ -152,6 +186,11 @@ class LongWriter:
             consistency_text=consistency_text,
             total_chars=total_chars,
         )
+        # 超标则从文末按句裁到目标上限
+        if len(article) > hard_cap:
+            article = clip_to_target(article, total_chars, _ARTICLE_MAX_RATIO)
+            # 同步裁尾部段落列表，避免指标与正文不一致
+            self.last_sections = _resync_sections_to_article(written, article)
         return article
 
     def _write_section(
@@ -210,10 +249,16 @@ class LongWriter:
                 f"在已有正文基础上续写约{remain}字，补足本段目标字数，禁止重复已写句子",
             ],
         )
-        more = trim_overlap(body, more, self._config.overlap_max)
+        more = trim_overlap(
+            body,
+            more,
+            self._config.overlap_max,
+            seam_search=self._config.seam_tail_chars,
+        )
         if not more.strip():
             return body
-        return f"{body.rstrip()}\n{more.lstrip()}"
+        merged = f"{body.rstrip()}\n{more.lstrip()}"
+        return clip_to_target(merged, section.target_chars, _SECTION_MAX_RATIO)
 
     def _pad_to_total(
         self,
@@ -225,20 +270,22 @@ class LongWriter:
         consistency_text: str,
         total_chars: int,
     ) -> str:
-        """全文仍不足目标 85% 时，按 section_char_target 追加补写段。"""
-        floor = int(total_chars * 0.85)
+        """全文仍不足目标 85% 时，按剩余预算追加补写段（不突破硬顶）。"""
+        floor = int(total_chars * _ARTICLE_MIN_RATIO)
+        hard_cap = int(total_chars * _ARTICLE_MAX_RATIO)
         if len(article) >= floor or not written:
             return article
-        # 平均段长过低说明是 stub，不补写
         avg = len(article) / len(written)
         if avg < self._config.section_char_target * 0.3:
             return article
 
         chunk = max(200, self._config.section_char_target)
         guard = 0
-        while len(article) < floor and guard < 40:
-            remain = total_chars - len(article)
-            target = min(chunk, max(200, remain))
+        while len(article) < floor and len(article) < hard_cap and guard < 40:
+            remain = hard_cap - len(article)
+            if remain < 80:
+                break
+            target = min(chunk, remain, max(80, total_chars - len(article)))
             index = len(written) + 1
             section = SectionSpec(
                 title=f"补充第{index}部分",
@@ -254,7 +301,15 @@ class LongWriter:
                 previous=written[-1] if written else "",
             )
             if written:
-                body = trim_overlap(written[-1], body, self._config.overlap_max)
+                body = trim_overlap(
+                    written[-1],
+                    body,
+                    self._config.overlap_max,
+                    seam_search=self._config.seam_tail_chars,
+                )
+            body = clip_to_target(body, target, _SECTION_MAX_RATIO)
+            if len(body) > remain:
+                body = clip_to_target(body, remain, 1.0)
             if not body.strip():
                 break
             written.append(body)
@@ -322,54 +377,136 @@ class LongWriter:
         return ConsistencyCard(facts=_fit_facts(facts, _CONSISTENCY_CHAR_LIMIT))
 
 
-def trim_overlap(previous: str, current: str, overlap_max: int) -> str:
-    """裁掉段首与前段结尾的重叠（子串 + 连续重叠句），窗口 ≤ overlap_max。"""
+def trim_overlap(
+    previous: str,
+    current: str,
+    overlap_max: int,
+    *,
+    seam_search: int | None = None,
+) -> str:
+    """裁掉段首与前段的复述：精确前后缀、尾窗子串、整句，多轮直到接缝重叠达标。"""
     if not previous or not current or overlap_max <= 0:
         return current
 
+    search_win = seam_search if seam_search and seam_search > 0 else max(
+        overlap_max * 3, 200
+    )
+    metrics = WriterMetrics()
     text = current
-    # 1) 最长公共前后缀（限窗）
-    max_n = min(overlap_max, len(previous), len(text))
-    for n in range(max_n, 0, -1):
-        if previous[-n:] == text[:n]:
-            text = text[n:].lstrip("\n")
+
+    for _ in range(48):
+        before = text
+        if not text:
             break
 
-    # 2) 连续剥除段首句（出现在前段尾窗内）
-    tail = previous[-overlap_max:]
-    changed = True
-    while changed and text:
-        changed = False
-        for sent in _split_sentences(text):
-            stripped = sent.strip()
-            if not stripped:
+        # 1) 最长公共前后缀（可多轮，每轮最多 overlap_max）
+        max_n = min(overlap_max, len(previous), len(text))
+        best = 0
+        for n in range(max_n, _MIN_TRIM_CHARS - 1, -1):
+            if previous[-n:] == text[:n]:
+                best = n
+                break
+        if best:
+            text = text[best:].lstrip("\n　 ")
+            continue
+
+        # 2) 段首长前缀出现在前段尾窗内（覆盖「前段多了总之，」这类错位复述）
+        tail = previous[-search_win:]
+        best = 0
+        upper = min(len(text), len(tail), max(overlap_max * 4, 320))
+        for n in range(upper, _MIN_TRIM_CHARS - 1, -1):
+            if text[:n] in tail:
+                best = n
+                break
+        if best:
+            text = text[best:].lstrip("\n　 ")
+            continue
+
+        # 3) 剥除段首整句（出现在前段）
+        prev_sents = {
+            s.strip() for s in _split_sentences(previous) if len(s.strip()) >= 8
+        }
+        head = next((s for s in _split_sentences(text) if s.strip()), "")
+        stripped = head.strip()
+        if stripped and stripped in prev_sents and text.lstrip().startswith(stripped):
+            idx = text.find(stripped)
+            if idx >= 0:
+                text = text[idx + len(stripped) :].lstrip("\n　 ")
                 continue
-            if len(stripped) >= 4 and stripped in tail and text.lstrip().startswith(
-                stripped
-            ):
+
+        # 4) 段首句与前段某句高度相似（或短前缀已出现）则剥除
+        head = next((s for s in _split_sentences(text) if s.strip()), "")
+        stripped = head.strip()
+        if stripped and len(stripped) >= 8 and text.lstrip().startswith(stripped):
+            similar = any(
+                SequenceMatcher(None, stripped, ps).ratio() >= 0.72 for ps in prev_sents
+            )
+            prefix_hit = len(stripped) >= 16 and stripped[:16] in previous
+            if similar or prefix_hit:
                 idx = text.find(stripped)
                 if idx >= 0:
                     text = text[idx + len(stripped) :].lstrip("\n　 ")
-                    changed = True
-            break
+                    continue
 
-    # 3) 段首短句与前段任一句子完全相同则剥除（防复述论点句）
-    prev_sents = {s.strip() for s in _split_sentences(previous) if len(s.strip()) >= 8}
-    changed = True
-    while changed and text:
-        changed = False
-        for sent in _split_sentences(text):
-            stripped = sent.strip()
-            if not stripped:
-                continue
-            if stripped in prev_sents and text.lstrip().startswith(stripped):
-                idx = text.find(stripped)
+        # 5) 接缝窗仍严重重叠：再剥一句（仅当重叠极高，避免误伤）
+        if (
+            text
+            and metrics.seam_ngram_overlap(previous, text, n=3, window=overlap_max)
+            >= 0.35
+        ):
+            head = next((s for s in _split_sentences(text) if s.strip()), "")
+            if head.strip() and len(head.strip()) >= 8:
+                idx = text.find(head.strip())
                 if idx >= 0:
-                    text = text[idx + len(stripped) :].lstrip("\n　 ")
-                    changed = True
+                    text = text[idx + len(head.strip()) :].lstrip("\n　 ")
+                    if text != before:
+                        continue
+
+        if text == before:
             break
 
     return text
+
+
+def clip_to_target(text: str, target_chars: int, max_ratio: float) -> str:
+    """按句号边界裁到 target*max_ratio，避免单段/全文超写。"""
+    if target_chars <= 0 or not text:
+        return text
+    limit = max(1, int(target_chars * max_ratio))
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    ends = [cut.rfind(ch) for ch in ("。", "！", "？", "\n")]
+    pos = max(ends)
+    if pos >= max(8, limit // 5):
+        return cut[: pos + 1].rstrip()
+    return cut.rstrip()
+
+
+def _resync_sections_to_article(sections: list[str], article: str) -> list[str]:
+    """文末裁剪后，丢弃已不在正文中的尾部段落。"""
+    if not sections:
+        return []
+    kept: list[str] = []
+    cursor = 0
+    for section in sections:
+        idx = article.find(section[: min(40, len(section))], cursor)
+        if idx < 0:
+            # 段落被裁短：保留 article 剩余作为末段
+            rest = article[cursor:].strip()
+            if rest:
+                kept.append(rest)
+            break
+        # 若本段完整仍在
+        if article[idx : idx + len(section)] == section:
+            kept.append(section)
+            cursor = idx + len(section)
+        else:
+            rest = article[idx:].strip()
+            if rest:
+                kept.append(rest)
+            break
+    return kept or ([article] if article else [])
 
 
 def _desired_section_count(total_chars: int, section_chars: int) -> int:

@@ -6,6 +6,7 @@ from pocket_agent.writer import (
     LongWriter,
     SectionSpec,
     WriterMetrics,
+    clip_to_target,
     trim_overlap,
 )
 
@@ -64,6 +65,25 @@ def test_overlap_trimming(mock_llm_factory: type) -> None:
     assert "第三段收束结论。" in text
     # 单元级：裁剪函数本身
     assert trim_overlap("前文。重叠句。", "重叠句。后文。", 80) == "后文。"
+
+    # 错位复述：前段多「总之，」，后段整段抄尾部
+    para = (
+        "在测试管理中，工具的选择与应用是关键环节。"
+        "通过合适的工具可以有效降低缺陷率，确保产品质量。"
+    )
+    prev = "总之，" + para
+    curr = para + "本段独有收束。"
+    trimmed = trim_overlap(prev, curr, 80, seam_search=250)
+    assert "工具的选择与应用是关键环节" not in trimmed
+    assert "本段独有收束" in trimmed
+    assert WriterMetrics().seam_ngram_overlap(prev, trimmed, n=3, window=80) < 0.05
+
+
+def test_clip_to_target_caps_overshoot() -> None:
+    text = "第一句完。第二句完。第三句完。第四句完。第五句完。"
+    clipped = clip_to_target(text, target_chars=20, max_ratio=1.05)
+    assert len(clipped) <= int(20 * 1.05) + 1
+    assert clipped.endswith("。")
 
 
 def test_outline_fallback(mock_llm_factory: type) -> None:
