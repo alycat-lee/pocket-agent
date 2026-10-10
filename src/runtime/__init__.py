@@ -147,9 +147,12 @@ class Context:
 
         self._activate(plugin, cfg)
 
-    def unmount(self, name: str) -> None:
-        """逆序执行 disposer；若其他活跃插件依赖其服务则抛 PluginInUse。"""
-        # 挂起队列中的直接移除
+    def unmount(self, name: str, *, cascade: bool = True) -> None:
+        """逆序执行 disposer。
+
+        cascade=True（默认）：先停用依赖本插件服务的活跃插件（消失则停用）。
+        cascade=False：若仍有依赖方则抛 PluginInUse。
+        """
         pending_hit = [p for p, _ in self._pending if p.name == name]
         if pending_hit:
             self._pending = [(p, c) for p, c in self._pending if p.name != name]
@@ -163,16 +166,26 @@ class Context:
             key for key, owner in self._service_owners.items() if owner == name
         }
         provided.update(record.plugin.provides)
-        for other_name, other in self._plugins.items():
-            if other_name == name or not other.active:
-                continue
-            for req in other.plugin.requires:
-                if req in provided:
-                    raise PluginInUse(
-                        f"plugin {name!r} provides {req!r} "
-                        f"required by active plugin {other_name!r}"
-                    )
+        dependents = [
+            other_name
+            for other_name, other in self._plugins.items()
+            if other_name != name
+            and other.active
+            and any(req in provided for req in other.plugin.requires)
+        ]
+        if dependents and not cascade:
+            raise PluginInUse(
+                f"plugin {name!r} still required by {dependents!r}"
+            )
+        # 按挂载逆序停用依赖方
+        for dep in reversed(self._mount_order):
+            if dep in dependents:
+                self.unmount(dep, cascade=True)
 
+        # 重新取 record（级联过程不应删掉自己）
+        record = self._plugins.get(name)
+        if record is None or not record.active:
+            return
         self._teardown(name, record)
 
     @property
@@ -292,7 +305,11 @@ def assemble(
             plugin_cfg = entry.get("config") or {}
             if not isinstance(plugin_cfg, dict):
                 raise PluginError(f"plugin {name!r} config must be a mapping")
-            context.mount(plugins[name], plugin_cfg)
+            plugin = plugins[name]
+            prepare = getattr(plugin, "prepare", None)
+            if callable(prepare):
+                prepare(plugin_cfg)
+            context.mount(plugin, plugin_cfg)
     except BaseException:
         context.unmount_all()
         raise

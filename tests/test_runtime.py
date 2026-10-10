@@ -129,13 +129,15 @@ def test_plugin_in_use_rejects_unmount() -> None:
         )
     )
     with pytest.raises(PluginInUse):
-        ctx.unmount("llm-p")
+        ctx.unmount("llm-p", cascade=False)
     assert ctx.has("llm")
     assert "llm-p" in ctx.mount_order
 
-    ctx.unmount("agent")
+    # 默认 cascade：依赖方先停用，再卸提供者
     ctx.unmount("llm-p")
     assert ctx.mount_order == []
+    with pytest.raises(ServiceNotReady):
+        ctx.require("llm")
 
 
 def test_apply_failure_full_rollback_in_assemble(tmp_path: Path) -> None:

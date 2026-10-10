@@ -5,6 +5,7 @@ import logging
 import time
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Protocol
 
 from pocket_agent.checkpoint import CheckpointStore
 from pocket_agent.compressor import ContextCompressor
@@ -16,6 +17,10 @@ from pocket_agent.prompts import CHOOSE_TOOL, FILL_ARGS, FINAL_ANSWER, SYSTEM_BA
 from pocket_agent.tools import Tool, ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+class EventEmitter(Protocol):
+    def emit(self, event: str, payload: dict[str, Any]) -> None: ...
 
 
 class StopReason(Enum):
@@ -49,6 +54,7 @@ class AgentRunner:
         config: AgentConfig,
         llm: LLMClientProtocol,
         registry: ToolRegistry,
+        events: EventEmitter | None = None,
     ) -> None:
         self._config = config
         self._llm = llm
@@ -57,6 +63,11 @@ class AgentRunner:
         self._ledger = CallLedger()
         self._guard = LoopGuard(config)
         self._checkpoints = CheckpointStore()
+        self._events = events
+
+    def _emit(self, event: str, payload: dict[str, Any]) -> None:
+        if self._events is not None:
+            self._events.emit(event, payload)
 
     def run(
         self,
@@ -84,6 +95,7 @@ class AgentRunner:
                 steps, start_step, intercepts = restored
 
         for step in range(start_step, self._config.max_steps + 1):
+            self._emit("step.start", {"step": step, "task": task})
             candidates = self._registry.recall(task, self._config.tool_recall_top_n)
             if not candidates:
                 stop_reason = StopReason.MODEL_DONE
@@ -120,6 +132,10 @@ class AgentRunner:
                     )
                 )
                 intercepts += 1
+                self._emit(
+                    "step.intercepted",
+                    {"step": step, "reason": "format_error", "error": str(exc)},
+                )
                 if run_id:
                     self._dump_checkpoint(run_id, steps, active_ledger)
                 logger.debug(
@@ -156,6 +172,14 @@ class AgentRunner:
                     )
                 )
                 intercepts += 1
+                self._emit(
+                    "step.intercepted",
+                    {
+                        "step": step,
+                        "reason": "choice_out_of_range",
+                        "choice": choice,
+                    },
+                )
                 if run_id:
                     self._dump_checkpoint(run_id, steps, active_ledger)
                 verdict = self._guard.on_step(
@@ -210,6 +234,14 @@ class AgentRunner:
                 result = cached
                 from_cache = True
                 intercepts += 1
+                self._emit(
+                    "step.cache_hit",
+                    {"step": step, "tool": tool.name, "args": args},
+                )
+                self._emit(
+                    "step.intercepted",
+                    {"step": step, "reason": "ledger_cache", "tool": tool.name},
+                )
             else:
                 from_cache = False
                 try:
@@ -219,6 +251,15 @@ class AgentRunner:
                     raw_result = error
                 result = self._compressor.compress_result(str(raw_result))
                 active_ledger.save(tool.name, args, result)
+                self._emit(
+                    "step.tool_call",
+                    {
+                        "step": step,
+                        "tool": tool.name,
+                        "args": args,
+                        "error": error,
+                    },
+                )
 
             steps.append(
                 StepRecord(
@@ -266,6 +307,15 @@ class AgentRunner:
 
         if run_id:
             self._checkpoints.clear(run_id)
+
+        self._emit(
+            "answer.done",
+            {
+                "answer": answer,
+                "stop_reason": stop_reason.value,
+                "total_steps": len(steps),
+            },
+        )
 
         return RunResult(
             answer=answer,

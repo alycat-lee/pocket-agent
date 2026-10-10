@@ -37,6 +37,7 @@ packages = [
     "pocket_agent.checkpoint",
     "pocket_agent.writer",
     "pocket_agent.runtime",
+    "pocket_agent.plugins",
 ]
 
 [tool.pytest.ini_options]

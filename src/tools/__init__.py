@@ -7,6 +7,8 @@ from typing import Any, get_args, get_origin, get_type_hints
 
 from pocket_agent.config import AgentConfig
 
+Disposer = Callable[[], None]
+
 _TYPE_MAP: dict[type, str] = {
     str: "string",
     int: "integer",
@@ -49,6 +51,35 @@ class ToolRegistry:
         )
         self._tools[name] = tool
         return tool
+
+    def register_with_disposer(
+        self,
+        tool: Tool | Callable[..., str],
+        short_desc: str | None = None,
+        *,
+        cacheable: bool = True,
+    ) -> Disposer:
+        """注册工具并返回注销函数（插件卸载时回收）。"""
+        if isinstance(tool, Tool):
+            self._tools[tool.name] = tool
+            name = tool.name
+        else:
+            registered = self.register(tool, short_desc, cacheable=cacheable)
+            name = registered.name
+
+        disposed = False
+
+        def dispose() -> None:
+            nonlocal disposed
+            if disposed:
+                return
+            disposed = True
+            self._tools.pop(name, None)
+
+        return dispose
+
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
 
     def get(self, name: str) -> Tool:
         try:
