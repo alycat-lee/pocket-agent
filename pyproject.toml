@@ -20,10 +20,19 @@ dev = [
 ]
 
 [tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
+package-dir = {"pocket_agent" = "src"}
+packages = [
+    "pocket_agent",
+    "pocket_agent.config",
+    "pocket_agent.llm_client",
+    "pocket_agent.tools",
+    "pocket_agent.demo_tools",
+    "pocket_agent.ledger",
+    "pocket_agent.compressor",
+    "pocket_agent.prompts",
+    "pocket_agent.guard",
+    "pocket_agent.runner",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

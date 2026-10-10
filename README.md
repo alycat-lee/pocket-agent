@@ -66,6 +66,10 @@ python cli.py demo "查询北京和上海的天气并告诉我温差" \
 | `read_file` | 读取本地文件前 2000 字 |
 | `get_current_time` | 当前时间字符串 |
 
+## 源码布局
+
+`src/` 按功能模块分目录（`config/`、`llm_client/`、`tools/`、`runner/` …），经 `pyproject.toml` 的 `package-dir` 映射为导入路径 `pocket_agent.*`。
+
 ## 库用法
 
 ```python
@@ -81,6 +85,7 @@ runner = AgentRunner(config, LlamaCppClient(config), registry)
 result = runner.run("查询北京天气")
 print(result.answer)
 ```
+
 
 ## 测试
 

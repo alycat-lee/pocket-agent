@@ -14,7 +14,7 @@ alwaysApply: true
 - 所有 LLM 交互必须经过 `LLMClientProtocol`。业务模块禁止直接发 HTTP。
 - 接口签名必须与 `docs/03-模块实现规格.md` 完全一致，不得增删改参数名、返回类型或异常类型。
 - 提示词模板必须与 `pocket-agent-docs/04-运行时提示词模板.md` 逐字一致，不得改写、翻译或“优化”。
-- 目录结构遵循 `docs/02-技术架构设计.md` §5。
+- 目录结构遵循 `docs/02-技术架构设计.md` §5：`src/<模块>/` 按功能分目录，禁止再套一层 `src/pocket_agent/`；安装映射为 `pocket_agent.*`。
 - 每写一个模块，同步写对应单元测试。账本、压缩、护栏用 MockLLM，不依赖真实 LLM。
 
 ## 禁止

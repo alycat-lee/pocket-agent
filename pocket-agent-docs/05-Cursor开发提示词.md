@@ -35,10 +35,11 @@
 2. 编写 pyproject.toml：项目名 pocket-agent，Python>=3.10，
    依赖 httpx、pydantic；dev 依赖 pytest、pytest-cov、ruff；
    src 布局（[tool.setuptools] package-dir）
-3. 实现 src/pocket_agent/config.py：严格按规格文档 §1 的 AgentConfig
-4. 实现 src/pocket_agent/llm_client.py 中的三个异常类和
+3. 实现 src/config/：严格按规格文档 §1 的 AgentConfig
+4. 实现 src/llm_client/ 中的三个异常类和
    LLMClientProtocol（Protocol 定义，不含实现）
 5. 配置 pytest（pyproject 内 [tool.pytest.ini_options]，testpaths=tests）
+6. pyproject 将 src/ 映射为包名 pocket_agent（package-dir），src 下按模块分目录、不再套 pocket_agent/
 
 验收：pip install -e ".[dev]" 成功，pytest 空跑通过，ruff check src 无错误。
 ````
@@ -50,7 +51,7 @@
 ````
 @docs/03-模块实现规格.md
 
-实现 src/pocket_agent/tools.py 和 tests/test_tools.py：
+实现 src/tools/ 和 tests/test_tools.py：
 
 1. Tool dataclass、ToolRegistry、@tool 装饰器，接口严格按规格 §3
 2. schema 自动生成：从函数签名的类型注解映射 JSON Schema 类型

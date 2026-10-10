@@ -6,7 +6,6 @@ import time
 from typing import Any, Protocol
 
 import httpx
-
 from pocket_agent.config import AgentConfig
 
 _INT_RE = re.compile(r"-?\d+")

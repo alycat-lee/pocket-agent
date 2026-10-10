@@ -4,7 +4,7 @@ from dataclasses import dataclass
 @dataclass
 class AgentConfig:
     # LLM 服务
-    base_url: str = "http://localhost:8080/v1"
+    base_url: str = "http://localhost:8000/v1"
     model: str = "local-model"  # llama.cpp server 不校验模型名
     timeout: float = 60.0
 
