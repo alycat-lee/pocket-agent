@@ -2,20 +2,23 @@ import type { EventsPage, PluginInfo, SessionInfo } from "./types";
 import type { SchemaField } from "../lib/schemaForm";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    ...init,
-  });
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Content-Type") && init?.body != null) {
+    headers.set("Content-Type", "application/json");
+  }
+  const res = await fetch(url, { ...init, headers });
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail = `${res.status} ${res.statusText}`.trim();
     try {
-      const body = (await res.json()) as { error?: string };
-      if (body.error) detail = body.error;
+      const body = (await res.json()) as { error?: string; detail?: unknown };
+      if (typeof body.error === "string") detail = body.error;
+      else if (body.detail != null) detail = JSON.stringify(body.detail);
     } catch {
       /* ignore */
     }
     throw new Error(detail);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -35,6 +38,13 @@ export function putConfig(
   body: Record<string, unknown>,
 ): Promise<{ ok: boolean; config: Record<string, unknown> }> {
   return json("/api/config", { method: "PUT", body: JSON.stringify(body) });
+}
+
+export function resetConfig(): Promise<{
+  ok: boolean;
+  config: Record<string, unknown>;
+}> {
+  return json("/api/config/reset", { method: "POST", body: "{}" });
 }
 
 export function fetchPlugins(): Promise<PluginInfo[]> {

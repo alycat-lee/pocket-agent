@@ -9,6 +9,8 @@ import type { PluginInfo } from "../api/types";
 export function PluginsPage() {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     const rows = await fetchPlugins();
@@ -24,6 +26,7 @@ export function PluginsPage() {
   return (
     <div className="plugins-layout">
       {error ? <div className="toast-error">{error}</div> : null}
+      {status ? <div className="form-status">{status}</div> : null}
       {plugins.map((p) => (
         <article key={p.name} className="plugin-card">
           <div>
@@ -40,27 +43,37 @@ export function PluginsPage() {
             type="button"
             className={`toggle ${p.enabled ? "on" : ""}`}
             aria-pressed={p.enabled}
+            aria-label={`${p.enabled ? "禁用" : "启用"} ${p.name}`}
             title={p.enabled ? "禁用" : "启用"}
-            onClick={async () => {
-              try {
+            disabled={busy === p.name}
+            onClick={() => {
+              void (async () => {
+                setBusy(p.name);
                 setError(null);
-                if (p.enabled) {
-                  const res = await disablePlugin(p.name);
-                  if (!res.ok) {
-                    setError(res.error || "禁用失败");
-                    return;
+                setStatus(null);
+                try {
+                  if (p.enabled) {
+                    const res = await disablePlugin(p.name);
+                    if (!res.ok) {
+                      setError(res.error || "禁用失败（可能被其它插件依赖）");
+                      return;
+                    }
+                    setStatus(`已禁用 ${p.name}`);
+                  } else {
+                    const res = await enablePlugin(p.name);
+                    if (!res.ok) {
+                      setError(res.error || "启用失败");
+                      return;
+                    }
+                    setStatus(`已启用 ${p.name}`);
                   }
-                } else {
-                  const res = await enablePlugin(p.name);
-                  if (!res.ok) {
-                    setError(res.error || "启用失败");
-                    return;
-                  }
+                  await reload();
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                } finally {
+                  setBusy(null);
                 }
-                await reload();
-              } catch (e) {
-                setError(e instanceof Error ? e.message : String(e));
-              }
+              })();
             }}
           />
         </article>

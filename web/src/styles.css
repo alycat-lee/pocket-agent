@@ -724,8 +724,17 @@ button:disabled {
 }
 
 .settings-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-form-body {
+  flex: 1;
   overflow: auto;
   padding: var(--space-2xl);
+  padding-bottom: var(--space-md);
 }
 
 .field {
@@ -794,10 +803,19 @@ button:disabled {
 
 .form-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-md);
-  margin-top: var(--space-2xl);
-  padding-top: var(--space-xl);
+  padding: var(--space-lg) var(--space-2xl);
   border-top: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+  background: var(--color-panel);
+}
+
+.form-status {
+  flex: 1;
+  min-width: 120px;
+  color: var(--color-accent);
+  font-weight: 500;
 }
 
 .plugins-layout {

@@ -162,6 +162,31 @@ def test_schema_endpoint(tmp_path: Path) -> None:
     ctx.unmount_all()
 
 
+def test_config_reset_clears_settings(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"max_steps": 3, "temperature": 0.9}),
+        encoding="utf-8",
+    )
+    ctx = Context()
+    _stack(ctx, [-1, "x"])
+    app = build_app(
+        ctx,
+        broker=ApprovalBroker(1),
+        settings_path=settings,
+        pocket_data={
+            "plugins": [{"name": "agent-loop", "config": {"max_steps": 10}}]
+        },
+    )
+    res = asyncio.run(_request(app, "POST", "/api/config/reset"))
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+    assert res.json()["config"]["max_steps"] == 10
+    assert not settings.is_file()
+    assert ctx.require("agent")._config.max_steps == 10
+    ctx.unmount_all()
+
+
 def test_events_api_after_chat(tmp_path: Path) -> None:
     store = EventStore(tmp_path / "events")
     ctx = Context()

@@ -130,21 +130,23 @@ export default function App() {
     setFollowTail(true);
   }, []);
 
+  const applyConfigToUi = useCallback((c: Record<string, unknown>) => {
+    if (typeof c.prompt_char_budget === "number") {
+      setPromptBudget(c.prompt_char_budget);
+    }
+    if (typeof c.base_url === "string") setBaseUrl(c.base_url);
+    if (typeof c.max_steps === "number") {
+      setStatus((s) => ({ ...s, maxSteps: c.max_steps as number }));
+    }
+  }, []);
+
   useEffect(() => {
     void reloadSessions();
     void checkHealth();
     fetchConfig()
-      .then((c) => {
-        if (typeof c.prompt_char_budget === "number") {
-          setPromptBudget(c.prompt_char_budget);
-        }
-        if (typeof c.base_url === "string") setBaseUrl(c.base_url);
-        if (typeof c.max_steps === "number") {
-          setStatus((s) => ({ ...s, maxSteps: c.max_steps as number }));
-        }
-      })
+      .then((c) => applyConfigToUi(c))
       .catch(() => undefined);
-  }, [reloadSessions, checkHealth]);
+  }, [reloadSessions, checkHealth, applyConfigToUi]);
 
   useEffect(() => {
     // 切会话：切断上一会话 SSE，避免 EventSource 自动重连再跑一轮
@@ -500,7 +502,7 @@ export default function App() {
             <header className="session-header">
               <div className="session-title">设置</div>
             </header>
-            <SettingsPage />
+            <SettingsPage onConfigSaved={applyConfigToUi} />
           </>
         ) : null}
         {page === "plugins" ? (

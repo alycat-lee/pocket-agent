@@ -244,6 +244,22 @@ def build_app(
             _apply_live_config(merged)
         return JSONResponse({"ok": True, "config": redact_secrets(merged.to_dict())})
 
+    @app.post("/api/config/reset")
+    def api_config_reset() -> JSONResponse:
+        """清空 settings.json，恢复为 pocket.yml / 内置默认并即时生效。"""
+        with config_lock:
+            if settings_file.is_file():
+                try:
+                    settings_file.unlink()
+                except OSError as exc:
+                    return JSONResponse(
+                        {"ok": False, "error": f"无法删除 settings: {exc}"},
+                        500,
+                    )
+            merged = _resolved_config()
+            _apply_live_config(merged)
+        return JSONResponse({"ok": True, "config": redact_secrets(merged.to_dict())})
+
     # ── 插件 API ──────────────────────────────────────────
 
     @app.get("/api/plugins")
