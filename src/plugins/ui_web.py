@@ -37,6 +37,8 @@ _BUS_EVENTS = (
     "approval.required",
     "session.renamed",
     "intent.detected",
+    "session.permission_changed",
+    "session.workspace_changed",
 )
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 
@@ -229,6 +231,8 @@ class ChatIn(BaseModel):
     session_id: str = "default"
     run_id: str | None = None
     overrides: dict[str, Any] = Field(default_factory=dict)
+    workspace_id: str | None = None
+    permission: str = "workspace"
 
 
 class ResumeIn(BaseModel):
@@ -595,6 +599,56 @@ def build_app(
             {"ok": True, "routing": {"choose_fill": body.choose_fill, "generate": body.generate}}
         )
 
+    # ── Workspace API（Phase 21 工作区）────────────────────
+
+    @app.get("/api/workspaces")
+    def api_workspaces_list() -> dict[str, Any]:
+        ws = ctx.require("workspace") if ctx.has("workspace") else None
+        if ws is None:
+            return {"workspaces": [], "available": False}
+        return {
+            "workspaces": [
+                {"id": w.id, "name": w.name, "root": w.root} for w in ws.list()
+            ],
+            "available": True,
+        }
+
+    @app.post("/api/workspaces")
+    def api_workspaces_create(body: dict[str, Any]) -> JSONResponse:
+        if not ctx.has("workspace"):
+            return JSONResponse(
+                {"ok": False, "error": "workspace plugin not mounted"}, 400
+            )
+        ws = ctx.require("workspace")
+        name = str(body.get("name") or "").strip()
+        root = str(body.get("root") or "").strip()
+        if not name or not root:
+            return JSONResponse(
+                {"ok": False, "error": "name and root required"}, 400
+            )
+        created = ws.create(name, root)
+        return JSONResponse(
+            {"ok": True, "workspace": {"id": created.id, "name": created.name, "root": created.root}}
+        )
+
+    @app.put("/api/sessions/{session_id}/workspace")
+    def api_session_bind_workspace(
+        session_id: str, body: dict[str, Any]
+    ) -> JSONResponse:
+        if not ctx.has("workspace"):
+            return JSONResponse(
+                {"ok": False, "error": "workspace plugin not mounted"}, 400
+            )
+        ws = ctx.require("workspace")
+        wid = str(body.get("workspace_id") or "").strip()
+        if not wid:
+            return JSONResponse({"ok": False, "error": "workspace_id required"}, 400)
+        try:
+            ws.bind_session(session_id, wid)
+        except KeyError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, 404)
+        return JSONResponse({"ok": True, "session_id": session_id, "workspace_id": wid})
+
     # ── 插件 API ──────────────────────────────────────────
 
     @app.get("/api/plugins")
@@ -745,6 +799,8 @@ def build_app(
         session_id: str,
         run_id: str | None,
         overrides: dict[str, Any] | None,
+        permission: str = "workspace",
+        workspace_id: str | None = None,
     ) -> None:
         agent = ctx.require("agent")
         rid = run_id or str(uuid.uuid4())
@@ -766,7 +822,11 @@ def build_app(
             if ctx.has("sessions") and run_id is None:
                 # 会话路径：自动 run_id 仅用于 stop，不启用 checkpoint resume
                 ctx.require("sessions").chat(
-                    session_id, message, force_mode=force_mode
+                    session_id,
+                    message,
+                    force_mode=force_mode,
+                    permission=permission,
+                    workspace_id=workspace_id,
                 )
             else:
                 agent.run(message, run_id=run_id, session_id=session_id)
@@ -794,6 +854,8 @@ def build_app(
                 session_id=session_id,
                 run_id=run_id_s,
                 overrides=overrides,
+                permission=str(body.permission or "workspace"),
+                workspace_id=body.workspace_id,
             )
 
         return StreamingResponse(

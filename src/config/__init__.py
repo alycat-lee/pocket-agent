@@ -129,7 +129,7 @@ def load_settings(path: str | Path | None = None) -> dict[str, Any]:
         return {}
     known = AgentConfig.known_keys()
     # providers / routing 是 Phase 20 新增的结构化键，与扁平字段共存
-    extra_keys = {"providers", "default_provider_id", "routing"}
+    extra_keys = {"providers", "default_provider_id", "routing", "workspaces", "session_workspaces"}
     return {k: v for k, v in data.items() if k in known or k in extra_keys}
 
 
@@ -140,7 +140,7 @@ def save_settings(
     """原子写入 settings.json（写临时文件再 rename）。"""
     settings_path = Path(path) if path is not None else DEFAULT_SETTINGS_PATH
     known = AgentConfig.known_keys()
-    extra_keys = {"providers", "default_provider_id", "routing"}
+    extra_keys = {"providers", "default_provider_id", "routing", "workspaces", "session_workspaces"}
     clean = {k: v for k, v in data.items() if k in known or k in extra_keys}
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = settings_path.with_suffix(settings_path.suffix + ".tmp")

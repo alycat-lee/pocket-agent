@@ -14,6 +14,7 @@ from pocket_agent.prompts import (
 )
 from pocket_agent.runner import AgentRunner, EventEmitter, StepRecord
 from pocket_agent.tools import ToolRegistry
+from pocket_agent.workspace import WorkspaceManager
 
 
 class WriterProtocol(Protocol):
@@ -35,6 +36,7 @@ class SessionState:
     rolling_summary: str = ""  # 更早轮次的滚动摘要
     write_op_ledger: CallLedger = field(default_factory=CallLedger)
     title: str = "新会话"
+    _last_permission: str = "workspace"
 
 
 class SessionManager:
@@ -47,6 +49,7 @@ class SessionManager:
         *,
         intent_router: IntentRouter | None = None,
         writer: WriterProtocol | None = None,
+        workspace: WorkspaceManager | None = None,
     ) -> None:
         self._config = config
         self._llm = llm
@@ -54,6 +57,7 @@ class SessionManager:
         self._events = events
         self._intent_router = intent_router or IntentRouter(llm)
         self._writer = writer
+        self._workspace = workspace
         self._sessions: dict[str, SessionState] = {}
         # 测试可观测字段
         self.last_rewritten: str = ""
@@ -76,6 +80,12 @@ class SessionManager:
                 "title": state.title,
                 "turns": len(state.turns),
                 "rolling_summary": state.rolling_summary,
+                "workspace": (
+                    self._workspace.get_session_workspace(state.session_id).name
+                    if self._workspace is not None
+                    else "default"
+                ),
+                "permission": state._last_permission,
             }
             for state in self._sessions.values()
         ]
@@ -86,12 +96,31 @@ class SessionManager:
         user_input: str,
         *,
         force_mode: IntentMode | None = None,
+        permission: str = "workspace",
+        workspace_id: str | None = None,
     ) -> str:
         """多轮对话入口。见文档 07 §1。
 
         force_mode：用户纠正意图时传入，跳过自动分类。
+        permission：readonly / workspace / full，映射审批策略。
+        workspace_id：绑定工作区（None 则不变）。
         """
         state = self.get_state(session_id)
+        # 工作区绑定
+        if workspace_id is not None and self._workspace is not None:
+            self._workspace.bind_session(session_id, workspace_id)
+            if self._events is not None:
+                self._events.emit(
+                    "session.workspace_changed",
+                    {"session_id": session_id, "workspace_id": workspace_id},
+                )
+        # 权限变更事件
+        if self._events is not None and permission != state._last_permission:
+            state._last_permission = permission
+            self._events.emit(
+                "session.permission_changed",
+                {"session_id": session_id, "permission": permission},
+            )
         rewritten = self._rewrite_if_needed(state, user_input)
         self.last_rewritten = rewritten
 
@@ -133,6 +162,7 @@ class SessionManager:
                 ledger=turn_ledger,
                 session_id=session_id,
                 registry=run_registry,
+                permission=permission,
             )
             self.last_result = result
             self._sync_write_ops(state, result.steps)

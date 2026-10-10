@@ -19,7 +19,8 @@ class SessionPlugin:
         llm = ctx.require("llm")
         agent = ctx.require("agent")
         writer = ctx.require("writer") if ctx.has("writer") else None
+        workspace = ctx.require("workspace") if ctx.has("workspace") else None
         manager = SessionManager(
-            ac, llm, agent, events=ctx, writer=writer
+            ac, llm, agent, events=ctx, writer=writer, workspace=workspace
         )
         ctx.provide("sessions", manager)

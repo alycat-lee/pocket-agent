@@ -120,6 +120,7 @@ class AgentRunner:
         ledger: CallLedger | None = None,
         session_id: str | None = None,
         registry: ToolRegistry | None = None,
+        permission: str = "workspace",
     ) -> RunResult:
         """主循环：见规格 §8。仅 LLMConnectionError 允许上抛。
 
@@ -127,9 +128,19 @@ class AgentRunner:
         ledger：外部传入的当轮账本；为 None 时使用实例默认账本。
         session_id：事件落盘与轨迹视图关联的会话 id。
         registry：当轮工具注册表覆盖；为 None 时使用实例默认。qa 模式传空注册表。
+        permission：readonly 禁用写工具、workspace 弹审批、full 免审批。
         """
         active_ledger = ledger if ledger is not None else self._ledger
         active_registry = registry if registry is not None else self._registry
+        # readonly 模式：过滤掉非 cacheable 工具
+        if permission == "readonly":
+            from pocket_agent.tools import ToolRegistry as _TR
+
+            filtered = _TR(self._config)
+            for t in active_registry.all():
+                if t.cacheable:
+                    filtered._tools[t.name] = t
+            active_registry = filtered
         self._guard = LoopGuard(self._config)
         self._stop.clear()
         self._run_session_id = session_id or "default"
@@ -331,7 +342,7 @@ class AgentRunner:
                 )
             else:
                 from_cache = False
-                if not tool.cacheable and self.approval_gate is not None:
+                if not tool.cacheable and self.approval_gate is not None and permission != "full":
                     approval_id = str(uuid.uuid4())
                     approval_payload = {
                         "approval_id": approval_id,
@@ -382,6 +393,9 @@ class AgentRunner:
                             break
                         continue
                 tool_t0 = time.perf_counter()
+                from pocket_agent.tool_context import set_session_id
+
+                set_session_id(self._run_session_id)
                 try:
                     raw_result = tool.fn(**args)
                 except Exception as exc:  # noqa: BLE001 — 规格要求捕获全部工具异常
