@@ -105,8 +105,22 @@ def test_web_profile_listens_and_unmount_releases_port() -> None:
 def test_ui_web_plugin_provides_http_service() -> None:
     port = _free_port()
     ctx = Context()
-    ctx.provide("agent", type("A", (), {"approval_gate": None})())
-    ctx.provide("sessions", type("S", (), {"list_sessions": lambda self: []})())
+
+    class _Agent:
+        approval_gate = None
+
+        def apply_config(self, config: object) -> None:
+            return None
+
+        def request_stop(self) -> None:
+            return None
+
+    class _Sessions:
+        def list_sessions(self) -> list:
+            return []
+
+    ctx.provide("agent", _Agent())
+    ctx.provide("sessions", _Sessions())
     ctx.mount(UiWebPlugin(), {"host": "127.0.0.1", "port": port})
     try:
         assert ctx.has("http")

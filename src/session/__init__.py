@@ -70,7 +70,11 @@ class SessionManager:
 
         turn_ledger = CallLedger()
         turn_ledger.merge_records(state.write_op_ledger)
-        result = self._runner.run(run_task, ledger=turn_ledger)
+        result = self._runner.run(
+            run_task,
+            ledger=turn_ledger,
+            session_id=session_id,
+        )
         self.last_result = result
         self._sync_write_ops(state, result.steps)
 

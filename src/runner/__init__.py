@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -33,6 +34,7 @@ class StopReason(Enum):
     MAX_STEPS = "max_steps"
     CONSECUTIVE_INTERCEPTS = "consecutive_intercepts"
     REPEAT_OUTPUT = "repeat_output"
+    STOPPED = "stopped"  # 用户中断
 
 
 @dataclass
@@ -71,30 +73,72 @@ class AgentRunner:
         self._events = events
         # 由 ui-web 等插件注入；None 时写工具无需审批（CLI/测试零回归）
         self.approval_gate: ApprovalGate | None = None
+        self._stop = threading.Event()
+        self._run_session_id: str = "default"
+
+    def request_stop(self) -> None:
+        """请求中断：下一步循环开头生效，随后 final_answer 优雅收尾。"""
+        self._stop.set()
+
+    def apply_config(self, config: AgentConfig) -> None:
+        """热更新配置（settings / overrides 合并后即时生效）。"""
+        self._config = config
+        self._compressor = ContextCompressor(config, self._llm)
+        self._guard = LoopGuard(config)
+        if hasattr(self._llm, "_config"):
+            self._llm._config = config
+        if hasattr(self._registry, "_config"):
+            self._registry._config = config
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
         if self._events is not None:
-            self._events.emit(event, payload)
+            enriched = dict(payload)
+            enriched.setdefault("session_id", self._run_session_id)
+            self._events.emit(event, enriched)
+
+    def _step_fields(
+        self,
+        *,
+        step: int,
+        t0: float,
+        prompt_tokens_est: int,
+        current_tool: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "step": step,
+            "step_index": step,
+            "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            "current_tool": current_tool,
+            "prompt_tokens_est": prompt_tokens_est,
+            "ttft_ms": None,  # 无 token 时间戳时为 null
+        }
 
     def run(
         self,
         task: str,
         run_id: str | None = None,
         ledger: CallLedger | None = None,
+        session_id: str | None = None,
     ) -> RunResult:
         """主循环：见规格 §8。仅 LLMConnectionError 允许上抛。
 
         run_id 非空时启用断点续跑：每步 dump；启动时恢复；正常完成后 clear。
         ledger：外部传入的当轮账本；为 None 时使用实例默认账本。
+        session_id：事件落盘与轨迹视图关联的会话 id。
         """
         active_ledger = ledger if ledger is not None else self._ledger
         self._guard = LoopGuard(self._config)
+        self._stop.clear()
+        self._run_session_id = session_id or "default"
 
         steps: list[StepRecord] = []
         start_step = 1
         prompt_tokens_max = 0
         intercepts = 0
         stop_reason = StopReason.MAX_STEPS
+        llm_ms = 0.0
+        tool_ms = 0.0
+        run_t0 = time.perf_counter()
 
         if run_id:
             restored = self._restore_checkpoint(run_id, active_ledger)
@@ -102,7 +146,23 @@ class AgentRunner:
                 steps, start_step, intercepts = restored
 
         for step in range(start_step, self._config.max_steps + 1):
-            self._emit("step.start", {"step": step, "task": task})
+            if self._stop.is_set():
+                stop_reason = StopReason.STOPPED
+                break
+
+            t0 = time.perf_counter()
+            self._emit(
+                "step.start",
+                {
+                    "task": task,
+                    **self._step_fields(
+                        step=step,
+                        t0=t0,
+                        prompt_tokens_est=0,
+                        current_tool=None,
+                    ),
+                },
+            )
             candidates = self._registry.recall(task, self._config.tool_recall_top_n)
             if not candidates:
                 stop_reason = StopReason.MODEL_DONE
@@ -113,12 +173,10 @@ class AgentRunner:
             )
             options = self._format_options(candidates)
             choose_prompt = self._build_choose_prompt(task, state, steps, options)
-            prompt_tokens_max = max(
-                prompt_tokens_max,
-                self._compressor.estimate_tokens(choose_prompt),
-            )
+            choose_tokens = self._compressor.estimate_tokens(choose_prompt)
+            prompt_tokens_max = max(prompt_tokens_max, choose_tokens)
 
-            t0 = time.perf_counter()
+            llm_t0 = time.perf_counter()
             try:
                 choice = self._llm.generate_int(
                     choose_prompt,
@@ -126,7 +184,7 @@ class AgentRunner:
                     maximum=len(candidates) - 1,
                 )
             except LLMFormatError as exc:
-                # 本步作废：记入历史，计 1 次拦截计入护栏，不向上抛
+                llm_ms += (time.perf_counter() - llm_t0) * 1000
                 result = f"[格式错误] {exc}"
                 steps.append(
                     StepRecord(
@@ -141,7 +199,15 @@ class AgentRunner:
                 intercepts += 1
                 self._emit(
                     "step.intercepted",
-                    {"step": step, "reason": "format_error", "error": str(exc)},
+                    {
+                        "reason": "format_error",
+                        "error": str(exc),
+                        **self._step_fields(
+                            step=step,
+                            t0=t0,
+                            prompt_tokens_est=choose_tokens,
+                        ),
+                    },
                 )
                 if run_id:
                     self._dump_checkpoint(run_id, steps, active_ledger)
@@ -149,7 +215,7 @@ class AgentRunner:
                     "step=%s tool=(format_error) args={{}} cache=miss "
                     "tokens≈%s elapsed=%.3fs",
                     step,
-                    self._compressor.estimate_tokens(choose_prompt),
+                    choose_tokens,
                     time.perf_counter() - t0,
                 )
                 verdict = self._guard.on_step(
@@ -161,12 +227,12 @@ class AgentRunner:
                     stop_reason = StopReason(verdict.reason)
                     break
                 continue
+            llm_ms += (time.perf_counter() - llm_t0) * 1000
 
             if choice == -1:
                 stop_reason = StopReason.MODEL_DONE
                 break
             if choice < 0 or choice >= len(candidates):
-                # 越界编号：同样按本步作废 + 拦截处理
                 result = f"[格式错误] choice out of range: {choice}"
                 steps.append(
                     StepRecord(
@@ -182,9 +248,13 @@ class AgentRunner:
                 self._emit(
                     "step.intercepted",
                     {
-                        "step": step,
                         "reason": "choice_out_of_range",
                         "choice": choice,
+                        **self._step_fields(
+                            step=step,
+                            t0=t0,
+                            prompt_tokens_est=choose_tokens,
+                        ),
                     },
                 )
                 if run_id:
@@ -201,14 +271,14 @@ class AgentRunner:
 
             tool = candidates[choice]
             fill_prompt = self._build_fill_prompt(task, state, tool)
-            prompt_tokens_max = max(
-                prompt_tokens_max,
-                self._compressor.estimate_tokens(fill_prompt),
-            )
+            fill_tokens = self._compressor.estimate_tokens(fill_prompt)
+            prompt_tokens_max = max(prompt_tokens_max, fill_tokens)
 
+            llm_t0 = time.perf_counter()
             try:
                 args = self._llm.generate_json(fill_prompt, tool.schema)
             except LLMFormatError as exc:
+                llm_ms += (time.perf_counter() - llm_t0) * 1000
                 result = f"[工具错误] {exc}"
                 record = StepRecord(
                     step=step,
@@ -226,7 +296,7 @@ class AgentRunner:
                     step,
                     tool.name,
                     {},
-                    self._compressor.estimate_tokens(fill_prompt),
+                    fill_tokens,
                     time.perf_counter() - t0,
                 )
                 verdict = self._guard.on_step(step, f"{choice}:{{}}", intercepted=False)
@@ -234,6 +304,7 @@ class AgentRunner:
                     stop_reason = StopReason(verdict.reason)
                     break
                 continue
+            llm_ms += (time.perf_counter() - llm_t0) * 1000
 
             cached = active_ledger.check(tool.name, args)
             error: str | None = None
@@ -241,13 +312,19 @@ class AgentRunner:
                 result = cached
                 from_cache = True
                 intercepts += 1
+                meta = self._step_fields(
+                    step=step,
+                    t0=t0,
+                    prompt_tokens_est=fill_tokens,
+                    current_tool=tool.name,
+                )
                 self._emit(
                     "step.cache_hit",
-                    {"step": step, "tool": tool.name, "args": args},
+                    {"tool": tool.name, "args": args, **meta},
                 )
                 self._emit(
                     "step.intercepted",
-                    {"step": step, "reason": "ledger_cache", "tool": tool.name},
+                    {"reason": "ledger_cache", "tool": tool.name, **meta},
                 )
             else:
                 from_cache = False
@@ -259,6 +336,7 @@ class AgentRunner:
                         "tool": tool.name,
                         "args": args,
                         "timeout_sec": 60,
+                        "session_id": self._run_session_id,
                     }
                     self._emit("approval.required", approval_payload)
                     if not self.approval_gate(approval_payload):
@@ -268,10 +346,15 @@ class AgentRunner:
                         self._emit(
                             "step.intercepted",
                             {
-                                "step": step,
                                 "reason": "approval_denied",
                                 "tool": tool.name,
                                 "approval_id": approval_id,
+                                **self._step_fields(
+                                    step=step,
+                                    t0=t0,
+                                    prompt_tokens_est=fill_tokens,
+                                    current_tool=tool.name,
+                                ),
                             },
                         )
                         steps.append(
@@ -295,20 +378,27 @@ class AgentRunner:
                             stop_reason = StopReason(verdict.reason)
                             break
                         continue
+                tool_t0 = time.perf_counter()
                 try:
                     raw_result = tool.fn(**args)
                 except Exception as exc:  # noqa: BLE001 — 规格要求捕获全部工具异常
                     error = f"[工具错误] {exc}"
                     raw_result = error
+                tool_ms += (time.perf_counter() - tool_t0) * 1000
                 result = self._compressor.compress_result(str(raw_result))
                 active_ledger.save(tool.name, args, result)
                 self._emit(
                     "step.tool_call",
                     {
-                        "step": step,
                         "tool": tool.name,
                         "args": args,
                         "error": error,
+                        **self._step_fields(
+                            step=step,
+                            t0=t0,
+                            prompt_tokens_est=fill_tokens,
+                            current_tool=tool.name,
+                        ),
                     },
                 )
 
@@ -331,7 +421,7 @@ class AgentRunner:
                 tool.name,
                 args,
                 "hit" if from_cache else "miss",
-                self._compressor.estimate_tokens(choose_prompt),
+                choose_tokens,
                 time.perf_counter() - t0,
             )
 
@@ -346,25 +436,49 @@ class AgentRunner:
         else:
             stop_reason = StopReason.MAX_STEPS
 
+        if self._stop.is_set() and stop_reason != StopReason.STOPPED:
+            stop_reason = StopReason.STOPPED
+
         final_prompt = self._build_final_prompt(task, steps)
-        prompt_tokens_max = max(
-            prompt_tokens_max,
-            self._compressor.estimate_tokens(final_prompt),
-        )
+        final_tokens = self._compressor.estimate_tokens(final_prompt)
+        prompt_tokens_max = max(prompt_tokens_max, final_tokens)
+        llm_t0 = time.perf_counter()
         try:
             answer = self._llm.generate(final_prompt)
         except LLMFormatError as exc:
             answer = f"[生成回答失败] {exc}"
+        llm_ms += (time.perf_counter() - llm_t0) * 1000
 
         if run_id:
             self._checkpoints.clear(run_id)
 
+        real_calls = active_ledger.real_call_count
+        cache_hits = active_ledger.hit_count
+        denom = real_calls + cache_hits
+        if denom == 0:
+            cache_hit_rate = 0.0
+        else:
+            cache_hit_rate = cache_hits / denom
+            # 不谎报：仅真满命中才为 1.0
+            if cache_hit_rate >= 1.0 and cache_hits != denom:
+                cache_hit_rate = cache_hits / denom
+
+        settlement = {
+            "llm_ms": round(llm_ms, 3),
+            "tool_ms": round(tool_ms, 3),
+            "cache_hit_rate": cache_hit_rate,
+            "real_calls": real_calls,
+            "intercepts": intercepts,
+            "prompt_tokens_max": prompt_tokens_max,
+            "elapsed_ms": int((time.perf_counter() - run_t0) * 1000),
+        }
         self._emit(
             "answer.done",
             {
                 "answer": answer,
                 "stop_reason": stop_reason.value,
                 "total_steps": len(steps),
+                **settlement,
             },
         )
 
@@ -374,10 +488,11 @@ class AgentRunner:
             stop_reason=stop_reason,
             stats={
                 "total_steps": len(steps),
-                "real_calls": active_ledger.real_call_count,
-                "cache_hits": active_ledger.hit_count,
+                "real_calls": real_calls,
+                "cache_hits": cache_hits,
                 "intercepts": intercepts,
                 "prompt_tokens_max": prompt_tokens_max,
+                **settlement,
             },
         )
 

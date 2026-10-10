@@ -6,12 +6,22 @@ import queue
 import socket
 import threading
 import time
-from collections.abc import Callable, Iterator
+import uuid
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pocket_agent.runtime import Context, PluginError
-from pydantic import BaseModel
+from pocket_agent.config import (
+    AgentConfig,
+    extract_base_from_pocket,
+    load_settings,
+    redact_secrets,
+    save_settings,
+)
+from pocket_agent.config_schema import get_config_schema
+from pocket_agent.events import EventStore
+from pocket_agent.runtime import Context, PluginError, PluginInUse
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +42,7 @@ class ChatIn(BaseModel):
     task: str = ""
     session_id: str = "default"
     run_id: str | None = None
+    overrides: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResumeIn(BaseModel):
@@ -83,10 +94,32 @@ def _port_in_use(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
+def attach_event_persistence(
+    ctx: Context,
+    store: EventStore,
+) -> list[Callable[[], None]]:
+    """订阅总线事件并同步落盘；返回 disposer 列表。"""
+
+    def _persist(event_name: str) -> Callable[[dict[str, Any]], None]:
+        def _handler(payload: dict[str, Any]) -> None:
+            sid = str(payload.get("session_id") or "default")
+            store.append(sid, event_name, dict(payload))
+
+        return _handler
+
+    return [ctx.on(name, _persist(name)) for name in _BUS_EVENTS]
+
+
 def build_app(
     ctx: Context,
     *,
     broker: ApprovalBroker,
+    event_store: EventStore | None = None,
+    settings_path: Path | str | None = None,
+    pocket_data: dict[str, Any] | None = None,
+    plugin_catalog: Mapping[str, Any] | None = None,
+    plugin_configs: dict[str, dict[str, Any]] | None = None,
+    active_runs: dict[str, Any] | None = None,
 ) -> Any:
     """构造 FastAPI app（供插件启动与 ASGI 测试复用）。"""
     try:
@@ -100,8 +133,30 @@ def build_app(
 
     app = FastAPI(title="pocket-agent web")
     chat_lock = threading.Lock()
+    config_lock = threading.Lock()
+    store = event_store or EventStore()
+    settings_file = Path(settings_path) if settings_path is not None else Path("settings.json")
+    pocket = pocket_data or {}
+    catalog = plugin_catalog or {}
+    configs = plugin_configs or {}
+    runs = active_runs if active_runs is not None else {}
+
     if _STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+    def _base_layer() -> dict[str, Any]:
+        return extract_base_from_pocket(pocket)
+
+    def _resolved_config(overrides: dict[str, Any] | None = None) -> AgentConfig:
+        return AgentConfig.from_layers(
+            base=_base_layer(),
+            settings=load_settings(settings_file),
+            overrides=overrides,
+        )
+
+    def _apply_live_config(config: AgentConfig) -> None:
+        if ctx.has("agent"):
+            ctx.require("agent").apply_config(config)
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
@@ -127,10 +182,133 @@ def build_app(
             }
         )
 
+    # ── 配置 API ──────────────────────────────────────────
+
+    @app.get("/api/config/schema")
+    def api_config_schema() -> list[dict[str, Any]]:
+        return get_config_schema()
+
+    @app.get("/api/config")
+    def api_config_get() -> dict[str, Any]:
+        cfg = _resolved_config()
+        return redact_secrets(cfg.to_dict())
+
+    @app.put("/api/config")
+    def api_config_put(body: dict[str, Any]) -> JSONResponse:
+        with config_lock:
+            current = load_settings(settings_file)
+            known = AgentConfig.known_keys()
+            for key, value in body.items():
+                if key in known:
+                    # 脱敏回传值不覆盖明文密钥
+                    if key == "api_key" and isinstance(value, str) and "***" in value:
+                        continue
+                    current[key] = value
+            save_settings(current, settings_file)
+            merged = _resolved_config()
+            _apply_live_config(merged)
+        return JSONResponse({"ok": True, "config": redact_secrets(merged.to_dict())})
+
+    # ── 插件 API ──────────────────────────────────────────
+
+    @app.get("/api/plugins")
+    def api_plugins() -> list[dict[str, Any]]:
+        mounted = set(ctx.mount_order)
+        rows: list[dict[str, Any]] = []
+        for name, plugin in catalog.items():
+            rows.append(
+                {
+                    "name": name,
+                    "requires": list(getattr(plugin, "requires", []) or []),
+                    "provides": list(getattr(plugin, "provides", []) or []),
+                    "enabled": name in mounted,
+                    "active": name in mounted,
+                }
+            )
+        return rows
+
+    @app.post("/api/plugins/{name}/enable")
+    def api_plugin_enable(name: str) -> JSONResponse:
+        if name not in catalog:
+            return JSONResponse({"ok": False, "error": f"unknown plugin: {name}"}, 404)
+        if name in ctx.mount_order:
+            return JSONResponse({"ok": True, "status": "already_enabled"})
+        plugin = catalog[name]
+        cfg = dict(configs.get(name) or {})
+        prepare = getattr(plugin, "prepare", None)
+        if callable(prepare):
+            prepare(cfg)
+        try:
+            ctx.mount(plugin, cfg)
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": str(exc)}, 400)
+        return JSONResponse({"ok": True, "status": "enabled"})
+
+    @app.post("/api/plugins/{name}/disable")
+    def api_plugin_disable(name: str) -> JSONResponse:
+        if name == "ui-web":
+            return JSONResponse(
+                {"ok": False, "error": "cannot disable ui-web while serving"},
+                400,
+            )
+        if name not in ctx.mount_order:
+            return JSONResponse({"ok": True, "status": "already_disabled"})
+        try:
+            ctx.unmount(name, cascade=False)
+        except PluginInUse as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, 409)
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": str(exc)}, 400)
+        return JSONResponse({"ok": True, "status": "disabled"})
+
+    # ── 会话事件 / 导出 ───────────────────────────────────
+
+    @app.get("/api/sessions/{session_id}/events")
+    def api_session_events(
+        session_id: str,
+        before: int | None = Query(None),
+        limit: int = Query(50, ge=0, le=500),
+    ) -> dict[str, Any]:
+        return store.list_before(session_id, before=before, limit=limit)
+
+    @app.get("/api/sessions/{session_id}/export")
+    def api_session_export(session_id: str) -> dict[str, Any]:
+        events = store.export_all(session_id)
+        turns: list[dict[str, Any]] = []
+        if ctx.has("sessions"):
+            try:
+                state = ctx.require("sessions").get_state(session_id)
+                turns = [
+                    {
+                        "turn": t.turn,
+                        "query_raw": t.query_raw,
+                        "query_rewritten": t.query_rewritten,
+                        "answer": t.answer,
+                    }
+                    for t in state.turns
+                ]
+            except Exception:  # noqa: BLE001
+                turns = []
+        return {
+            "session_id": session_id,
+            "turns": turns,
+            "events": events,
+            "warning": "日志可能包含路径、prompt 与工具参数，分享前请脱敏",
+        }
+
+    # ── 停止 ──────────────────────────────────────────────
+
+    @app.post("/api/chat/{run_id}/stop")
+    def api_chat_stop(run_id: str) -> JSONResponse:
+        runner = runs.get(run_id)
+        if runner is None:
+            return JSONResponse({"ok": False, "error": "run not found"}, 404)
+        runner.request_stop()
+        return JSONResponse({"ok": True, "run_id": run_id})
+
     def _sse_stream(
         run_fn: Callable[[], None],
     ) -> Iterator[bytes]:
-        # 单飞：避免多路 SSE 交叉订阅同一事件总线
         chat_lock.acquire()
         q: queue.Queue[dict[str, Any] | None] = queue.Queue()
         disposers: list[Callable[[], None]] = []
@@ -155,12 +333,7 @@ def build_app(
             try:
                 run_fn()
             except Exception as exc:  # noqa: BLE001 — 推送到 SSE 后结束
-                q.put(
-                    {
-                        "event": "error",
-                        "data": {"message": str(exc)},
-                    }
-                )
+                q.put({"event": "error", "data": {"message": str(exc)}})
             finally:
                 q.put(None)
 
@@ -180,7 +353,36 @@ def build_app(
             thread.join(timeout=30)
             _release_lock()
 
+    def _run_chat(
+        *,
+        message: str,
+        session_id: str,
+        run_id: str | None,
+        overrides: dict[str, Any] | None,
+    ) -> None:
+        agent = ctx.require("agent")
+        rid = run_id or str(uuid.uuid4())
+        base_cfg = _resolved_config()
+        live = AgentConfig.from_layers(
+            base=_base_layer(),
+            settings=load_settings(settings_file),
+            overrides=overrides or {},
+        )
+        agent.apply_config(live)
+        runs[rid] = agent
+        try:
+            if ctx.has("sessions") and run_id is None:
+                # 会话路径：自动 run_id 仅用于 stop，不启用 checkpoint resume
+                ctx.require("sessions").chat(session_id, message)
+            else:
+                agent.run(message, run_id=run_id, session_id=session_id)
+        finally:
+            runs.pop(rid, None)
+            # overrides 不污染 settings：恢复 settings 层
+            agent.apply_config(base_cfg)
+
     @app.post("/chat")
+    @app.post("/api/chat")
     def chat_post(body: ChatIn) -> StreamingResponse:
         message = str(body.message or body.task or "").strip()
         if not message:
@@ -190,12 +392,15 @@ def build_app(
             )
         session_id = str(body.session_id or "default")
         run_id_s = str(body.run_id) if body.run_id else None
+        overrides = dict(body.overrides or {})
 
         def _run() -> None:
-            if ctx.has("sessions") and run_id_s is None:
-                ctx.require("sessions").chat(session_id, message)
-            else:
-                ctx.require("agent").run(message, run_id=run_id_s)
+            _run_chat(
+                message=message,
+                session_id=session_id,
+                run_id=run_id_s,
+                overrides=overrides,
+            )
 
         return StreamingResponse(
             _sse_stream(_run),
@@ -222,10 +427,12 @@ def build_app(
             )
 
         def _run() -> None:
-            if ctx.has("sessions") and not run_id:
-                ctx.require("sessions").chat(session_id, text)
-            else:
-                ctx.require("agent").run(text, run_id=run_id)
+            _run_chat(
+                message=text,
+                session_id=session_id,
+                run_id=run_id,
+                overrides=None,
+            )
 
         return StreamingResponse(
             _sse_stream(_run),
@@ -247,7 +454,12 @@ def build_app(
             )
 
         def _run() -> None:
-            ctx.require("agent").run(task, run_id=run_id)
+            _run_chat(
+                message=task,
+                session_id="default",
+                run_id=run_id,
+                overrides=None,
+            )
 
         return StreamingResponse(
             _sse_stream(_run),
@@ -280,12 +492,56 @@ class UiWebPlugin:
         host = str(config.get("host") or "127.0.0.1")
         port = int(config.get("port") or 3000)
         timeout = float(config.get("approval_timeout") or _DEFAULT_APPROVAL_TIMEOUT)
+        settings_path = Path(str(config.get("settings_path") or "settings.json"))
+        events_root = config.get("events_root")
+        event_store = EventStore(
+            Path(events_root) if events_root is not None else None
+        )
         broker = ApprovalBroker(timeout_sec=timeout)
+
+        # pocket.yml 默认层（可由装配方注入）
+        pocket_data = config.get("pocket_data")
+        if not isinstance(pocket_data, dict):
+            pocket_path = config.get("pocket_path")
+            if pocket_path:
+                from pocket_agent.runtime import load_pocket_config
+
+                pocket_data = load_pocket_config(pocket_path)
+            else:
+                pocket_data = {}
+
+        plugin_catalog = config.get("plugin_catalog") or {}
+        plugin_configs = config.get("plugin_configs") or {}
+        if not isinstance(plugin_catalog, dict):
+            plugin_catalog = {}
+        if not isinstance(plugin_configs, dict):
+            plugin_configs = {}
+
+        active_runs: dict[str, Any] = {}
 
         agent = ctx.require("agent")
         agent.approval_gate = broker.request
+        # 启动时应用 settings 层
+        agent.apply_config(
+            AgentConfig.from_layers(
+                base=extract_base_from_pocket(pocket_data),
+                settings=load_settings(settings_path),
+            )
+        )
 
-        app = build_app(ctx, broker=broker)
+        # 事件持久化：总线全部步骤事件同步落盘
+        persist_disposers = attach_event_persistence(ctx, event_store)
+
+        app = build_app(
+            ctx,
+            broker=broker,
+            event_store=event_store,
+            settings_path=settings_path,
+            pocket_data=pocket_data,
+            plugin_catalog=plugin_catalog,
+            plugin_configs=plugin_configs,
+            active_runs=active_runs,
+        )
         uvi_config = uvicorn.Config(
             app,
             host=host,
@@ -312,12 +568,12 @@ class UiWebPlugin:
                 return
             closed.set()
             agent.approval_gate = None
+            for d in persist_disposers:
+                d()
             server.should_exit = True
-            # uvicorn 0.2x: force exit flag
             if hasattr(server, "force_exit"):
                 server.force_exit = True
             thread.join(timeout=8)
-            # 等端口释放（计入 disposer 验收）
             release_deadline = time.time() + 5.0
             while _port_in_use(host, port) and time.time() < release_deadline:
                 time.sleep(0.05)
@@ -333,6 +589,9 @@ class UiWebPlugin:
                 "app": app,
                 "server": server,
                 "broker": broker,
+                "event_store": event_store,
+                "settings_path": settings_path,
+                "active_runs": active_runs,
             },
         )
         logger.info("ui-web listening on http://%s:%s", host, port)

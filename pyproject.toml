@@ -31,6 +31,8 @@ package-dir = {"pocket_agent" = "src"}
 packages = [
     "pocket_agent",
     "pocket_agent.config",
+    "pocket_agent.config_schema",
+    "pocket_agent.events",
     "pocket_agent.llm_client",
     "pocket_agent.tools",
     "pocket_agent.demo_tools",

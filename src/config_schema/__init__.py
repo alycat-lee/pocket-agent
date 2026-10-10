@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+from dataclasses import fields
+from typing import Any, Literal
+
+from pocket_agent.config import AgentConfig
+
+FieldType = Literal["string", "number", "integer", "boolean"]
+
+
+def _item(
+    key: str,
+    *,
+    type: FieldType,
+    group: str,
+    description: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    enum: list[Any] | None = None,
+    secret: bool = False,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "key": key,
+        "type": type,
+        "group": group,
+        "description": description,
+    }
+    if minimum is not None:
+        item["min"] = minimum
+    if maximum is not None:
+        item["max"] = maximum
+    if enum is not None:
+        item["enum"] = enum
+    if secret:
+        item["secret"] = True
+    return item
+
+
+# 声明式配置元数据——设置页唯一数据源；新增 AgentConfig 字段必须在此登记
+CONFIG_SCHEMA: list[dict[str, Any]] = [
+    # 模型
+    _item(
+        "base_url",
+        type="string",
+        group="模型",
+        description="LLM OpenAI 兼容接口地址",
+    ),
+    _item(
+        "model",
+        type="string",
+        group="模型",
+        description="模型名称（llama.cpp 可不校验）",
+    ),
+    _item(
+        "api_key",
+        type="string",
+        group="模型",
+        description="云端 API Key（只写不读，返回时脱敏）",
+        secret=True,
+    ),
+    _item(
+        "temperature",
+        type="number",
+        group="模型",
+        description="采样温度",
+        minimum=0.0,
+        maximum=2.0,
+    ),
+    _item(
+        "repeat_penalty",
+        type="number",
+        group="模型",
+        description="重复惩罚",
+        minimum=1.0,
+        maximum=2.0,
+    ),
+    _item(
+        "top_p",
+        type="number",
+        group="模型",
+        description="核采样 top_p",
+        minimum=0.0,
+        maximum=1.0,
+    ),
+    _item(
+        "max_tokens",
+        type="integer",
+        group="模型",
+        description="单次生成最大输出 token",
+        minimum=1,
+        maximum=128000,
+    ),
+    _item(
+        "timeout",
+        type="number",
+        group="模型",
+        description="HTTP 请求超时（秒）",
+        minimum=1.0,
+        maximum=600.0,
+    ),
+    # 上下文
+    _item(
+        "prompt_char_budget",
+        type="integer",
+        group="上下文预算",
+        description="提示词字符预算",
+        minimum=500,
+        maximum=100000,
+    ),
+    _item(
+        "per_result_limit",
+        type="integer",
+        group="上下文预算",
+        description="单条工具结果压缩上限（字符）",
+        minimum=50,
+        maximum=10000,
+    ),
+    _item(
+        "summarize_input_limit",
+        type="integer",
+        group="上下文预算",
+        description="摘要器输入上限（字符）",
+        minimum=100,
+        maximum=50000,
+    ),
+    _item(
+        "use_llm_summarize",
+        type="boolean",
+        group="上下文预算",
+        description="是否用 LLM 做结果摘要（默认规则截断）",
+    ),
+    # 护栏
+    _item(
+        "max_steps",
+        type="integer",
+        group="护栏",
+        description="单轮最大工具步数",
+        minimum=1,
+        maximum=100,
+    ),
+    _item(
+        "max_consecutive_intercepts",
+        type="integer",
+        group="护栏",
+        description="连续拦截上限后停止",
+        minimum=1,
+        maximum=20,
+    ),
+    # 会话
+    _item(
+        "keep_full_turns",
+        type="integer",
+        group="会话",
+        description="保留完整记录的轮数",
+        minimum=1,
+        maximum=100,
+    ),
+    _item(
+        "session_summary_limit",
+        type="integer",
+        group="会话",
+        description="滚动摘要字符上限",
+        minimum=50,
+        maximum=10000,
+    ),
+    # 长文
+    _item(
+        "section_char_target",
+        type="integer",
+        group="长文写作",
+        description="每段目标字数",
+        minimum=100,
+        maximum=10000,
+    ),
+    _item(
+        "seam_tail_chars",
+        type="integer",
+        group="长文写作",
+        description="接缝上下文长度",
+        minimum=0,
+        maximum=5000,
+    ),
+    _item(
+        "overlap_max",
+        type="integer",
+        group="长文写作",
+        description="拼接去重最大重叠窗口",
+        minimum=0,
+        maximum=2000,
+    ),
+    # 工具
+    _item(
+        "tool_recall_threshold",
+        type="integer",
+        group="工具",
+        description="超过此工具数启用关键词召回",
+        minimum=1,
+        maximum=1000,
+    ),
+    _item(
+        "tool_recall_top_n",
+        type="integer",
+        group="工具",
+        description="召回返回的候选工具数",
+        minimum=1,
+        maximum=50,
+    ),
+    # 路由
+    _item(
+        "route_cloud",
+        type="boolean",
+        group="模型路由",
+        description="复杂生成（final_answer/section_write）走云端",
+    ),
+]
+
+
+def get_config_schema() -> list[dict[str, Any]]:
+    """返回配置 schema 副本（设置页数据源）。"""
+    return [dict(item) for item in CONFIG_SCHEMA]
+
+
+def schema_keys() -> set[str]:
+    return {str(item["key"]) for item in CONFIG_SCHEMA}
+
+
+def assert_schema_covers_agent_config() -> None:
+    """开发期断言：AgentConfig 每个字段都在 schema 中登记。"""
+    config_keys = {f.name for f in fields(AgentConfig)}
+    missing = config_keys - schema_keys()
+    extra = schema_keys() - config_keys
+    if missing or extra:
+        raise AssertionError(
+            f"config schema mismatch: missing={sorted(missing)} extra={sorted(extra)}"
+        )

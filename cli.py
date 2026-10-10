@@ -193,6 +193,7 @@ def _prepare_config(
         raise SystemExit("pocket.yml plugins must be a list")
 
     resolved_base = base_url or AgentConfig().base_url
+    plugin_configs: dict[str, dict[str, Any]] = {}
     for entry in plugins:
         if not isinstance(entry, dict):
             continue
@@ -205,6 +206,19 @@ def _prepare_config(
             cfg["base_url"] = resolved_base
         if name == "ui-cli" and verbose:
             cfg["verbose"] = True
+        if isinstance(name, str):
+            plugin_configs[name] = dict(cfg)
+    for entry in plugins:
+        if not isinstance(entry, dict) or entry.get("name") != "ui-web":
+            continue
+        cfg = entry.setdefault("config", {})
+        if not isinstance(cfg, dict):
+            entry["config"] = {}
+            cfg = entry["config"]
+        cfg["pocket_data"] = data
+        cfg["pocket_path"] = str(config_path)
+        cfg["plugin_catalog"] = builtin_plugins()
+        cfg["plugin_configs"] = plugin_configs
     return data
 
 
