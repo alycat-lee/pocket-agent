@@ -206,10 +206,14 @@ def test_api_health_reports_llm_flag() -> None:
     _mount_stack(ctx, [-1, "x"])
     broker = ApprovalBroker(timeout_sec=1)
     app = build_app(ctx, broker=broker)
+    t0 = time.perf_counter()
     health = asyncio.run(_get_json(app, "/api/health"))
+    elapsed = time.perf_counter() - t0
     assert health["ok"] is True
     assert "llm" in health
     assert "base_url" in health
+    # TCP 探测须快速返回，避免拖垮启动页
+    assert elapsed < 2.0
     ctx.unmount_all()
 
 

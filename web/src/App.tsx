@@ -426,37 +426,6 @@ export default function App() {
     setPage("session");
   };
 
-  if (offline && page === "session") {
-    return (
-      <div className="app-shell">
-        <Sidebar
-          sessions={sessions}
-          activeSession={sessionId}
-          page={page}
-          onSelectSession={setSessionId}
-          onNewSession={newSession}
-          onPage={setPage}
-        />
-        <main className="main">
-          <div className="mobile-nav" aria-label="移动导航">
-            <button type="button" className="btn-ghost bordered" onClick={() => setPage("settings")}>
-              设置
-            </button>
-            <button type="button" className="btn-ghost bordered" onClick={() => setPage("plugins")}>
-              插件
-            </button>
-          </div>
-          <GuidePage
-            baseUrl={baseUrl}
-            onRetry={() => {
-              void checkHealth();
-            }}
-          />
-        </main>
-      </div>
-    );
-  }
-
   return (
     <div className="app-shell">
       <Sidebar
@@ -558,7 +527,15 @@ export default function App() {
                   }}
                 />
               ) : null}
-              {view === "chat" ? (
+              {view === "chat" && offline ? (
+                <GuidePage
+                  baseUrl={baseUrl}
+                  onRetry={() => {
+                    void checkHealth();
+                  }}
+                />
+              ) : null}
+              {view === "chat" && !offline ? (
                 <ChatView
                   messages={messages}
                   errorHint={softError}
@@ -573,7 +550,8 @@ export default function App() {
                     setFocusId(hit?.id ?? records[records.length - 1]?.id ?? null);
                   }}
                 />
-              ) : (
+              ) : null}
+              {view === "trajectory" ? (
                 <TrajectoryView
                   records={records}
                   hasMore={hasMore}
@@ -627,7 +605,7 @@ export default function App() {
                     URL.revokeObjectURL(url);
                   }}
                 />
-              )}
+              ) : null}
               <Composer
                 mode={mode}
                 permission={permission}

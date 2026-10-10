@@ -1,5 +1,6 @@
-# headless：自动跳过 ui-web；切 profile: web 后浏览器访问 http://127.0.0.1:3000
-# 启动：python cli.py serve
+# headless：跳过 ui-web；web：加载 UI（浏览器 http://127.0.0.1:3000）
+# 启动 Web：python cli.py serve --profile web
+# 或将下方改为 profile: web 后执行：python cli.py serve
 profile: headless
 plugins:
   - name: llm-llamacpp

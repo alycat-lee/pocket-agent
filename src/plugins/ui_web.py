@@ -161,28 +161,21 @@ def build_app(
         if ctx.has("agent"):
             ctx.require("agent").apply_config(config)
 
-    def _probe_llm(base_url: str, timeout: float = 1.5) -> tuple[bool, str]:
-        """探测 llama-server / OpenAI 兼容端点是否可达。"""
-        import urllib.error
-        import urllib.request
+    def _probe_llm(base_url: str, timeout: float = 0.35) -> tuple[bool, str]:
+        """快速探测 LLM 端口是否可达（TCP，避免 HTTP 挂起拖垮启动页）。"""
+        from urllib.parse import urlparse
 
-        root = base_url.rstrip("/")
-        candidates = [f"{root}/health", f"{root}/v1/models", f"{root}/models"]
-        last = "unreachable"
-        for url in candidates:
-            try:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    if 200 <= int(resp.status) < 500:
-                        return True, ""
-            except urllib.error.HTTPError as exc:
-                # 401/404 仍说明服务在线
-                if exc.code in {401, 403, 404}:
-                    return True, ""
-                last = str(exc)
-            except Exception as exc:  # noqa: BLE001
-                last = str(exc)
-        return False, last
+        parsed = urlparse(base_url if "://" in base_url else f"http://{base_url}")
+        host = parsed.hostname or "127.0.0.1"
+        if parsed.port is not None:
+            port = int(parsed.port)
+        else:
+            port = 443 if parsed.scheme == "https" else 80
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True, ""
+        except OSError as exc:
+            return False, str(exc)
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
