@@ -34,25 +34,19 @@ export function setMode(sessionId: string, mode: ChatMode): void {
 
 export function getPermission(sessionId: string): PermissionMode {
   const v = localStorage.getItem(PERM_KEY + sessionId);
-  if (v === "readonly" || v === "confirm_write" || v === "auto") return v;
-  return "confirm_write";
+  if (v === "readonly" || v === "workspace" || v === "full") return v;
+  return "workspace";
 }
 
 export function setPermission(sessionId: string, mode: PermissionMode): void {
   localStorage.setItem(PERM_KEY + sessionId, mode);
 }
 
-/** 模式/权限 → 单次 overrides */
+/** 权限 → 单次 overrides */
 export function buildOverrides(
   permission: PermissionMode,
 ): Record<string, unknown> {
   const overrides: Record<string, unknown> = {};
-  if (permission === "auto") {
-    overrides._permission = "auto";
-  } else if (permission === "readonly") {
-    overrides._permission = "readonly";
-  } else {
-    overrides._permission = "confirm_write";
-  }
+  overrides._permission = permission;
   return overrides;
 }

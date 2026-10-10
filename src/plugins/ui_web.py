@@ -874,6 +874,8 @@ def build_app(
         session_id: str = Query("default"),
         run_id: str | None = Query(None),
         overrides: str | None = Query(None),
+        workspace_id: str | None = Query(None),
+        permission: str = Query("workspace"),
     ) -> StreamingResponse:
         """EventSource 友好的 GET SSE。"""
         text = message.strip()
@@ -897,6 +899,8 @@ def build_app(
                 session_id=session_id,
                 run_id=run_id,
                 overrides=parsed or None,
+                permission=permission,
+                workspace_id=workspace_id,
             )
 
         return StreamingResponse(

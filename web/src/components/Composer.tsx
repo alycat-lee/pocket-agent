@@ -5,12 +5,15 @@ interface Props {
   intent: IntentMode | null;
   intentConfidence: number;
   permission: PermissionMode;
+  workspaces: { id: string; name: string; root: string }[];
+  workspaceId: string | null;
   value: string;
   running: boolean;
   promptCharBudget: number;
   segments: { label: string; chars: number }[];
   onCorrectIntent: (mode: IntentMode) => void;
   onPermission: (p: PermissionMode) => void;
+  onWorkspace: (id: string) => void;
   onChange: (v: string) => void;
   onSend: () => void;
   onStop: () => void;
@@ -26,12 +29,15 @@ export function Composer({
   intent,
   intentConfidence,
   permission,
+  workspaces,
+  workspaceId,
   value,
   running,
   promptCharBudget,
   segments,
   onCorrectIntent,
   onPermission,
+  onWorkspace,
   onChange,
   onSend,
   onStop,
@@ -55,6 +61,20 @@ export function Composer({
             {intentConfidence < 1.0 ? ` ${Math.round(intentConfidence * 100)}%` : ""}
           </span>
         ) : null}
+        {workspaces.length > 0 ? (
+          <select
+            className="select"
+            value={workspaceId || workspaces[0]?.id || ""}
+            onChange={(e) => onWorkspace(e.target.value)}
+            aria-label="工作区"
+          >
+            {workspaces.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
         <select
           className="select"
           value={permission}
@@ -62,8 +82,8 @@ export function Composer({
           aria-label="权限"
         >
           <option value="readonly">只读</option>
-          <option value="confirm_write">仅写操作需确认</option>
-          <option value="auto">自动放行</option>
+          <option value="workspace">工作区</option>
+          <option value="full">完全</option>
         </select>
       </div>
       <div className="composer-box">

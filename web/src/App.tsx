@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   approve,
+  bindSessionWorkspace,
   exportSession,
   fetchConfig,
   fetchEvents,
   fetchHealthLlm,
   fetchSessions,
+  fetchWorkspaces,
   openChatEventSource,
   stopRun,
 } from "./api/client";
@@ -73,6 +75,10 @@ export default function App() {
   const [followTail, setFollowTail] = useState(true);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [workspaces, setWorkspaces] = useState<
+    { id: string; name: string; root: string }[]
+  >([]);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [intent, setIntent] = useState<IntentMode | null>(null);
   const [intentConfidence, setIntentConfidence] = useState(1);
   const [permission, setPermission] = useState<PermissionMode>(() =>
@@ -148,6 +154,11 @@ export default function App() {
     void checkHealth();
     fetchConfig()
       .then((c) => applyConfigToUi(c))
+      .catch(() => undefined);
+    fetchWorkspaces()
+      .then((w) => {
+        if (w.available) setWorkspaces(w.workspaces);
+      })
       .catch(() => undefined);
   }, [reloadSessions, checkHealth, applyConfigToUi]);
 
@@ -411,6 +422,8 @@ export default function App() {
       sessionId,
       runId: rid,
       overrides,
+      workspaceId: workspaceId,
+      permission,
     });
     esRef.current = es;
 
@@ -665,6 +678,8 @@ export default function App() {
                 intent={intent}
                 intentConfidence={intentConfidence}
                 permission={permission}
+                workspaces={workspaces}
+                workspaceId={workspaceId}
                 value={draft}
                 running={status.running}
                 promptCharBudget={promptBudget}
@@ -677,6 +692,10 @@ export default function App() {
                 onPermission={(p) => {
                   setPermission(p);
                   persistPermission(sessionId, p);
+                }}
+                onWorkspace={(id) => {
+                  setWorkspaceId(id);
+                  void bindSessionWorkspace(sessionId, id).catch(() => undefined);
                 }}
                 onChange={setDraft}
                 onSend={() => void send()}

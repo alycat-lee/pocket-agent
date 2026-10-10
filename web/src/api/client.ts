@@ -190,18 +190,46 @@ export function updateRouting(body: {
   return json("/api/routing", { method: "PUT", body: JSON.stringify(body) });
 }
 
+export function fetchWorkspaces(): Promise<{
+  available: boolean;
+  workspaces: Array<{ id: string; name: string; root: string }>;
+}> {
+  return json("/api/workspaces");
+}
+
+export function createWorkspace(body: {
+  name: string;
+  root: string;
+}): Promise<{ ok: boolean; workspace: { id: string; name: string; root: string } }> {
+  return json("/api/workspaces", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function bindSessionWorkspace(
+  sessionId: string,
+  workspaceId: string,
+): Promise<{ ok: boolean; session_id: string; workspace_id: string }> {
+  return json(`/api/sessions/${encodeURIComponent(sessionId)}/workspace`, {
+    method: "PUT",
+    body: JSON.stringify({ workspace_id: workspaceId }),
+  });
+}
+
 /** EventSource 消费 SSE；overrides 以 query JSON 传递。 */
 export function openChatEventSource(opts: {
   message: string;
   sessionId: string;
   runId: string;
   overrides?: Record<string, unknown>;
+  workspaceId?: string | null;
+  permission?: string;
 }): EventSource {
   const q = new URLSearchParams({
     message: opts.message,
     session_id: opts.sessionId,
     run_id: opts.runId,
+    permission: opts.permission || "workspace",
   });
+  if (opts.workspaceId) q.set("workspace_id", opts.workspaceId);
   if (opts.overrides && Object.keys(opts.overrides).length > 0) {
     q.set("overrides", JSON.stringify(opts.overrides));
   }

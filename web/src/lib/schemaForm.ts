@@ -9,6 +9,7 @@ export interface SchemaField {
   max?: number;
   enum?: unknown[];
   secret?: boolean;
+  deprecated?: boolean;
 }
 
 export type FormControlKind = "text" | "number" | "boolean" | "select" | "password";

@@ -10,6 +10,7 @@ import {
   groupControls,
   type FormControl,
 } from "../lib/schemaForm";
+import { ProvidersCard } from "./ProvidersCard";
 import { SchemaForm } from "./SchemaForm";
 
 function sanitizeConfig(
@@ -47,9 +48,14 @@ export function SettingsPage({ onConfigSaved }: Props) {
         ]);
         if (cancelled) return;
         const controls = buildFormControls(schema);
-        const grouped = groupControls(controls);
+        // 过滤掉 deprecated 组（模型组由 ProvidersCard 定制渲染）
+        const grouped = groupControls(
+          controls.filter(
+            (c) => !schema.find((s) => s.key === c.key)?.deprecated,
+          ),
+        );
         setGroups(grouped);
-        setActive(grouped[0]?.group || "");
+        setActive("模型");
         setValues({ ...config });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -68,6 +74,13 @@ export function SettingsPage({ onConfigSaved }: Props) {
   return (
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="设置分组">
+        <button
+          type="button"
+          className={`nav-item ${active === "模型" ? "active" : ""}`}
+          onClick={() => setActive("模型")}
+        >
+          模型
+        </button>
         {groups.map((g) => (
           <button
             key={g.group}
@@ -82,17 +95,23 @@ export function SettingsPage({ onConfigSaved }: Props) {
       <div className="settings-form">
         <div className="settings-form-body">
           {error ? <div className="toast-error">{error}</div> : null}
-          {groups.length === 0 && !error ? (
-            <div className="empty-hint">正在加载配置 schema…</div>
-          ) : null}
-          <SchemaForm
-            controls={current}
-            values={values}
-            onChange={(key, value) => {
-              setStatus(null);
-              setValues((prev) => ({ ...prev, [key]: value }));
-            }}
-          />
+          {active === "模型" ? (
+            <ProvidersCard />
+          ) : (
+            <>
+              {groups.length === 0 && !error ? (
+                <div className="empty-hint">正在加载配置 schema…</div>
+              ) : null}
+              <SchemaForm
+                controls={current}
+                values={values}
+                onChange={(key, value) => {
+                  setStatus(null);
+                  setValues((prev) => ({ ...prev, [key]: value }));
+                }}
+              />
+            </>
+          )}
         </div>
         <div className="form-actions">
           {status ? <div className="form-status">{status}</div> : null}

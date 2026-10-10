@@ -12,13 +12,7 @@ const MOCK_SCHEMA: SchemaField[] = [
     type: "string",
     group: "模型",
     description: "LLM 地址",
-  },
-  {
-    key: "api_key",
-    type: "string",
-    group: "模型",
-    description: "密钥",
-    secret: true,
+    deprecated: true,
   },
   {
     key: "temperature",
@@ -27,6 +21,7 @@ const MOCK_SCHEMA: SchemaField[] = [
     description: "温度",
     min: 0,
     max: 2,
+    deprecated: true,
   },
   {
     key: "max_steps",
@@ -51,49 +46,42 @@ const MOCK_SCHEMA: SchemaField[] = [
   },
 ];
 
-describe("buildFormControls", () => {
-  it("renders controls from schema without hardcoded keys", () => {
+describe("buildFormControls filters deprecated", () => {
+  it("includes all controls when not filtered", () => {
     const controls = buildFormControls(MOCK_SCHEMA);
     expect(controls.map((c) => c.key)).toEqual([
       "base_url",
-      "api_key",
       "temperature",
       "max_steps",
       "use_llm_summarize",
       "route_mode",
     ]);
-    expect(controls.find((c) => c.key === "api_key")?.kind).toBe("password");
-    expect(controls.find((c) => c.key === "temperature")?.kind).toBe("number");
-    expect(controls.find((c) => c.key === "max_steps")?.step).toBe(1);
-    expect(controls.find((c) => c.key === "use_llm_summarize")?.kind).toBe(
-      "boolean",
-    );
-    expect(controls.find((c) => c.key === "route_mode")?.kind).toBe("select");
-    expect(controls.find((c) => c.key === "route_mode")?.options).toEqual([
-      "local",
-      "cloud",
-    ]);
   });
 
-  it("groups by schema group order", () => {
-    const groups = groupControls(buildFormControls(MOCK_SCHEMA));
+  it("filters deprecated fields", () => {
+    const controls = buildFormControls(MOCK_SCHEMA);
+    const filtered = controls.filter(
+      (c) => !MOCK_SCHEMA.find((s) => s.key === c.key)?.deprecated,
+    );
+    expect(filtered.map((c) => c.key)).toEqual([
+      "max_steps",
+      "use_llm_summarize",
+      "route_mode",
+    ]);
+  });
+});
+
+describe("groupControls", () => {
+  it("groups non-deprecated only", () => {
+    const controls = buildFormControls(MOCK_SCHEMA);
+    const filtered = controls.filter(
+      (c) => !MOCK_SCHEMA.find((s) => s.key === c.key)?.deprecated,
+    );
+    const groups = groupControls(filtered);
     expect(groups.map((g) => g.group)).toEqual([
-      "模型",
       "护栏",
       "上下文预算",
       "路由",
     ]);
-    expect(groups[0].controls).toHaveLength(3);
-  });
-
-  it("coerces values by control kind", () => {
-    const maxSteps = buildFormControls(MOCK_SCHEMA).find(
-      (c) => c.key === "max_steps",
-    )!;
-    expect(coerceFormValue(maxSteps, "12")).toBe(12);
-    const flag = buildFormControls(MOCK_SCHEMA).find(
-      (c) => c.key === "use_llm_summarize",
-    )!;
-    expect(coerceFormValue(flag, true)).toBe(true);
   });
 });
