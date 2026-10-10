@@ -121,6 +121,15 @@ py -3.13 scripts/eval.py --runs 3 --baseline
 
 集成测试默认跳过，必须显式加 `--integration`。
 
+### 专项压测
+
+```bash
+py -3.13 -m pytest --stress -v
+py -3.13 scripts/stress_test.py
+```
+
+`scripts/stress_test.py` 会打印长结果压缩耗时表，并给出 `-c 4096` 窗口边界真机验证指引。
+
 ## 文档
 
 - `docs/01-项目需求文档.md`
