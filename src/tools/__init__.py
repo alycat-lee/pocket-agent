@@ -21,6 +21,7 @@ class Tool:
     short_desc: str  # ≤ 20 字，供 choose_tool 展示
     schema: dict
     fn: Callable[..., str]  # 执行函数，返回值必须为 str
+    cacheable: bool = True  # False 表示写操作，跨轮账本持久拦截
 
 
 class ToolRegistry:
@@ -28,7 +29,13 @@ class ToolRegistry:
         self._config = config or AgentConfig()
         self._tools: dict[str, Tool] = {}
 
-    def register(self, fn: Callable[..., str], short_desc: str | None = None) -> Tool:
+    def register(
+        self,
+        fn: Callable[..., str],
+        short_desc: str | None = None,
+        *,
+        cacheable: bool = True,
+    ) -> Tool:
         name = fn.__name__
         desc = (short_desc or "").strip() or name
         if len(desc) > 20:
@@ -38,6 +45,7 @@ class ToolRegistry:
             short_desc=desc,
             schema=_build_schema(fn),
             fn=fn,
+            cacheable=cacheable,
         )
         self._tools[name] = tool
         return tool
@@ -62,11 +70,16 @@ class ToolRegistry:
         return [t for _, t in scored[:top_n]]
 
 
-def tool(registry: ToolRegistry, short_desc: str = "") -> Callable[[Callable[..., str]], Callable[..., str]]:
+def tool(
+    registry: ToolRegistry,
+    short_desc: str = "",
+    *,
+    cacheable: bool = True,
+) -> Callable[[Callable[..., str]], Callable[..., str]]:
     """装饰器：@tool(registry, "查询指定城市天气")"""
 
     def decorator(fn: Callable[..., str]) -> Callable[..., str]:
-        registry.register(fn, short_desc=short_desc or None)
+        registry.register(fn, short_desc=short_desc or None, cacheable=cacheable)
         return fn
 
     return decorator

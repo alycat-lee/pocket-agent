@@ -27,3 +27,12 @@ class AgentConfig:
     # 工具检索
     tool_recall_threshold: int = 8  # 注册工具数超过此值启用召回
     tool_recall_top_n: int = 5
+
+    # 会话
+    keep_full_turns: int = 6  # 保留完整记录的轮数
+    session_summary_limit: int = 500  # 滚动摘要字符上限
+
+    # 长文本（Phase 12）
+    section_char_target: int = 500  # 每段目标字数
+    seam_tail_chars: int = 250  # 接缝上下文长度
+    overlap_max: int = 80  # 拼接去重的最大重叠窗口

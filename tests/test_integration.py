@@ -10,6 +10,7 @@ from pocket_agent.demo_tools import register_demo_tools
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import LlamaCppClient
 from pocket_agent.runner import AgentRunner, RunResult, StopReason
+from pocket_agent.session import SessionManager
 from pocket_agent.tools import ToolRegistry
 
 INTEGRATION_BASE_URL = "http://localhost:8080/v1"
@@ -120,3 +121,27 @@ def test_many_tools() -> None:
     result = runner.run("北京天气怎么样")
     _assert_common(result)
     assert any(s.tool_name == "get_weather" for s in result.steps)
+
+
+@pytest.mark.integration
+def test_needle_memory() -> None:
+    """多轮 needle：工号埋入第 1 轮，第 10 轮取回。"""
+    if not _server_reachable():
+        pytest.skip("llama-server 不可达：http://localhost:8080")
+    config = AgentConfig(
+        base_url=INTEGRATION_BASE_URL,
+        keep_full_turns=6,
+        session_summary_limit=500,
+        max_steps=5,
+    )
+    registry = ToolRegistry(config)
+    llm = LlamaCppClient(config)
+    runner = AgentRunner(config, llm, registry)
+    mgr = SessionManager(config, llm, runner)
+
+    sid = "needle-session"
+    mgr.chat(sid, "记住我的工号 A7749")
+    for i in range(8):
+        mgr.chat(sid, f"闲聊{i}：今天怎么样")
+    answer = mgr.chat(sid, "我的工号是多少")
+    assert "A7749" in answer, f"needle 丢失，回答={answer!r}"

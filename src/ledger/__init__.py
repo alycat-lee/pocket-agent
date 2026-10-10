@@ -39,6 +39,15 @@ class CallLedger:
         self._records[fp] = result
         self.real_call_count += 1
 
+    def seed(self, tool_name: str, args: dict, result: str) -> None:
+        """写入缓存记录但不增加 real_call_count（用于跨轮 write_op 预置）。"""
+        fp = self.fingerprint(tool_name, args)
+        self._records[fp] = result
+
+    def merge_records(self, other: CallLedger) -> None:
+        """合并另一账本的指纹缓存（不合并计数器）。"""
+        self._records.update(other._records)
+
 
 class SemanticDeduper:
     """可选：语义级去重。默认实现为占位（normalized 字符串相似度），

@@ -56,8 +56,21 @@ class AgentRunner:
         self._ledger = CallLedger()
         self._guard = LoopGuard(config)
 
-    def run(self, task: str) -> RunResult:
-        """主循环：见规格 §8。仅 LLMConnectionError 允许上抛。"""
+    def run(
+        self,
+        task: str,
+        run_id: str | None = None,
+        ledger: CallLedger | None = None,
+    ) -> RunResult:
+        """主循环：见规格 §8。仅 LLMConnectionError 允许上抛。
+
+        run_id：预留给 Phase 11 断点续跑（本阶段仅保留签名）。
+        ledger：外部传入的当轮账本；为 None 时使用实例默认账本。
+        """
+        _ = run_id  # Phase 11
+        active_ledger = ledger if ledger is not None else self._ledger
+        self._guard = LoopGuard(self._config)
+
         steps: list[StepRecord] = []
         prompt_tokens_max = 0
         intercepts = 0
@@ -178,7 +191,7 @@ class AgentRunner:
                     break
                 continue
 
-            cached = self._ledger.check(tool.name, args)
+            cached = active_ledger.check(tool.name, args)
             error: str | None = None
             if cached is not None:
                 result = cached
@@ -192,7 +205,7 @@ class AgentRunner:
                     error = f"[工具错误] {exc}"
                     raw_result = error
                 result = self._compressor.compress_result(str(raw_result))
-                self._ledger.save(tool.name, args, result)
+                active_ledger.save(tool.name, args, result)
 
             steps.append(
                 StepRecord(
@@ -242,8 +255,8 @@ class AgentRunner:
             stop_reason=stop_reason,
             stats={
                 "total_steps": len(steps),
-                "real_calls": self._ledger.real_call_count,
-                "cache_hits": self._ledger.hit_count,
+                "real_calls": active_ledger.real_call_count,
+                "cache_hits": active_ledger.hit_count,
                 "intercepts": intercepts,
                 "prompt_tokens_max": prompt_tokens_max,
             },
