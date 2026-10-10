@@ -16,7 +16,15 @@
 pip install -e ".[dev]"
 ```
 
-核心依赖仅 `httpx`、`pydantic`；开发依赖含 `pytest`、`pytest-cov`、`ruff`。
+核心依赖仅 `httpx`、`pydantic`、`pyyaml`。Web UI：
+
+```bash
+pip install -e ".[web]"
+# 或开发环境已含 fastapi/uvicorn：
+python cli.py serve --profile web
+```
+
+浏览器打开 `http://127.0.0.1:3000`（需 llama-server）。`profile: headless` 时不加载 `ui-web`、不监听端口。
 
 ## 启动 llama-server
 

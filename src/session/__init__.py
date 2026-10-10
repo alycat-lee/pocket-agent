@@ -48,6 +48,17 @@ class SessionManager:
             self._sessions[session_id] = SessionState(session_id=session_id)
         return self._sessions[session_id]
 
+    def list_sessions(self) -> list[dict]:
+        """供 Web UI 列举会话。"""
+        return [
+            {
+                "session_id": state.session_id,
+                "turns": len(state.turns),
+                "rolling_summary": state.rolling_summary,
+            }
+            for state in self._sessions.values()
+        ]
+
     def chat(self, session_id: str, user_input: str) -> str:
         """多轮对话入口。见文档 07 §1。"""
         state = self.get_state(session_id)

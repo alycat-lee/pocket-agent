@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol
@@ -17,6 +19,9 @@ from pocket_agent.prompts import CHOOSE_TOOL, FILL_ARGS, FINAL_ANSWER, SYSTEM_BA
 from pocket_agent.tools import Tool, ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# 写类工具审批：payload → True 批准 / False 拒绝（含超时）
+ApprovalGate = Callable[[dict[str, Any]], bool]
 
 
 class EventEmitter(Protocol):
@@ -64,6 +69,8 @@ class AgentRunner:
         self._guard = LoopGuard(config)
         self._checkpoints = CheckpointStore()
         self._events = events
+        # 由 ui-web 等插件注入；None 时写工具无需审批（CLI/测试零回归）
+        self.approval_gate: ApprovalGate | None = None
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
         if self._events is not None:
@@ -244,6 +251,50 @@ class AgentRunner:
                 )
             else:
                 from_cache = False
+                if not tool.cacheable and self.approval_gate is not None:
+                    approval_id = str(uuid.uuid4())
+                    approval_payload = {
+                        "approval_id": approval_id,
+                        "step": step,
+                        "tool": tool.name,
+                        "args": args,
+                        "timeout_sec": 60,
+                    }
+                    self._emit("approval.required", approval_payload)
+                    if not self.approval_gate(approval_payload):
+                        error = "[已拒绝] 用户未批准写操作"
+                        result = error
+                        intercepts += 1
+                        self._emit(
+                            "step.intercepted",
+                            {
+                                "step": step,
+                                "reason": "approval_denied",
+                                "tool": tool.name,
+                                "approval_id": approval_id,
+                            },
+                        )
+                        steps.append(
+                            StepRecord(
+                                step=step,
+                                tool_name=tool.name,
+                                args=args,
+                                result=result,
+                                from_cache=False,
+                                error=error,
+                            )
+                        )
+                        if run_id:
+                            self._dump_checkpoint(run_id, steps, active_ledger)
+                        verdict = self._guard.on_step(
+                            step,
+                            f"{choice}:{json.dumps(args, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}",
+                            intercepted=True,
+                        )
+                        if verdict.should_stop:
+                            stop_reason = StopReason(verdict.reason)
+                            break
+                        continue
                 try:
                     raw_result = tool.fn(**args)
                 except Exception as exc:  # noqa: BLE001 — 规格要求捕获全部工具异常

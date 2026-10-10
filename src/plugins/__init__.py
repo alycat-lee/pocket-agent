@@ -7,6 +7,7 @@ from pocket_agent.plugins.llm_llamacpp import LlmLlamaCppPlugin
 from pocket_agent.plugins.session_plugin import SessionPlugin
 from pocket_agent.plugins.tools_core import ToolsCorePlugin
 from pocket_agent.plugins.ui_cli import UiCliPlugin
+from pocket_agent.plugins.ui_web import UiWebPlugin
 from pocket_agent.plugins.writer_plugin import WriterPlugin
 from pocket_agent.runtime import Plugin
 
@@ -22,5 +23,6 @@ def builtin_plugins() -> dict[str, Plugin]:
         WriterPlugin(),
         AgentLoopPlugin(),
         UiCliPlugin(),
+        UiWebPlugin(),
     ]
     return {p.name: p for p in plugins}

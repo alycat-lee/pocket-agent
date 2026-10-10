@@ -1,4 +1,5 @@
-# headless：不含 ui-web；CLI / 演示默认装配
+# headless：自动跳过 ui-web；切 profile: web 后浏览器访问 http://127.0.0.1:3000
+# 启动：python cli.py serve
 profile: headless
 plugins:
   - name: llm-llamacpp
@@ -16,3 +17,7 @@ plugins:
   - name: session
   - name: writer
   - name: ui-cli
+  - name: ui-web
+    config:
+      host: "127.0.0.1"
+      port: 3000

@@ -14,10 +14,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = [
+    "fastapi",
+    "uvicorn",
+]
 dev = [
     "pytest",
     "pytest-cov",
     "ruff",
+    "fastapi",
+    "uvicorn",
 ]
 
 [tool.setuptools]
@@ -39,6 +45,9 @@ packages = [
     "pocket_agent.runtime",
     "pocket_agent.plugins",
 ]
+
+[tool.setuptools.package-data]
+"pocket_agent.plugins" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

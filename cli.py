@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,32 @@ def main(argv: list[str] | None = None) -> int:
         help="启用断点续跑：指定 run_id，中断后可用同一 id 恢复",
     )
 
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="按 pocket.yml 装配并保持运行（web profile 下提供 UI）",
+    )
+    serve_parser.add_argument(
+        "--config",
+        default=str(_DEFAULT_POCKET),
+        help="pocket.yml 路径（默认仓库根目录）",
+    )
+    serve_parser.add_argument(
+        "--base-url",
+        default=None,
+        help="覆盖 llm-llamacpp 的 base_url",
+    )
+    serve_parser.add_argument(
+        "--profile",
+        choices=("headless", "web"),
+        default=None,
+        help="覆盖 pocket.yml 的 profile（web 才加载 ui-web）",
+    )
+    serve_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="打印 DEBUG 级内部日志",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "demo":
         return run_demo(
@@ -52,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
             verbose=args.verbose,
             run_id=args.resume,
             config_path=args.config,
+        )
+    if args.command == "serve":
+        return run_serve(
+            config_path=args.config,
+            base_url=args.base_url,
+            profile=args.profile,
+            verbose=args.verbose,
         )
     return 1
 
@@ -103,13 +137,57 @@ def run_demo(
     return 0
 
 
+def run_serve(
+    *,
+    config_path: str | Path = _DEFAULT_POCKET,
+    base_url: str | None = None,
+    profile: str | None = None,
+    verbose: bool = False,
+) -> int:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    data = _prepare_config(
+        config_path,
+        base_url=base_url,
+        verbose=verbose,
+        profile=profile,
+    )
+    ctx = assemble(builtin_plugins(), data)
+    try:
+        if ctx.has("http"):
+            http = ctx.require("http")
+            print(
+                f"Web UI: http://{http['host']}:{http['port']}/",
+                flush=True,
+            )
+        else:
+            print(
+                "已装配（无 ui-web）。将 pocket.yml 的 profile 设为 web，"
+                "或使用：python cli.py serve --profile web",
+                flush=True,
+            )
+        print("Ctrl+C 停止并卸载全部插件。", flush=True)
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("\n正在卸载…", flush=True)
+    finally:
+        ctx.unmount_all()
+    return 0
+
+
 def _prepare_config(
     config_path: str | Path,
     *,
     base_url: str | None,
     verbose: bool,
+    profile: str | None = None,
 ) -> dict[str, Any]:
     data = load_pocket_config(config_path)
+    if profile is not None:
+        data["profile"] = profile
     plugins = data.get("plugins")
     if not isinstance(plugins, list):
         raise SystemExit("pocket.yml plugins must be a list")
