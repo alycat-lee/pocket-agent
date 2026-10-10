@@ -26,6 +26,27 @@ python cli.py serve --profile web
 
 浏览器打开 `http://127.0.0.1:3000`（需 llama-server）。`profile: headless` 时不加载 `ui-web`、不监听端口。
 
+### MCP 桥接（可选）
+
+在 `pocket.yml` 启用 `bridge-mcp`，把外部 MCP server 的工具注册为 `mcp_*`：
+
+```yaml
+- name: bridge-mcp
+  config:
+    mcp_servers:
+      - name: echo
+        transport: stdio
+        command: python
+        args: ["scripts/mock_mcp_echo.py"]
+      # 真实 filesystem MCP 示例（需本机已安装对应 server）：
+      # - name: fs
+      #   transport: stdio
+      #   command: npx
+      #   args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```
+
+然后 `python cli.py demo "用 mcp_echo 回显 hello"`（需 llama-server）。
+
 ## 启动 llama-server
 
 上下文窗口必须足够大（`-c 8192`），否则压缩与预算管理失去意义：
