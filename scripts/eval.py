@@ -24,7 +24,7 @@ from pocket_agent.writer import LongWriter, WriterMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = REPO_ROOT / "tests" / "fixtures" / "report.txt"
-DEFAULT_BASE_URL = "http://localhost:8080/v1"
+DEFAULT_BASE_URL = AgentConfig().base_url
 
 TASKS: list[dict[str, str]] = [
     {"id": "one_step", "task": "现在几点了"},
@@ -325,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
         if probe.status_code != 200:
             print(
                 f"llama-server 不可用（{probe_url} -> HTTP {probe.status_code}）。"
-                "请先启动：llama-server -c 8192 --flash-attn --cache-reuse 256 --port 8080",
+                "请先启动：llama-server -c 8192 --flash-attn --cache-reuse 256 --port 8000",
                 file=sys.stderr,
             )
             return 2

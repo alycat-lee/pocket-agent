@@ -26,10 +26,10 @@ pip install -e ".[dev]"
 llama-server -m qwen3-4b-instruct-q4_k_m.gguf \
   -c 8192 --flash-attn \
   --cache-reuse 256 \
-  --port 8080
+  --port 8000
 ```
 
-服务默认监听 `http://localhost:8080`，框架使用 OpenAI 兼容接口：`http://localhost:8080/v1`。
+服务默认监听 `http://localhost:8000`，框架使用 OpenAI 兼容接口：`http://localhost:8000/v1`。
 
 ## Demo
 
@@ -41,7 +41,7 @@ python cli.py demo "查询北京和上海的天气并告诉我温差"
 
 ```bash
 python cli.py demo "查询北京和上海的天气并告诉我温差" \
-  --base-url http://localhost:8080/v1 \
+  --base-url http://localhost:8000/v1 \
   --verbose
 ```
 
@@ -127,7 +127,7 @@ py -3.13 scripts/eval.py --writer
 
 ### 真机集成与评测
 
-需先启动 llama-server（`-c 8192 --flash-attn --cache-reuse 256 --port 8080`）：
+需先启动 llama-server（`-c 8192 --flash-attn --cache-reuse 256 --port 8000`）：
 
 ```bash
 py -3.13 -m pytest tests/test_integration.py -v --integration

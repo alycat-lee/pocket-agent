@@ -145,7 +145,13 @@ class LlamaCppClient:
 
             try:
                 data = response.json()
-                content = data["choices"][0]["message"]["content"]
+                message = data["choices"][0]["message"]
+                content = message.get("content")
+                # 部分思考模型在 content 为空时把正文放进 reasoning_content
+                if not content:
+                    alt = message.get("reasoning_content")
+                    if isinstance(alt, str) and alt.strip():
+                        content = alt
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
                 raise LLMFormatError(f"unexpected response shape: {response.text!r}") from exc
 

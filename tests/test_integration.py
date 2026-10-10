@@ -13,7 +13,7 @@ from pocket_agent.runner import AgentRunner, RunResult, StopReason
 from pocket_agent.session import SessionManager
 from pocket_agent.tools import ToolRegistry
 
-INTEGRATION_BASE_URL = "http://localhost:8080/v1"
+INTEGRATION_BASE_URL = AgentConfig().base_url
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = REPO_ROOT / "tests" / "fixtures" / "report.txt"
 
@@ -39,7 +39,7 @@ def _server_reachable(base_url: str = INTEGRATION_BASE_URL) -> bool:
 @pytest.fixture
 def live_runner() -> AgentRunner:
     if not _server_reachable():
-        pytest.skip("llama-server 不可达：http://localhost:8080")
+        pytest.skip(f"llama-server 不可达：{INTEGRATION_BASE_URL}")
     config = AgentConfig(base_url=INTEGRATION_BASE_URL)
     registry = ToolRegistry(config)
     register_demo_tools(registry)
@@ -98,7 +98,7 @@ def test_long_file(live_runner: AgentRunner) -> None:
 @pytest.mark.integration
 def test_many_tools() -> None:
     if not _server_reachable():
-        pytest.skip("llama-server 不可达：http://localhost:8080")
+        pytest.skip(f"llama-server 不可达：{INTEGRATION_BASE_URL}")
     config = AgentConfig(
         base_url=INTEGRATION_BASE_URL,
         tool_recall_threshold=8,
@@ -127,7 +127,7 @@ def test_many_tools() -> None:
 def test_needle_memory() -> None:
     """多轮 needle：工号埋入第 1 轮，第 10 轮取回。"""
     if not _server_reachable():
-        pytest.skip("llama-server 不可达：http://localhost:8080")
+        pytest.skip(f"llama-server 不可达：{INTEGRATION_BASE_URL}")
     config = AgentConfig(
         base_url=INTEGRATION_BASE_URL,
         keep_full_turns=6,

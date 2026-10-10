@@ -13,7 +13,6 @@ from pocket_agent.llm_client import LlamaCppClient, LLMConnectionError
 from pocket_agent.writer import LongWriter, SectionSpec, WriterMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BASE_URL = "http://localhost:8080/v1"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -39,8 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--base-url",
-        default=DEFAULT_BASE_URL,
-        help="llama.cpp server OpenAI 兼容地址",
+        default=AgentConfig().base_url,
+        help="llama.cpp server OpenAI 兼容地址（默认 http://localhost:8000/v1）",
     )
     args = parser.parse_args(argv)
 
@@ -54,9 +53,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         material = path.read_text(encoding="utf-8")
 
+    # 思考模型会先占 completion 预算写 reasoning，留足余量避免 content 被截空
     config = AgentConfig(
         base_url=args.base_url,
-        max_tokens=max(512, args.chars // 2),
+        max_tokens=max(1024, args.chars // 2),
+        timeout=180.0,
     )
     llm = LlamaCppClient(config)
     writer = LongWriter(config, llm)

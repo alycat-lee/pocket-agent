@@ -50,6 +50,28 @@ def test_generate_parses_content() -> None:
     assert "response_format" not in payload
 
 
+def test_generate_falls_back_to_reasoning_content() -> None:
+    client = LlamaCppClient(AgentConfig())
+    response = httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "北京是中国的首都。",
+                    }
+                }
+            ]
+        },
+        request=httpx.Request("POST", "http://localhost:8000/v1/chat/completions"),
+    )
+    mock_http = _patch_client([response])
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        assert client.generate("介绍北京") == "北京是中国的首都。"
+
+
 def test_generate_int_from_json_schema_value() -> None:
     client = LlamaCppClient(AgentConfig())
     mock_http = _patch_client([_openai_response('{"value": 2}')])
