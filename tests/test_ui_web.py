@@ -143,9 +143,73 @@ def test_sse_chat_event_stream_format() -> None:
     answer_ev = next(p for n, p in events if n == "answer.done")
     assert "北京" in answer_ev["answer"]
     assert answer_ev["stop_reason"]
+    # 状态条 / 轨迹所需扩展字段
+    for key in (
+        "llm_ms",
+        "tool_ms",
+        "cache_hit_rate",
+        "real_calls",
+        "intercepts",
+        "prompt_tokens_max",
+        "total_steps",
+    ):
+        assert key in answer_ev
+    start_ev = next(p for n, p in events if n == "step.start")
+    assert "step_index" in start_ev
+    assert "elapsed_ms" in start_ev
+    assert "prompt_tokens_est" in start_ev
+    assert "ttft_ms" in start_ev  # 可为 null
 
     sessions = asyncio.run(_get_json(app, "/sessions"))
     assert any(s["session_id"] == "s1" for s in sessions)
+    ctx.unmount_all()
+
+
+async def _stream_get(app: Any, path: str) -> tuple[int, str, str]:
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        httpx.AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream("GET", path) as response,
+    ):
+        chunks: list[str] = []
+        async for text in response.aiter_text():
+            chunks.append(text)
+        return (
+            response.status_code,
+            response.headers.get("content-type", ""),
+            "".join(chunks),
+        )
+
+
+def test_sse_get_eventsource_with_overrides() -> None:
+    """EventSource 走 GET /chat，overrides 以 query JSON 传递。"""
+    from urllib.parse import quote
+
+    ctx = Context()
+    _mount_stack(ctx, [-1, "直接答"])
+    broker = ApprovalBroker(timeout_sec=2)
+    app = build_app(ctx, broker=broker)
+    overrides = quote(json.dumps({"max_steps": 3}))
+    path = (
+        "/chat?message=hello&session_id=es1&run_id=rid-1&overrides=" + overrides
+    )
+    status, ctype, body = asyncio.run(_stream_get(app, path))
+    assert status == 200
+    assert "text/event-stream" in ctype
+    names = [n for n, _ in _parse_sse(body)]
+    assert "answer.done" in names
+    ctx.unmount_all()
+
+
+def test_api_health_reports_llm_flag() -> None:
+    ctx = Context()
+    _mount_stack(ctx, [-1, "x"])
+    broker = ApprovalBroker(timeout_sec=1)
+    app = build_app(ctx, broker=broker)
+    health = asyncio.run(_get_json(app, "/api/health"))
+    assert health["ok"] is True
+    assert "llm" in health
+    assert "base_url" in health
     ctx.unmount_all()
 
 

@@ -141,6 +141,9 @@ def build_app(
     configs = plugin_configs or {}
     runs = active_runs if active_runs is not None else {}
 
+    assets_dir = _STATIC_DIR / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
     if _STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
@@ -158,12 +161,51 @@ def build_app(
         if ctx.has("agent"):
             ctx.require("agent").apply_config(config)
 
+    def _probe_llm(base_url: str, timeout: float = 1.5) -> tuple[bool, str]:
+        """探测 llama-server / OpenAI 兼容端点是否可达。"""
+        import urllib.error
+        import urllib.request
+
+        root = base_url.rstrip("/")
+        candidates = [f"{root}/health", f"{root}/v1/models", f"{root}/models"]
+        last = "unreachable"
+        for url in candidates:
+            try:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    if 200 <= int(resp.status) < 500:
+                        return True, ""
+            except urllib.error.HTTPError as exc:
+                # 401/404 仍说明服务在线
+                if exc.code in {401, 403, 404}:
+                    return True, ""
+                last = str(exc)
+            except Exception as exc:  # noqa: BLE001
+                last = str(exc)
+        return False, last
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
         index_path = _STATIC_DIR / "index.html"
         if not index_path.is_file():
             return HTMLResponse("<h1>pocket-agent</h1><p>static UI missing</p>")
         return HTMLResponse(index_path.read_text(encoding="utf-8"))
+
+    @app.get("/api/health")
+    def api_health() -> dict[str, Any]:
+        cfg = _resolved_config()
+        ok, message = _probe_llm(cfg.base_url)
+        return {
+            "ok": True,
+            "llm": ok,
+            "base_url": cfg.base_url,
+            "message": message,
+            "hint": (
+                None
+                if ok
+                else "启动 llama-server 后点击重试；示例：./llama-server -m model.gguf --port 8080"
+            ),
+        }
 
     @app.get("/sessions")
     def sessions() -> list[dict[str, Any]]:
@@ -417,6 +459,7 @@ def build_app(
         message: str = Query(...),
         session_id: str = Query("default"),
         run_id: str | None = Query(None),
+        overrides: str | None = Query(None),
     ) -> StreamingResponse:
         """EventSource 友好的 GET SSE。"""
         text = message.strip()
@@ -425,13 +468,21 @@ def build_app(
                 iter([b'event: error\ndata: {"message":"empty message"}\n\n']),
                 media_type="text/event-stream",
             )
+        parsed: dict[str, Any] = {}
+        if overrides:
+            try:
+                raw = json.loads(overrides)
+                if isinstance(raw, dict):
+                    parsed = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+            except json.JSONDecodeError:
+                parsed = {}
 
         def _run() -> None:
             _run_chat(
                 message=text,
                 session_id=session_id,
                 run_id=run_id,
-                overrides=None,
+                overrides=parsed or None,
             )
 
         return StreamingResponse(

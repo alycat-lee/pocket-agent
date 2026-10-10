@@ -49,7 +49,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"pocket_agent.plugins" = ["static/*"]
+"pocket_agent.plugins" = ["static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

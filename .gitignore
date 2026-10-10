@@ -7,6 +7,8 @@ __pycache__/
 .venv/
 dist/
 build/
+web/node_modules/
+web/dist/
 .coverage
 .coverage.*
 htmlcov/
