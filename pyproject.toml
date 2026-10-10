@@ -33,6 +33,7 @@ packages = [
     "pocket_agent.guard",
     "pocket_agent.runner",
     "pocket_agent.session",
+    "pocket_agent.checkpoint",
 ]
 
 [tool.pytest.ini_options]

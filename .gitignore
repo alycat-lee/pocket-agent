@@ -11,3 +11,4 @@ build/
 .coverage.*
 htmlcov/
 eval_results.json
+.checkpoints/

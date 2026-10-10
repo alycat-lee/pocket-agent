@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
+from pocket_agent.checkpoint import CheckpointStore
 from pocket_agent.compressor import ContextCompressor
 from pocket_agent.config import AgentConfig
 from pocket_agent.guard import LoopGuard
@@ -55,6 +56,7 @@ class AgentRunner:
         self._compressor = ContextCompressor(config, llm)
         self._ledger = CallLedger()
         self._guard = LoopGuard(config)
+        self._checkpoints = CheckpointStore()
 
     def run(
         self,
@@ -64,19 +66,24 @@ class AgentRunner:
     ) -> RunResult:
         """主循环：见规格 §8。仅 LLMConnectionError 允许上抛。
 
-        run_id：预留给 Phase 11 断点续跑（本阶段仅保留签名）。
+        run_id 非空时启用断点续跑：每步 dump；启动时恢复；正常完成后 clear。
         ledger：外部传入的当轮账本；为 None 时使用实例默认账本。
         """
-        _ = run_id  # Phase 11
         active_ledger = ledger if ledger is not None else self._ledger
         self._guard = LoopGuard(self._config)
 
         steps: list[StepRecord] = []
+        start_step = 1
         prompt_tokens_max = 0
         intercepts = 0
         stop_reason = StopReason.MAX_STEPS
 
-        for step in range(1, self._config.max_steps + 1):
+        if run_id:
+            restored = self._restore_checkpoint(run_id, active_ledger)
+            if restored is not None:
+                steps, start_step, intercepts = restored
+
+        for step in range(start_step, self._config.max_steps + 1):
             candidates = self._registry.recall(task, self._config.tool_recall_top_n)
             if not candidates:
                 stop_reason = StopReason.MODEL_DONE
@@ -113,6 +120,8 @@ class AgentRunner:
                     )
                 )
                 intercepts += 1
+                if run_id:
+                    self._dump_checkpoint(run_id, steps, active_ledger)
                 logger.debug(
                     "step=%s tool=(format_error) args={{}} cache=miss "
                     "tokens≈%s elapsed=%.3fs",
@@ -147,6 +156,8 @@ class AgentRunner:
                     )
                 )
                 intercepts += 1
+                if run_id:
+                    self._dump_checkpoint(run_id, steps, active_ledger)
                 verdict = self._guard.on_step(
                     step,
                     f"format_error:choice={choice}",
@@ -177,6 +188,8 @@ class AgentRunner:
                     error=result,
                 )
                 steps.append(record)
+                if run_id:
+                    self._dump_checkpoint(run_id, steps, active_ledger)
                 logger.debug(
                     "step=%s tool=%s args=%s cache=miss tokens≈%s elapsed=%.3fs",
                     step,
@@ -217,6 +230,8 @@ class AgentRunner:
                     error=error,
                 )
             )
+            if run_id:
+                self._dump_checkpoint(run_id, steps, active_ledger)
 
             logger.debug(
                 "step=%s tool=%s args=%s cache=%s tokens≈%s elapsed=%.3fs",
@@ -249,6 +264,9 @@ class AgentRunner:
         except LLMFormatError as exc:
             answer = f"[生成回答失败] {exc}"
 
+        if run_id:
+            self._checkpoints.clear(run_id)
+
         return RunResult(
             answer=answer,
             steps=steps,
@@ -261,6 +279,86 @@ class AgentRunner:
                 "prompt_tokens_max": prompt_tokens_max,
             },
         )
+
+    def _dump_checkpoint(
+        self,
+        run_id: str,
+        steps: list[StepRecord],
+        active_ledger: CallLedger,
+    ) -> None:
+        history = [
+            {
+                "step": s.step,
+                "tool_name": s.tool_name,
+                "args": s.args,
+                "result": s.result,
+                "from_cache": s.from_cache,
+                "error": s.error,
+            }
+            for s in steps
+        ]
+        self._checkpoints.save(
+            run_id,
+            {
+                "history": history,
+                "ledger_records": active_ledger.export_records(),
+                "step_index": steps[-1].step if steps else 0,
+            },
+        )
+
+    def _restore_checkpoint(
+        self,
+        run_id: str,
+        active_ledger: CallLedger,
+    ) -> tuple[list[StepRecord], int, int] | None:
+        """恢复 history 与 ledger；已执行步骤经账本校验标为缓存命中。
+
+        返回 (steps, start_step, intercepts)；无有效 checkpoint 时返回 None。
+        """
+        ckpt = self._checkpoints.load(run_id)
+        if ckpt is None:
+            return None
+
+        records = ckpt["ledger_records"]
+        active_ledger.import_records(
+            {str(k): str(v) for k, v in records.items()}
+        )
+
+        steps: list[StepRecord] = []
+        intercepts = 0
+        for item in ckpt["history"]:
+            if not isinstance(item, dict):
+                continue
+            tool_name = str(item.get("tool_name", ""))
+            args = item.get("args", {})
+            if not isinstance(args, dict):
+                args = {}
+            result = str(item.get("result", ""))
+            error = item.get("error")
+            error_s = str(error) if error is not None else None
+            step_no = int(item.get("step", len(steps) + 1))
+
+            from_cache = bool(item.get("from_cache", False))
+            if tool_name and tool_name != "(format_error)":
+                cached = active_ledger.check(tool_name, args)
+                if cached is not None:
+                    result = cached
+                    from_cache = True
+                    intercepts += 1
+
+            steps.append(
+                StepRecord(
+                    step=step_no,
+                    tool_name=tool_name or "(format_error)",
+                    args=args,
+                    result=result,
+                    from_cache=from_cache,
+                    error=error_s,
+                )
+            )
+
+        start_step = max(int(ckpt["step_index"]) + 1, 1)
+        return steps, start_step, intercepts
 
     def _build_choose_prompt(
         self,

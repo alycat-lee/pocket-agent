@@ -45,6 +45,14 @@ python cli.py demo "查询北京和上海的天气并告诉我温差" \
   --verbose
 ```
 
+断点续跑（中途 Ctrl+C 后用同一 `run_id` 恢复，已完成步骤走账本缓存）：
+
+```bash
+python cli.py demo "查询北京和上海的天气并告诉我温差" --resume demo-1
+# 中断后：
+python cli.py demo "查询北京和上海的天气并告诉我温差" --resume demo-1
+```
+
 预期：
 
 - 至少 3 步（查北京、查上海、计算温差，或等价路径）

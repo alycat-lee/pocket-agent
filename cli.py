@@ -28,14 +28,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="打印 DEBUG 级内部日志",
     )
+    demo_parser.add_argument(
+        "--resume",
+        metavar="RUN_ID",
+        default=None,
+        help="启用断点续跑：指定 run_id，中断后可用同一 id 恢复",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "demo":
-        return run_demo(task=args.task, base_url=args.base_url, verbose=args.verbose)
+        return run_demo(
+            task=args.task,
+            base_url=args.base_url,
+            verbose=args.verbose,
+            run_id=args.resume,
+        )
     return 1
 
 
-def run_demo(*, task: str, base_url: str, verbose: bool) -> int:
+def run_demo(
+    *,
+    task: str,
+    base_url: str,
+    verbose: bool,
+    run_id: str | None = None,
+) -> int:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
@@ -51,7 +68,7 @@ def run_demo(*, task: str, base_url: str, verbose: bool) -> int:
     runner = AgentRunner(config, llm, registry)
 
     try:
-        result = runner.run(task)
+        result = runner.run(task, run_id=run_id)
     except LLMConnectionError as exc:
         print(f"连接 LLM 失败：{exc}", file=sys.stderr)
         print("请确认已启动 llama-server（见 README）。", file=sys.stderr)

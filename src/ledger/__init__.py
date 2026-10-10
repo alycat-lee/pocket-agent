@@ -48,6 +48,14 @@ class CallLedger:
         """合并另一账本的指纹缓存（不合并计数器）。"""
         self._records.update(other._records)
 
+    def export_records(self) -> dict[str, str]:
+        """导出指纹→结果映射，供 checkpoint 序列化。"""
+        return dict(self._records)
+
+    def import_records(self, records: dict[str, str]) -> None:
+        """导入指纹缓存（不修改计数器）。"""
+        self._records.update(records)
+
 
 class SemanticDeduper:
     """可选：语义级去重。默认实现为占位（normalized 字符串相似度），
