@@ -212,8 +212,8 @@ def test_api_health_reports_llm_flag() -> None:
     assert health["ok"] is True
     assert "llm" in health
     assert "base_url" in health
-    # TCP 探测须快速返回，避免拖垮启动页
-    assert elapsed < 2.0
+    # HTTP 探测须较快返回，避免拖垮启动页
+    assert elapsed < 5.0
     ctx.unmount_all()
 
 

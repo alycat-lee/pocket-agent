@@ -84,6 +84,7 @@ export default function App() {
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [softError, setSoftError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
+  const [offlineDetail, setOfflineDetail] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState<string | undefined>();
   const [promptBudget, setPromptBudget] = useState(5200);
   const [runId, setRunId] = useState<string | null>(null);
@@ -107,9 +108,11 @@ export default function App() {
       const h = await fetchHealth();
       setBaseUrl(h.base_url);
       setOffline(!h.llm);
+      setOfflineDetail(h.llm ? null : h.message || h.hint || "LLM 不可用");
       return h.llm;
-    } catch {
+    } catch (e) {
       setOffline(true);
+      setOfflineDetail(e instanceof Error ? e.message : String(e));
       return false;
     }
   }, []);
@@ -319,7 +322,10 @@ export default function App() {
           );
         if (conn) {
           setOffline(true);
+          setOfflineDetail(msg);
           setSoftError(null);
+          setView("chat");
+          setSessionView(sessionId, "chat");
         } else {
           setSoftError("运行出错，请查看轨迹视图中的错误记录。");
           setMessages((prev) => [
@@ -337,7 +343,7 @@ export default function App() {
         closeEs();
       }
     },
-    [reloadSessions],
+    [reloadSessions, sessionId],
   );
 
   const send = async () => {
@@ -564,6 +570,7 @@ export default function App() {
               {view === "chat" && offline ? (
                 <GuidePage
                   baseUrl={baseUrl}
+                  detail={offlineDetail}
                   onRetry={() => {
                     void checkHealth();
                   }}

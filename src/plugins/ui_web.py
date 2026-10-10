@@ -161,21 +161,46 @@ def build_app(
         if ctx.has("agent"):
             ctx.require("agent").apply_config(config)
 
-    def _probe_llm(base_url: str, timeout: float = 0.35) -> tuple[bool, str]:
-        """快速探测 LLM 端口是否可达（TCP，避免 HTTP 挂起拖垮启动页）。"""
+    def _probe_llm(base_url: str, timeout: float = 1.0) -> tuple[bool, str]:
+        """HTTP 探测 LLM 是否可用（端口开着但 502 仍判为不可用）。"""
+        import urllib.error
+        import urllib.request
         from urllib.parse import urlparse
 
-        parsed = urlparse(base_url if "://" in base_url else f"http://{base_url}")
-        host = parsed.hostname or "127.0.0.1"
-        if parsed.port is not None:
-            port = int(parsed.port)
-        else:
-            port = 443 if parsed.scheme == "https" else 80
-        try:
-            with socket.create_connection((host, port), timeout=timeout):
-                return True, ""
-        except OSError as exc:
-            return False, str(exc)
+        root = base_url.rstrip("/")
+        parsed = urlparse(root if "://" in root else f"http://{root}")
+        origin = f"{parsed.scheme or 'http'}://{parsed.hostname or '127.0.0.1'}"
+        if parsed.port:
+            origin = f"{origin}:{parsed.port}"
+        candidates = [
+            f"{root}/models",
+            f"{origin}/v1/models",
+            f"{origin}/health",
+            f"{root}/health",
+        ]
+        urls: list[str] = []
+        for item in candidates:
+            if item not in urls:
+                urls.append(item)
+        last = "unreachable"
+        for url in urls:
+            try:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    code = int(resp.status)
+                    if 200 <= code < 500:
+                        return True, ""
+                    last = f"HTTP {code}"
+            except urllib.error.HTTPError as exc:
+                if exc.code in {401, 403, 404}:
+                    return True, ""
+                if exc.code >= 500:
+                    last = f"HTTP {exc.code} (推理服务异常，请重启 llama-server)"
+                else:
+                    last = f"HTTP {exc.code}"
+            except Exception as exc:  # noqa: BLE001
+                last = str(exc)
+        return False, last
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:

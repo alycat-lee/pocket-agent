@@ -25,11 +25,21 @@ function titleOf(
 ): string {
   if (kind === "user") return String(data.message || data.query || "用户消息");
   if (kind === "assistant") return "助手回答";
+  if (event === "error" || event === "step.error") {
+    const msg = String(data.message || data.error || "运行错误");
+    if (/502|Bad Gateway/i.test(msg)) return "LLM 502 Bad Gateway";
+    if (/503|504|server error\s*5/i.test(msg)) return `LLM 服务错误`;
+    return msg.length > 80 ? `${msg.slice(0, 80)}…` : msg;
+  }
+  if (data.tool_name === "(format_error)" || data.tool === "(format_error)") {
+    return `格式错误 ${data.error || data.reason || ""}`.trim();
+  }
   if (event === "step.cache_hit") {
     return `缓存命中 ${data.tool || data.current_tool || ""}`.trim();
   }
   if (kind === "tool") {
-    return `工具 ${data.tool || data.current_tool || data.name || ""}`.trim();
+    const name = String(data.tool || data.current_tool || data.name || "").trim();
+    return name ? `工具 ${name}` : "工具步骤";
   }
   if (kind === "intercept") {
     return `拦截 ${data.reason || ""}`.trim();
