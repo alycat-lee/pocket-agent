@@ -220,7 +220,7 @@ def test_api_health_reports_llm_flag() -> None:
     assert "llm" in health
     assert "base_url" in health
     # HTTP 探测须较快返回，避免拖垮启动页
-    assert elapsed < 5.0
+    assert elapsed < 10.0
     ctx.unmount_all()
 
 

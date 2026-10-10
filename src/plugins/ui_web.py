@@ -28,6 +28,22 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _read_build_info() -> dict[str, str] | None:
+    """读取构建产物中的 build-info.json；不存在时返回 None。"""
+    info_path = _STATIC_DIR / "build-info.json"
+    if not info_path.is_file():
+        return None
+    try:
+        import json as _json
+
+        return _json.loads(info_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_BUILD_INFO = _read_build_info()
 _BUS_EVENTS = (
     "step.start",
     "step.tool_call",
@@ -402,6 +418,7 @@ def build_app(
             "llm": ok,
             "base_url": cfg.base_url,
             "message": message,
+            "ui_build": _BUILD_INFO,
             "hint": (
                 None
                 if ok
@@ -428,6 +445,13 @@ def build_app(
         if not ctx.has("sessions"):
             return []
         return list(ctx.require("sessions").list_sessions())
+
+    @app.delete("/api/sessions/{session_id}")
+    def api_session_delete(session_id: str) -> JSONResponse:
+        if not ctx.has("sessions"):
+            return JSONResponse({"ok": False, "error": "sessions not available"}, 400)
+        ctx.require("sessions").delete_session(session_id)
+        return JSONResponse({"ok": True, "session_id": session_id})
 
     @app.post("/approve")
     def approve(body: ApproveIn) -> JSONResponse:
@@ -1064,3 +1088,9 @@ class UiWebPlugin:
             },
         )
         logger.info("ui-web listening on http://%s:%s", host, port)
+        if _BUILD_INFO is not None:
+            logger.info("ui-web build: %s (%s)", _BUILD_INFO.get("version"), _BUILD_INFO.get("built_at"))
+        else:
+            logger.warning(
+                "前端产物缺失或过期，请执行: cd web && pnpm build"
+            )

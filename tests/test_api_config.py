@@ -158,7 +158,11 @@ def test_schema_endpoint(tmp_path: Path) -> None:
     assert res.status_code == 200
     keys = {item["key"] for item in res.json()}
     assert "temperature" in keys
-    assert "api_key" in keys
+    # deprecated 项不再返回（Phase 22：schema 剔除废弃项）
+    assert "api_key" not in keys
+    assert "base_url" not in keys
+    assert "model" not in keys
+    assert "route_cloud" not in keys
     ctx.unmount_all()
 
 

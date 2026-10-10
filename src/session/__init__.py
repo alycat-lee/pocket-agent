@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from pocket_agent.config import AgentConfig
@@ -15,6 +19,12 @@ from pocket_agent.prompts import (
 from pocket_agent.runner import AgentRunner, EventEmitter, StepRecord
 from pocket_agent.tools import ToolRegistry
 from pocket_agent.workspace import WorkspaceManager
+
+_SID_SAFE = re.compile(r"[^\w.\-]+")
+
+
+def _safe_sid(session_id: str) -> str:
+    return _SID_SAFE.sub("_", session_id.strip()) or "default"
 
 
 class WriterProtocol(Protocol):
@@ -37,6 +47,8 @@ class SessionState:
     write_op_ledger: CallLedger = field(default_factory=CallLedger)
     title: str = "新会话"
     _last_permission: str = "workspace"
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
 
 
 class SessionManager:
@@ -50,6 +62,7 @@ class SessionManager:
         intent_router: IntentRouter | None = None,
         writer: WriterProtocol | None = None,
         workspace: WorkspaceManager | None = None,
+        sessions_dir: Path | str | None = None,
     ) -> None:
         self._config = config
         self._llm = llm
@@ -58,7 +71,10 @@ class SessionManager:
         self._intent_router = intent_router or IntentRouter(llm)
         self._writer = writer
         self._workspace = workspace
+        self._sessions_dir = Path(sessions_dir) if sessions_dir else None
         self._sessions: dict[str, SessionState] = {}
+        if self._sessions_dir is not None:
+            self._load_all()
         # 测试可观测字段
         self.last_rewritten: str = ""
         self.last_run_task: str = ""
@@ -73,8 +89,8 @@ class SessionManager:
         return self._sessions[session_id]
 
     def list_sessions(self) -> list[dict]:
-        """供 Web UI 列举会话。"""
-        return [
+        """供 Web UI 列举会话，按 updated_at 降序。"""
+        rows = [
             {
                 "session_id": state.session_id,
                 "title": state.title,
@@ -86,9 +102,92 @@ class SessionManager:
                     else "default"
                 ),
                 "permission": state._last_permission,
+                "updated_at": state.updated_at,
             }
             for state in self._sessions.values()
         ]
+        rows.sort(key=lambda r: r["updated_at"], reverse=True)
+        return rows
+
+    def delete_session(self, session_id: str) -> bool:
+        """删除会话（内存 + 落盘文件）。"""
+        self._sessions.pop(session_id, None)
+        if self._sessions_dir is not None:
+            path = self._sessions_dir / f"{_safe_sid(session_id)}.json"
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return True
+
+    def _save_session(self, state: SessionState) -> None:
+        """原子写入会话到 .sessions/{session_id}.json。"""
+        if self._sessions_dir is None:
+            return
+        self._sessions_dir.mkdir(parents=True, exist_ok=True)
+        data = {
+            "session_id": state.session_id,
+            "title": state.title,
+            "turns": [
+                {
+                    "turn": t.turn,
+                    "query_raw": t.query_raw,
+                    "query_rewritten": t.query_rewritten,
+                    "answer": t.answer,
+                }
+                for t in state.turns
+            ],
+            "rolling_summary": state.rolling_summary,
+            "created_at": state.created_at,
+            "updated_at": state.updated_at,
+        }
+        path = self._sessions_dir / f"{_safe_sid(state.session_id)}.json"
+        tmp = path.with_suffix(".json.tmp")
+        try:
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _load_all(self) -> None:
+        """启动时扫描 .sessions/ 加载历史会话；损坏文件跳过。"""
+        if not self._sessions_dir.is_dir():
+            return
+        for path in self._sessions_dir.glob("*.json"):
+            if path.name.endswith(".tmp"):
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict) or "session_id" not in data:
+                continue
+            sid = str(data["session_id"])
+            turns = [
+                TurnRecord(
+                    turn=int(t.get("turn", 0)),
+                    query_raw=str(t.get("query_raw", "")),
+                    query_rewritten=str(t.get("query_rewritten", "")),
+                    answer=str(t.get("answer", "")),
+                )
+                for t in data.get("turns", [])
+                if isinstance(t, dict)
+            ]
+            state = SessionState(
+                session_id=sid,
+                turns=turns,
+                rolling_summary=str(data.get("rolling_summary", "")),
+                title=str(data.get("title", "新会话")),
+                created_at=float(data.get("created_at", time.time())),
+                updated_at=float(data.get("updated_at", time.time())),
+            )
+            self._sessions[sid] = state
 
     def chat(
         self,
@@ -175,8 +274,10 @@ class SessionManager:
             answer=answer,
         )
         state.turns.append(turn)
+        state.updated_at = time.time()
         self._maybe_rename(state, user_input)
         self._maybe_roll_summary(state)
+        self._save_session(state)
         return answer
 
     def _maybe_rename(self, state: SessionState, user_input: str) -> None:

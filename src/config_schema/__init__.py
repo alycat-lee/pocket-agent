@@ -223,8 +223,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
 
 
 def get_config_schema() -> list[dict[str, Any]]:
-    """返回配置 schema 副本（设置页数据源）。"""
-    return [dict(item) for item in CONFIG_SCHEMA]
+    """返回配置 schema 副本（设置页数据源）；deprecated 项不返回。"""
+    return [dict(item) for item in CONFIG_SCHEMA if not item.get("deprecated")]
 
 
 def schema_keys() -> set[str]:
