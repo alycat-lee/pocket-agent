@@ -1,0 +1,38 @@
+---
+description: pocket-agent 铁律：依赖边界、LLM 抽象、规格与提示词逐字一致
+alwaysApply: true
+---
+
+# pocket-agent
+
+面向 8G 显存本地小模型的工具调用 Agent 框架。模型只做单步选择与参数填充；流程、记忆、去重、格式、护栏由代码保证。
+
+## 铁律
+
+- Python ≥ 3.10。全部代码带类型注解。`ruff check src tests` 必须通过。
+- 核心依赖只允许 `httpx`、`pydantic`。测试只用 `pytest`、`pytest-cov`。不引入其他依赖。
+- 所有 LLM 交互必须经过 `LLMClientProtocol`。业务模块禁止直接发 HTTP。
+- 接口签名必须与 `docs/03-模块实现规格.md` 完全一致，不得增删改参数名、返回类型或异常类型。
+- 提示词模板必须与 `pocket-agent-docs/04-运行时提示词模板.md` 逐字一致，不得改写、翻译或“优化”。
+- 目录结构遵循 `docs/02-技术架构设计.md` §5。
+- 每写一个模块，同步写对应单元测试。账本、压缩、护栏用 MockLLM，不依赖真实 LLM。
+
+## 禁止
+
+```python
+# 业务模块直接请求模型
+httpx.post(f"{base_url}/chat/completions", json=payload)
+
+# 偏离规格的签名
+def check(self, name: str, args: dict, *, strict: bool = False) -> bool: ...
+```
+
+## 必须
+
+```python
+# 只通过协议调用
+client: LLMClientProtocol
+value = client.generate_int(prompt, minimum=-1, maximum=len(candidates) - 1)
+```
+
+规格与模板冲突时，以规格文档的签名和模板文档的原文为准，先指出冲突再改代码。
