@@ -101,6 +101,14 @@ py -3.13 -m pytest --cov=pocket_agent --cov-report=term-missing
 py -3.13 -m ruff check src tests
 ```
 
+跑完后清理缓存与测试临时文件：
+
+```bash
+py -3.13 scripts/clean.py
+```
+
+pytest 已默认 `--cache-clear`；Agent 跑完测试/检查后也会自动执行上述清理。
+
 ## 文档
 
 - `docs/01-项目需求文档.md`

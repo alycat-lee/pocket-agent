@@ -1,0 +1,32 @@
+---
+description: pytest/ruff/安装等命令跑完后自动清除缓存与测试临时文件
+alwaysApply: true
+---
+
+# 跑完后清理
+
+用户要求：每次跑完后自动清除 cache 与测试生成的临时文件。
+
+## 触发时机
+
+在以下命令结束后立刻清理（无论成败）：
+
+- `pytest` / `pytest --cov=...`
+- `ruff check` / `ruff format`
+- `pip install -e ...`（可能留下 egg-info）
+
+## 清理方式
+
+在仓库根目录执行：
+
+```bash
+py -3.13 scripts/clean.py
+```
+
+该脚本会删除：`__pycache__`、`.pytest_cache`、`.pytest_tmp`、`.ruff_cache`、`.coverage`、`htmlcov`、`dist`、`build`、`*.egg-info`、`*.pyc` 等。
+
+不要手动 `rm -rf` 乱删；不要删除 `.venv`、源码或用户数据。
+
+## 与自动提交
+
+清理结果通常只影响被 gitignore 的文件，一般无需为此单独 commit。若本次任务还有源码改动，按 `auto-commit` 规则在清理之后再提交源码变更。

@@ -36,6 +36,8 @@ packages = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 缓存每次清空；临时目录放到仓库内，便于 scripts/clean.py 清理
+addopts = "--cache-clear --basetemp=.pytest_tmp"
 
 [tool.ruff]
 target-version = "py310"
