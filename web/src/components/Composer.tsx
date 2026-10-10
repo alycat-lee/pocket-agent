@@ -1,28 +1,36 @@
-import type { ChatMode, PermissionMode } from "../api/types";
+import type { IntentMode, PermissionMode } from "../api/types";
 import { formatChars } from "../lib/format";
 
 interface Props {
-  mode: ChatMode;
+  intent: IntentMode | null;
+  intentConfidence: number;
   permission: PermissionMode;
   value: string;
   running: boolean;
   promptCharBudget: number;
   segments: { label: string; chars: number }[];
-  onMode: (m: ChatMode) => void;
+  onCorrectIntent: (mode: IntentMode) => void;
   onPermission: (p: PermissionMode) => void;
   onChange: (v: string) => void;
   onSend: () => void;
   onStop: () => void;
 }
 
+const INTENT_LABEL: Record<IntentMode, string> = {
+  qa: "问答",
+  agent: "工具",
+  writer: "长文",
+};
+
 export function Composer({
-  mode,
+  intent,
+  intentConfidence,
   permission,
   value,
   running,
   promptCharBudget,
   segments,
-  onMode,
+  onCorrectIntent,
   onPermission,
   onChange,
   onSend,
@@ -33,16 +41,20 @@ export function Composer({
   return (
     <div className="composer">
       <div className="composer-toolbar">
-        <select
-          className="select"
-          value={mode}
-          onChange={(e) => onMode(e.target.value as ChatMode)}
-          aria-label="模式"
-        >
-          <option value="qa">问答</option>
-          <option value="tools">工具调用</option>
-          <option value="writer">长文写作</option>
-        </select>
+        {intent ? (
+          <span
+            className="intent-badge"
+            title={`意图: ${INTENT_LABEL[intent]} (置信度 ${Math.round(intentConfidence * 100)}%)。点击纠正`}
+            onClick={() => {
+              const modes: IntentMode[] = ["qa", "agent", "writer"];
+              const next = modes[(modes.indexOf(intent) + 1) % modes.length];
+              onCorrectIntent(next);
+            }}
+          >
+            {INTENT_LABEL[intent]}
+            {intentConfidence < 1.0 ? ` ${Math.round(intentConfidence * 100)}%` : ""}
+          </span>
+        ) : null}
         <select
           className="select"
           value={permission}
@@ -57,10 +69,10 @@ export function Composer({
       <div className="composer-box">
         <textarea
           value={value}
-          placeholder="输入消息… 使用 @文件 引用（预注入 read_file）"
+          placeholder="输入消息…（Enter 发送 / Shift+Enter 换行）"
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               if (!running) onSend();
             }

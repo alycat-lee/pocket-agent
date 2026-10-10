@@ -119,14 +119,17 @@ class AgentRunner:
         run_id: str | None = None,
         ledger: CallLedger | None = None,
         session_id: str | None = None,
+        registry: ToolRegistry | None = None,
     ) -> RunResult:
         """主循环：见规格 §8。仅 LLMConnectionError 允许上抛。
 
         run_id 非空时启用断点续跑：每步 dump；启动时恢复；正常完成后 clear。
         ledger：外部传入的当轮账本；为 None 时使用实例默认账本。
         session_id：事件落盘与轨迹视图关联的会话 id。
+        registry：当轮工具注册表覆盖；为 None 时使用实例默认。qa 模式传空注册表。
         """
         active_ledger = ledger if ledger is not None else self._ledger
+        active_registry = registry if registry is not None else self._registry
         self._guard = LoopGuard(self._config)
         self._stop.clear()
         self._run_session_id = session_id or "default"
@@ -163,7 +166,7 @@ class AgentRunner:
                     ),
                 },
             )
-            candidates = self._registry.recall(task, self._config.tool_recall_top_n)
+            candidates = active_registry.recall(task, self._config.tool_recall_top_n)
             if not candidates:
                 stop_reason = StopReason.MODEL_DONE
                 break

@@ -12,7 +12,7 @@ import {
 import type {
   ApprovalRequest,
   ChatMessage,
-  ChatMode,
+  IntentMode,
   PermissionMode,
   SessionInfo,
   SessionView,
@@ -31,11 +31,9 @@ import { StatusBar } from "./components/StatusBar";
 import { TrajectoryView } from "./components/TrajectoryView";
 import {
   buildOverrides,
-  getMode,
   getPermission,
   getSessionView,
   getStatusExpanded,
-  setMode as persistMode,
   setPermission as persistPermission,
   setSessionView,
   setStatusExpanded,
@@ -75,7 +73,8 @@ export default function App() {
   const [followTail, setFollowTail] = useState(true);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  const [mode, setMode] = useState<ChatMode>(() => getMode("default"));
+  const [intent, setIntent] = useState<IntentMode | null>(null);
+  const [intentConfidence, setIntentConfidence] = useState(1);
   const [permission, setPermission] = useState<PermissionMode>(() =>
     getPermission("default"),
   );
@@ -93,6 +92,7 @@ export default function App() {
   const tickRef = useRef<number | null>(null);
   const runStarted = useRef<number>(0);
   const turnCounter = useRef(0);
+  const correctedModeRef = useRef<IntentMode | null>(null);
 
   const reloadSessions = useCallback(async () => {
     try {
@@ -167,7 +167,9 @@ export default function App() {
     setStatus(EMPTY_STATUS);
     setApproval(null);
     setView(getSessionView(sessionId));
-    setMode(getMode(sessionId));
+    setIntent(null);
+    setIntentConfidence(1);
+    correctedModeRef.current = null;
     setPermission(getPermission(sessionId));
     setMessages([]);
     setRecords([]);
@@ -314,6 +316,13 @@ export default function App() {
         setRunId(null);
         closeEs();
         void reloadSessions();
+      } else if (event === "intent.detected") {
+        const mode = String(data.mode || "agent") as IntentMode;
+        const conf = Number(data.confidence ?? 1);
+        if (correctedModeRef.current === null) {
+          setIntent(mode);
+          setIntentConfidence(conf);
+        }
       } else if (event === "error") {
         const msg = String(data.message || "error");
         const conn =
@@ -393,11 +402,15 @@ export default function App() {
 
     closeEs();
     const gen = ++esGenRef.current;
+    const overrides = buildOverrides(permission);
+    if (correctedModeRef.current) {
+      overrides["mode"] = correctedModeRef.current;
+    }
     const es = openChatEventSource({
       message: text,
       sessionId,
       runId: rid,
-      overrides: buildOverrides(mode, permission),
+      overrides,
     });
     esRef.current = es;
 
@@ -408,6 +421,7 @@ export default function App() {
       "step.intercepted",
       "answer.done",
       "approval.required",
+      "intent.detected",
       "error",
     ];
     for (const name of names) {
@@ -648,15 +662,17 @@ export default function App() {
                 />
               ) : null}
               <Composer
-                mode={mode}
+                intent={intent}
+                intentConfidence={intentConfidence}
                 permission={permission}
                 value={draft}
                 running={status.running}
                 promptCharBudget={promptBudget}
                 segments={segments}
-                onMode={(m) => {
-                  setMode(m);
-                  persistMode(sessionId, m);
+                onCorrectIntent={(m) => {
+                  correctedModeRef.current = m;
+                  setIntent(m);
+                  setIntentConfidence(1);
                 }}
                 onPermission={(p) => {
                   setPermission(p);

@@ -1,6 +1,7 @@
 export type SessionView = "chat" | "trajectory";
 
 export type ChatMode = "qa" | "tools" | "writer";
+export type IntentMode = "qa" | "agent" | "writer";
 export type PermissionMode = "readonly" | "confirm_write" | "auto";
 
 export interface SessionInfo {

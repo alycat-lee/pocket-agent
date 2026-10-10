@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 from pocket_agent.config import AgentConfig
+from pocket_agent.intent_router import IntentMode, IntentRouter
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError
 from pocket_agent.prompts import (
@@ -11,6 +13,11 @@ from pocket_agent.prompts import (
     SESSION_TITLE,
 )
 from pocket_agent.runner import AgentRunner, EventEmitter, StepRecord
+from pocket_agent.tools import ToolRegistry
+
+
+class WriterProtocol(Protocol):
+    def write(self, topic: str, **kwargs: Any) -> str: ...
 
 
 @dataclass
@@ -37,16 +44,22 @@ class SessionManager:
         llm: LLMClientProtocol,
         runner: AgentRunner,
         events: EventEmitter | None = None,
+        *,
+        intent_router: IntentRouter | None = None,
+        writer: WriterProtocol | None = None,
     ) -> None:
         self._config = config
         self._llm = llm
         self._runner = runner
         self._events = events
+        self._intent_router = intent_router or IntentRouter(llm)
+        self._writer = writer
         self._sessions: dict[str, SessionState] = {}
         # 测试可观测字段
         self.last_rewritten: str = ""
         self.last_run_task: str = ""
         self.last_result = None
+        self.last_intent: IntentMode | None = None
         self.rewrite_call_count: int = 0
         self.summary_call_count: int = 0
 
@@ -67,8 +80,17 @@ class SessionManager:
             for state in self._sessions.values()
         ]
 
-    def chat(self, session_id: str, user_input: str) -> str:
-        """多轮对话入口。见文档 07 §1。"""
+    def chat(
+        self,
+        session_id: str,
+        user_input: str,
+        *,
+        force_mode: IntentMode | None = None,
+    ) -> str:
+        """多轮对话入口。见文档 07 §1。
+
+        force_mode：用户纠正意图时传入，跳过自动分类。
+        """
         state = self.get_state(session_id)
         rewritten = self._rewrite_if_needed(state, user_input)
         self.last_rewritten = rewritten
@@ -76,26 +98,56 @@ class SessionManager:
         run_task = self._compose_run_task(state, rewritten)
         self.last_run_task = run_task
 
-        turn_ledger = CallLedger()
-        turn_ledger.merge_records(state.write_op_ledger)
-        result = self._runner.run(
-            run_task,
-            ledger=turn_ledger,
-            session_id=session_id,
-        )
-        self.last_result = result
-        self._sync_write_ops(state, result.steps)
+        # 意图自动路由（仅在接入事件总线时触发——单元测试无 events 时不消耗队列）
+        if self._events is None:
+            mode: IntentMode = "agent"
+            confidence = 1.0
+        elif force_mode is not None:
+            mode = force_mode
+            confidence = 1.0
+        else:
+            mode, confidence = self._intent_router.classify(user_input)
+        self.last_intent = mode
+        if self._events is not None:
+            self._events.emit(
+                "intent.detected",
+                {
+                    "session_id": session_id,
+                    "mode": mode,
+                    "confidence": confidence,
+                },
+            )
+
+        if mode == "writer" and self._writer is not None:
+            answer = self._writer.write(rewritten)
+            self.last_result = None
+        else:
+            turn_ledger = CallLedger()
+            turn_ledger.merge_records(state.write_op_ledger)
+            # qa 模式不给工具：空注册表 → recall 返回空 → 直接 final_answer
+            run_registry: ToolRegistry | None = None
+            if mode == "qa":
+                run_registry = ToolRegistry(self._config)
+            result = self._runner.run(
+                run_task,
+                ledger=turn_ledger,
+                session_id=session_id,
+                registry=run_registry,
+            )
+            self.last_result = result
+            self._sync_write_ops(state, result.steps)
+            answer = str(result.answer)
 
         turn = TurnRecord(
             turn=len(state.turns) + 1,
             query_raw=user_input,
             query_rewritten=rewritten,
-            answer=str(result.answer),
+            answer=answer,
         )
         state.turns.append(turn)
         self._maybe_rename(state, user_input)
         self._maybe_roll_summary(state)
-        return result.answer
+        return answer
 
     def _maybe_rename(self, state: SessionState, user_input: str) -> None:
         """首轮问答完成后自动生成会话标题；失败回退为用户输入前 12 字截断。

@@ -18,5 +18,8 @@ class SessionPlugin:
         ac = agent_config_from(config)
         llm = ctx.require("llm")
         agent = ctx.require("agent")
-        manager = SessionManager(ac, llm, agent, events=ctx)
+        writer = ctx.require("writer") if ctx.has("writer") else None
+        manager = SessionManager(
+            ac, llm, agent, events=ctx, writer=writer
+        )
         ctx.provide("sessions", manager)

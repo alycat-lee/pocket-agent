@@ -44,18 +44,10 @@ export function setPermission(sessionId: string, mode: PermissionMode): void {
 
 /** 模式/权限 → 单次 overrides */
 export function buildOverrides(
-  mode: ChatMode,
   permission: PermissionMode,
 ): Record<string, unknown> {
   const overrides: Record<string, unknown> = {};
-  if (mode === "qa") {
-    // 问答面：收紧步数，偏向直接回答
-    overrides.max_steps = 1;
-  } else if (mode === "writer") {
-    overrides.max_steps = 12;
-  }
   if (permission === "auto") {
-    // 自动放行：前端侧仅作标记；实际审批由 gate 控制
     overrides._permission = "auto";
   } else if (permission === "readonly") {
     overrides._permission = "readonly";

@@ -162,7 +162,7 @@ def test_auto_rename_after_first_turn(mock_llm_factory: type) -> None:
     """首轮后自动生成标题；emit session.renamed 事件。"""
     cfg = AgentConfig(max_steps=3)
     registry = ToolRegistry(cfg)
-    llm = mock_llm_factory(["回答1", "北京天气查询"])
+    llm = mock_llm_factory([1, "回答1", "北京天气查询"])  # 1=intent→agent
     runner = AgentRunner(cfg, llm, registry)
 
     renamed_events: list[dict] = []
@@ -189,18 +189,18 @@ def test_auto_rename_fallback_on_llm_failure(mock_llm_factory: type) -> None:
     """标题生成失败时回退为用户输入前 12 字截断。"""
     cfg = AgentConfig(max_steps=3)
     registry = ToolRegistry(cfg)
-    # 标题生成抛异常
-    llm = mock_llm_factory(["回答1", RuntimeError("title gen failed")])
+    # 1=intent→agent, "回答1"=final, RuntimeError=title gen fail
+    llm = mock_llm_factory([1, "回答1", RuntimeError("title gen failed")])
     runner = AgentRunner(cfg, llm, registry)
 
     class _NullEvents:
         def emit(self, event: str, payload: dict) -> None: ...
 
     mgr = SessionManager(cfg, llm, runner, events=_NullEvents())
-    mgr.chat("s1", "这是一个很长的用户输入超过十二个字")
+    mgr.chat("s1", "这是一个非常非常长的用户输入超过十二个字呢")
 
     state = mgr.get_state("s1")
-    assert state.title == "这是一个很长的用户输入超过十二个字"[:12]
+    assert state.title == "这是一个非常非常长的用户输入超过十二个字呢"[:12]
 
 
 def test_no_auto_rename_without_events(mock_llm_factory: type) -> None:

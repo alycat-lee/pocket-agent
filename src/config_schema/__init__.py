@@ -18,6 +18,7 @@ def _item(
     maximum: float | None = None,
     enum: list[Any] | None = None,
     secret: bool = False,
+    deprecated: bool = False,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
         "key": key,
@@ -33,30 +34,35 @@ def _item(
         item["enum"] = enum
     if secret:
         item["secret"] = True
+    if deprecated:
+        item["deprecated"] = True
     return item
 
 
 # 声明式配置元数据——设置页唯一数据源；新增 AgentConfig 字段必须在此登记
 CONFIG_SCHEMA: list[dict[str, Any]] = [
-    # 模型
+    # 模型（Phase 20 后由 providers 列表管理，扁平字段标记 deprecated）
     _item(
         "base_url",
         type="string",
         group="模型",
-        description="LLM OpenAI 兼容接口地址",
+        description="LLM OpenAI 兼容接口地址（已迁移至 providers）",
+        deprecated=True,
     ),
     _item(
         "model",
         type="string",
         group="模型",
-        description="模型名称（llama.cpp 可不校验）",
+        description="模型名称（已迁移至 providers）",
+        deprecated=True,
     ),
     _item(
         "api_key",
         type="string",
         group="模型",
-        description="云端 API Key（只写不读，返回时脱敏）",
+        description="云端 API Key（已迁移至 providers，只写不读）",
         secret=True,
+        deprecated=True,
     ),
     _item(
         "temperature",
@@ -205,12 +211,13 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         minimum=1,
         maximum=50,
     ),
-    # 路由
+    # 路由（Phase 20 后由 providers routing 管理，标记 deprecated）
     _item(
         "route_cloud",
         type="boolean",
         group="模型路由",
-        description="复杂生成（final_answer/section_write）走云端",
+        description="复杂生成走云端（已迁移至 providers routing）",
+        deprecated=True,
     ),
 ]
 

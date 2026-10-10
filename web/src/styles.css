@@ -416,6 +416,26 @@ button:disabled {
   gap: var(--space-md);
   margin-bottom: var(--space-md);
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.intent-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--color-accent) 15%, var(--color-muted));
+  border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
+  color: var(--color-accent);
+  cursor: pointer;
+  user-select: none;
+  transition: filter var(--transition);
+}
+
+.intent-badge:hover {
+  filter: brightness(1.15);
 }
 
 .select {

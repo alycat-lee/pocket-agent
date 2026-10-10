@@ -97,3 +97,7 @@ SECTION_WRITE: str = """你正在逐段撰写文章「{topic}」。
 
 SESSION_TITLE: str = """为以下对话生成一个不超过 12 个字的会话标题，只输出标题本身。
 用户：{user_input}"""
+
+INTENT_ROUTE: str = """判断用户意图类型。0=直接问答，不需要工具；
+1=需要调用工具完成任务；2=需要撰写长文。
+用户输入：{user_input} 只输出数字。"""

@@ -131,6 +131,65 @@ export function testProvider(body: {
   return json("/api/providers/test", { method: "POST", body: JSON.stringify(body) });
 }
 
+export function fetchProviders(): Promise<{
+  providers: Array<{
+    id: string;
+    name: string;
+    type: string;
+    base_url: string;
+    api_key: string;
+    model: string;
+    sampling: Record<string, unknown> | null;
+  }>;
+  default_provider_id: string;
+  routing: { choose_fill: string; generate: string };
+}> {
+  return json("/api/providers");
+}
+
+export function createProvider(body: {
+  name: string;
+  type: string;
+  base_url: string;
+  api_key?: string;
+  model?: string;
+  sampling?: Record<string, unknown> | null;
+}): Promise<{ ok: boolean; providers: unknown[] }> {
+  return json("/api/providers", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateProvider(
+  id: string,
+  body: Partial<{
+    name: string;
+    type: string;
+    base_url: string;
+    api_key: string;
+    model: string;
+    sampling: Record<string, unknown> | null;
+  }>,
+): Promise<{ ok: boolean; providers: unknown[] }> {
+  return json(`/api/providers/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteProvider(id: string): Promise<{ ok: boolean; providers: unknown[] }> {
+  return json(`/api/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function setDefaultProvider(id: string): Promise<{ ok: boolean; default_provider_id: string }> {
+  return json(`/api/providers/${encodeURIComponent(id)}/default`, { method: "POST" });
+}
+
+export function updateRouting(body: {
+  choose_fill: string;
+  generate: string;
+}): Promise<{ ok: boolean; routing: { choose_fill: string; generate: string } }> {
+  return json("/api/routing", { method: "PUT", body: JSON.stringify(body) });
+}
+
 /** EventSource 消费 SSE；overrides 以 query JSON 传递。 */
 export function openChatEventSource(opts: {
   message: string;

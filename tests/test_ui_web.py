@@ -125,6 +125,7 @@ def test_sse_chat_event_stream_format() -> None:
     _mount_stack(
         ctx,
         [
+            1,  # intent → agent
             0,
             {"city": "北京"},
             -1,
@@ -228,6 +229,7 @@ def test_sse_cache_hit_and_intercept_markers() -> None:
     _mount_stack(
         ctx,
         [
+            1,  # intent → agent
             0,
             {"city": "北京"},
             0,
@@ -281,7 +283,7 @@ def test_approval_required_timeout_defaults_to_reject() -> None:
         def apply(self, c: Context, config: dict) -> None:
             c.provide("tools", registry)
 
-    ctx.mount(_FakeLlmPlugin([0, {"text": "secret"}, -1, "done"]))
+    ctx.mount(_FakeLlmPlugin([1, 0, {"text": "secret"}, -1, "done"]))  # 1=intent→agent
     ctx.mount(_ToolsWrite())
     ctx.mount(AgentLoopPlugin(), {"max_steps": 5})
     ctx.mount(SessionPlugin())
@@ -322,7 +324,7 @@ def test_approval_approve_allows_write_tool() -> None:
         def apply(self, c: Context, config: dict) -> None:
             c.provide("tools", registry)
 
-    ctx.mount(_FakeLlmPlugin([0, {"text": "ok"}, -1, "完成"]))
+    ctx.mount(_FakeLlmPlugin([1, 0, {"text": "ok"}, -1, "完成"]))  # 1=intent→agent
     ctx.mount(_ToolsWrite())
     ctx.mount(AgentLoopPlugin(), {"max_steps": 5})
     ctx.mount(SessionPlugin())

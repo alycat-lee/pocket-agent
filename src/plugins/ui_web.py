@@ -36,6 +36,7 @@ _BUS_EVENTS = (
     "answer.done",
     "approval.required",
     "session.renamed",
+    "intent.detected",
 )
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 
@@ -247,6 +248,29 @@ class ProviderTestIn(BaseModel):
     timeout: float = 10.0
 
 
+class ProviderIn(BaseModel):
+    name: str
+    type: str = "llamacpp"
+    base_url: str
+    api_key: str = ""
+    model: str = ""
+    sampling: dict[str, Any] | None = None
+
+
+class ProviderUpdateIn(BaseModel):
+    name: str | None = None
+    type: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    sampling: dict[str, Any] | None = None
+
+
+class RoutingIn(BaseModel):
+    choose_fill: str
+    generate: str
+
+
 class ApprovalBroker:
     """跨线程审批：emit approval.required 后阻塞等待 Web 确认。"""
 
@@ -455,6 +479,122 @@ def build_app(
             _apply_live_config(merged)
         return JSONResponse({"ok": True, "config": redact_secrets(merged.to_dict())})
 
+    # ── Providers API（Phase 20 多模型）────────────────────
+
+    def _load_providers_cfg() -> Any:
+        from pocket_agent.providers import load_providers_config
+
+        return load_providers_config(load_settings(settings_file), _resolved_config())
+
+    def _save_providers_cfg(cfg: Any) -> None:
+        from pocket_agent.providers import providers_to_dict
+
+        with config_lock:
+            current = load_settings(settings_file)
+            data = providers_to_dict(cfg)
+            current["providers"] = data["providers"]
+            current["default_provider_id"] = data["default_provider_id"]
+            current["routing"] = data["routing"]
+            save_settings(current, settings_file)
+
+    @app.get("/api/providers")
+    def api_providers_list() -> dict[str, Any]:
+        from pocket_agent.providers import redact_providers
+
+        cfg = _load_providers_cfg()
+        return redact_providers(cfg)
+
+    @app.post("/api/providers")
+    def api_providers_create(body: ProviderIn) -> JSONResponse:
+        import uuid as _uuid
+
+        from pocket_agent.providers import ProviderConfig
+
+        cfg = _load_providers_cfg()
+        pid = _uuid.uuid4().hex[:8]
+        pc = ProviderConfig(
+            id=pid,
+            name=body.name,
+            type=body.type,  # type: ignore[arg-type]
+            base_url=body.base_url,
+            api_key=body.api_key,
+            model=body.model,
+            sampling=body.sampling,
+        )
+        cfg.providers.append(pc)
+        if not cfg.default_provider_id:
+            cfg.default_provider_id = pid
+        if not cfg.routing.choose_fill:
+            cfg.routing.choose_fill = pid
+        if not cfg.routing.generate:
+            cfg.routing.generate = pid
+        _save_providers_cfg(cfg)
+        from pocket_agent.providers import redact_providers
+
+        return JSONResponse({"ok": True, "providers": redact_providers(cfg)["providers"]})
+
+    @app.put("/api/providers/{pid}")
+    def api_providers_update(pid: str, body: ProviderUpdateIn) -> JSONResponse:
+        cfg = _load_providers_cfg()
+        pc = next((p for p in cfg.providers if p.id == pid), None)
+        if pc is None:
+            return JSONResponse({"ok": False, "error": "provider not found"}, 404)
+        if body.name is not None:
+            pc.name = body.name
+        if body.type is not None:
+            pc.type = body.type  # type: ignore[assignment]
+        if body.base_url is not None:
+            pc.base_url = body.base_url
+        if body.api_key is not None and "***" not in body.api_key:
+            pc.api_key = body.api_key
+        if body.model is not None:
+            pc.model = body.model
+        if body.sampling is not None:
+            pc.sampling = body.sampling
+        _save_providers_cfg(cfg)
+        from pocket_agent.providers import redact_providers
+
+        return JSONResponse({"ok": True, "providers": redact_providers(cfg)["providers"]})
+
+    @app.delete("/api/providers/{pid}")
+    def api_providers_delete(pid: str) -> JSONResponse:
+        cfg = _load_providers_cfg()
+        if not any(p.id == pid for p in cfg.providers):
+            return JSONResponse({"ok": False, "error": "provider not found"}, 404)
+        cfg.providers = [p for p in cfg.providers if p.id != pid]
+        if cfg.default_provider_id == pid:
+            cfg.default_provider_id = cfg.providers[0].id if cfg.providers else ""
+        if cfg.routing.choose_fill == pid:
+            cfg.routing.choose_fill = cfg.default_provider_id
+        if cfg.routing.generate == pid:
+            cfg.routing.generate = cfg.default_provider_id
+        _save_providers_cfg(cfg)
+        from pocket_agent.providers import redact_providers
+
+        return JSONResponse({"ok": True, "providers": redact_providers(cfg)["providers"]})
+
+    @app.post("/api/providers/{pid}/default")
+    def api_providers_set_default(pid: str) -> JSONResponse:
+        cfg = _load_providers_cfg()
+        if not any(p.id == pid for p in cfg.providers):
+            return JSONResponse({"ok": False, "error": "provider not found"}, 404)
+        cfg.default_provider_id = pid
+        _save_providers_cfg(cfg)
+        return JSONResponse({"ok": True, "default_provider_id": pid})
+
+    @app.put("/api/routing")
+    def api_routing_update(body: RoutingIn) -> JSONResponse:
+        cfg = _load_providers_cfg()
+        ids = {p.id for p in cfg.providers}
+        if body.choose_fill not in ids or body.generate not in ids:
+            return JSONResponse({"ok": False, "error": "provider id not found"}, 404)
+        cfg.routing.choose_fill = body.choose_fill
+        cfg.routing.generate = body.generate
+        _save_providers_cfg(cfg)
+        return JSONResponse(
+            {"ok": True, "routing": {"choose_fill": body.choose_fill, "generate": body.generate}}
+        )
+
     # ── 插件 API ──────────────────────────────────────────
 
     @app.get("/api/plugins")
@@ -616,10 +756,18 @@ def build_app(
         )
         agent.apply_config(live)
         runs[rid] = agent
+        # overrides 中的 mode 是意图纠正，不是 AgentConfig 字段
+        force_mode = None
+        if overrides and "mode" in overrides:
+            fm = str(overrides["mode"])
+            if fm in ("qa", "agent", "writer"):
+                force_mode = fm  # type: ignore[assignment]
         try:
             if ctx.has("sessions") and run_id is None:
                 # 会话路径：自动 run_id 仅用于 stop，不启用 checkpoint resume
-                ctx.require("sessions").chat(session_id, message)
+                ctx.require("sessions").chat(
+                    session_id, message, force_mode=force_mode
+                )
             else:
                 agent.run(message, run_id=run_id, session_id=session_id)
         finally:
