@@ -247,7 +247,7 @@ class LongWriter:
         thinking = take_thinking(self._llm)
         if thinking and self._config.reasoning_enabled and self.on_thinking is not None:
             self.on_thinking(thinking)
-        return strip_think_blocks(raw)
+        return _strip_section_echo(strip_think_blocks(raw))
 
     def _expand_if_short(
         self,
@@ -600,6 +600,20 @@ def _uniform_outline(total_chars: int, section_chars: int) -> list[SectionSpec]:
         SectionSpec(title=f"第{i}部分", points=[], target_chars=target)
         for i in range(1, n + 1)
     ]
+
+
+_SECTION_ECHO_LINE = re.compile(
+    r"^\s*只输出(?:本段正文|JSON|摘要本身|标题本身|数字)[。.]?\s*$",
+    re.MULTILINE,
+)
+_SECTION_ECHO_INLINE = re.compile(r"只输出本段正文。?")
+
+
+def _strip_section_echo(text: str) -> str:
+    """去掉段落生成回声的指令句（如「只输出本段正文。」）。"""
+    cleaned = _SECTION_ECHO_LINE.sub("", text or "")
+    cleaned = _SECTION_ECHO_INLINE.sub("", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 def _strip_thinking(text: str) -> str:

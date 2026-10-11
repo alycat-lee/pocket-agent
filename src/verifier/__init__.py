@@ -24,6 +24,7 @@ _LEAK_CANDIDATES = (
     "分析用户任务",
     "只输出 JSON",
     "只输出一个数字",
+    "只输出本段正文",
 )
 
 
@@ -43,7 +44,7 @@ def verify(answer: str, task_card: TaskCard) -> list[str]:
     problems: list[str] = []
     if _think_leaked(text):
         problems.append("思维链泄漏")
-    leaked = [p for p in prompt_leak_phrases() if p in text]
+    leaked = [p for p in prompt_leak_phrases() if _phrase_leaked(p, text)]
     if leaked:
         problems.append("prompt 泄漏")
     total = task_card.constraints.get("total_chars")
@@ -66,6 +67,13 @@ def attach_degrade(answer: str, reasons: list[str]) -> str:
     if not body:
         return note
     return f"{body}\n\n{note}"
+
+
+def _phrase_leaked(phrase: str, text: str) -> bool:
+    """短指令词「只输出」不匹配「只输出了/的/过」等叙事完成式。"""
+    if phrase != "只输出":
+        return phrase in text
+    return re.search(r"只输出(?![了的过着])", text) is not None
 
 
 def _think_leaked(text: str) -> bool:

@@ -25,6 +25,13 @@ TASK_CARD_SCHEMA: dict[str, Any] = {
 
 _TOTAL_CHARS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(万)?\s*字")
 _MODES: tuple[TaskType, ...] = ("qa", "agent", "writer")
+DEFAULT_WRITER_PLAN: list[str] = [
+    "确定题材与人物",
+    "展开开篇场景",
+    "推进冲突",
+    "推向高潮",
+    "收束全文",
+]
 
 
 @dataclass
@@ -60,7 +67,7 @@ def default_card(mode: TaskType, goal: str, *, user_input: str = "") -> TaskCard
         type=mode,
         goal=goal or user_input,
         constraints=constraints,
-        plan=[],
+        plan=list(DEFAULT_WRITER_PLAN) if mode == "writer" else [],
         needs_history=mode == "agent",
     )
 

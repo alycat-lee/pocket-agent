@@ -50,7 +50,10 @@ def test_think_leak_positive_and_negative() -> None:
 def test_prompt_leak_positive_and_negative() -> None:
     card = _card("qa")
     assert "prompt 泄漏" in verify("可用工具：get_weather\n当前进度：无", card)
+    assert "prompt 泄漏" in verify("请只输出 JSON，不要解释。", card)
     assert verify("根据已有天气数据，北京晴。", card) == []
+    # 长文叙事「只输出了…」不得误判为模板泄漏
+    assert verify("他只输出了淡淡的笑，随即转身离开。" + ("正" * 20), _card("writer")) == []
 
 
 def test_char_constraint_positive_and_negative() -> None:

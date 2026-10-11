@@ -7,6 +7,7 @@ from pocket_agent.writer import (
     SectionSpec,
     WriterMetrics,
     _desired_section_count,
+    _strip_section_echo,
     clip_to_target,
     parse_total_chars,
     section_max_tokens,
@@ -216,3 +217,11 @@ def test_section_max_tokens_scales_with_target(mock_llm_factory: type) -> None:
     assert spy.seen
     assert max(spy.seen) == section_max_tokens(500)
     assert spy._config.max_tokens == 512
+
+
+def test_strip_section_echo_drops_instruction_line() -> None:
+    raw = "咖啡馆里很安静。\n\n只输出本段正文。\n\n他推门进来。"
+    cleaned = _strip_section_echo(raw)
+    assert "只输出本段正文" not in cleaned
+    assert "咖啡馆里很安静。" in cleaned
+    assert "他推门进来。" in cleaned

@@ -18,7 +18,7 @@ from pocket_agent.prompts import (
     SESSION_TITLE,
 )
 from pocket_agent.runner import AgentRunner, EventEmitter, StepRecord
-from pocket_agent.task import Planner, TaskCard, default_card
+from pocket_agent.task import DEFAULT_WRITER_PLAN, Planner, TaskCard, default_card
 from pocket_agent.verifier import attach_degrade, verify
 from pocket_agent.workspace import WorkspaceManager
 
@@ -364,13 +364,16 @@ class SessionManager:
             new_type = "writer"
         elif card.type == "qa" and has_tool_hint(user_input):
             new_type = "agent"
-        if new_type == card.type:
+        plan = list(card.plan)
+        if new_type == "writer" and not plan:
+            plan = list(DEFAULT_WRITER_PLAN)
+        if new_type == card.type and plan == list(card.plan):
             return card
         return TaskCard(
             type=new_type,
             goal=card.goal,
             constraints=card.constraints,
-            plan=card.plan,
+            plan=plan,
             needs_history=card.needs_history or new_type == "agent",
         )
 
@@ -468,6 +471,8 @@ class SessionManager:
             return answer
         reasons = verify(answer, card)
         retries = max(0, int(self._config.answer_max_retries))
+        if card.type == "writer":
+            retries = 0
         attempt = 0
         while reasons and attempt < retries:
             self.last_verify_reasons = list(reasons)
