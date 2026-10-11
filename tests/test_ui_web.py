@@ -146,7 +146,12 @@ def test_sse_chat_event_stream_format() -> None:
 
     events = _parse_sse(body)
     names = [name for name, _ in events]
-    assert names[0] == "task.planned"
+    assert names[0] == "run.start"
+    start_ev = next(p for n, p in events if n == "run.start")
+    for key in ("run_id", "provider_name", "provider_type", "model"):
+        assert key in start_ev
+        assert start_ev[key]
+    assert "task.planned" in names
     assert "intent.detected" in names
     intent_ev = next(p for n, p in events if n == "intent.detected")
     for key in ("mode", "confidence", "source", "reason", "turn"):
@@ -166,6 +171,9 @@ def test_sse_chat_event_stream_format() -> None:
         "intercepts",
         "prompt_tokens_max",
         "total_steps",
+        "provider_name",
+        "provider_type",
+        "model",
     ):
         assert key in answer_ev
     start_ev = next(p for n, p in events if n == "step.start")
@@ -212,7 +220,13 @@ def test_sse_get_eventsource_with_overrides() -> None:
     assert "text/event-stream" in ctype
     events = _parse_sse(body)
     names = [n for n, _ in events]
-    assert names[0] == "task.planned"
+    assert names[0] == "run.start"
+    start_ev = next(p for n, p in events if n == "run.start")
+    for key in ("run_id", "provider_name", "provider_type", "model"):
+        assert key in start_ev
+        assert start_ev[key]
+    assert start_ev["run_id"] == "rid-1"
+    assert "task.planned" in names
     intent_ev = next(p for n, p in events if n == "intent.detected")
     assert intent_ev["mode"] == "qa"
     assert intent_ev["source"] == "rule"

@@ -15,7 +15,12 @@ from pocket_agent.compressor import ContextCompressor
 from pocket_agent.config import AgentConfig
 from pocket_agent.guard import LoopGuard
 from pocket_agent.ledger import CallLedger
-from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError, take_thinking
+from pocket_agent.llm_client import (
+    LLMAbortedError,
+    LLMClientProtocol,
+    LLMFormatError,
+    take_thinking,
+)
 from pocket_agent.prompts import CHOOSE_TOOL, FILL_ARGS, FINAL_ANSWER, SYSTEM_BASE
 from pocket_agent.tools import Tool, ToolRegistry
 
@@ -77,8 +82,19 @@ class AgentRunner:
         self._run_session_id: str = "default"
 
     def request_stop(self) -> None:
-        """请求中断：下一步循环开头生效，随后 final_answer 优雅收尾。"""
+        """请求中断：置位标志并立即 abort 在途 LLM 请求。"""
         self._stop.set()
+        fn = getattr(self._llm, "abort_current", None)
+        if callable(fn):
+            fn()
+
+    @staticmethod
+    def _stopped_answer(steps: list[StepRecord]) -> str:
+        """中断时保留已收集的工具结果，不发起新的生成。"""
+        parts = [s.result for s in steps if s.result and not s.error]
+        if not parts:
+            return "（已停止）"
+        return "\n".join(parts)
 
     def apply_config(self, config: AgentConfig) -> None:
         """热更新配置（settings / overrides 合并后即时生效）。"""
@@ -152,6 +168,9 @@ class AgentRunner:
             active_registry = filtered
         self._guard = LoopGuard(self._config)
         self._stop.clear()
+        reset = getattr(self._llm, "reset_abort", None)
+        if callable(reset):
+            reset()
         self._run_session_id = session_id or "default"
 
         steps: list[StepRecord] = []
@@ -207,6 +226,9 @@ class AgentRunner:
                     maximum=len(candidates) - 1,
                 )
                 self._emit_thinking(step=step)
+            except LLMAbortedError:
+                stop_reason = StopReason.STOPPED
+                break
             except LLMFormatError as exc:
                 llm_ms += (time.perf_counter() - llm_t0) * 1000
                 result = f"[格式错误] {exc}"
@@ -302,6 +324,10 @@ class AgentRunner:
             try:
                 args = self._llm.generate_json(fill_prompt, tool.schema)
                 self._emit_thinking(step=step)
+            except LLMAbortedError:
+                llm_ms += (time.perf_counter() - llm_t0) * 1000
+                stop_reason = StopReason.STOPPED
+                break
             except LLMFormatError as exc:
                 llm_ms += (time.perf_counter() - llm_t0) * 1000
                 result = f"[工具错误] {exc}"
@@ -467,16 +493,23 @@ class AgentRunner:
         if self._stop.is_set() and stop_reason != StopReason.STOPPED:
             stop_reason = StopReason.STOPPED
 
-        final_prompt = self._build_final_prompt(task, steps)
-        final_tokens = self._compressor.estimate_tokens(final_prompt)
-        prompt_tokens_max = max(prompt_tokens_max, final_tokens)
-        llm_t0 = time.perf_counter()
-        try:
-            answer = self._llm.generate(final_prompt)
-            self._emit_thinking()
-        except LLMFormatError as exc:
-            answer = f"[生成回答失败] {exc}"
-        llm_ms += (time.perf_counter() - llm_t0) * 1000
+        if stop_reason == StopReason.STOPPED or self._stop.is_set():
+            stop_reason = StopReason.STOPPED
+            answer = self._stopped_answer(steps)
+        else:
+            final_prompt = self._build_final_prompt(task, steps)
+            final_tokens = self._compressor.estimate_tokens(final_prompt)
+            prompt_tokens_max = max(prompt_tokens_max, final_tokens)
+            llm_t0 = time.perf_counter()
+            try:
+                answer = self._llm.generate(final_prompt)
+                self._emit_thinking()
+            except LLMAbortedError:
+                stop_reason = StopReason.STOPPED
+                answer = self._stopped_answer(steps)
+            except LLMFormatError as exc:
+                answer = f"[生成回答失败] {exc}"
+            llm_ms += (time.perf_counter() - llm_t0) * 1000
 
         if run_id:
             self._checkpoints.clear(run_id)
@@ -501,6 +534,8 @@ class AgentRunner:
             "prompt_tokens_max": prompt_tokens_max,
             "elapsed_ms": int((time.perf_counter() - run_t0) * 1000),
         }
+        meta = getattr(self, "_run_meta", None)
+        extra = dict(meta) if isinstance(meta, dict) else {}
         self._emit(
             "answer.done",
             {
@@ -508,6 +543,7 @@ class AgentRunner:
                 "stop_reason": stop_reason.value,
                 "total_steps": len(steps),
                 **settlement,
+                **extra,
             },
         )
 

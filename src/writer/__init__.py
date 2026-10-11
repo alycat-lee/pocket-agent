@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from pocket_agent.config import AgentConfig
 from pocket_agent.llm_client import (
+    LLMAbortedError,
     LLMClientProtocol,
     LLMFormatError,
     apply_max_tokens,
@@ -120,6 +122,15 @@ class LongWriter:
         self.last_sections: list[str] = []
         self.last_card: ConsistencyCard = ConsistencyCard()
         self.used_outline_fallback: bool = False
+        self._stop = threading.Event()
+        self.stopped: bool = False
+
+    def request_stop(self) -> None:
+        self._stop.set()
+        self.stopped = True
+        fn = getattr(self._llm, "abort_current", None)
+        if callable(fn):
+            fn()
 
     def write(
         self,
@@ -129,6 +140,13 @@ class LongWriter:
         plan: list[str] | None = None,
     ) -> str:
         """四段式流水线：大纲 → 一致性卡 → 逐段撰写 → 拼接去重。"""
+        if self._stop.is_set():
+            self.stopped = True
+            return ""
+        self.stopped = False
+        reset = getattr(self._llm, "reset_abort", None)
+        if callable(reset):
+            reset()
         outline = self._build_outline(topic, total_chars, material, plan=plan)
         self.last_outline = outline
         card = self._build_consistency_card(material, outline)
@@ -141,6 +159,9 @@ class LongWriter:
         hard_cap = int(total_chars * _ARTICLE_MAX_RATIO)
 
         for index, section in enumerate(outline, start=1):
+            if self._stop.is_set():
+                self.stopped = True
+                break
             used = sum(len(s) for s in written)
             if used >= hard_cap:
                 break
@@ -149,14 +170,18 @@ class LongWriter:
             budget = max(80, (total_chars - used) // max(remain_sections, 1))
             section.target_chars = min(section.target_chars, budget)
 
-            body = self._write_section(
-                topic=topic,
-                outline_text=outline_text,
-                consistency_text=consistency_text,
-                index=index,
-                section=section,
-                previous=written[-1] if written else "",
-            )
+            try:
+                body = self._write_section(
+                    topic=topic,
+                    outline_text=outline_text,
+                    consistency_text=consistency_text,
+                    index=index,
+                    section=section,
+                    previous=written[-1] if written else "",
+                )
+            except LLMAbortedError:
+                self.stopped = True
+                break
             if written:
                 body = trim_overlap(
                     written[-1],
@@ -164,14 +189,20 @@ class LongWriter:
                     self._config.overlap_max,
                     seam_search=self._config.seam_tail_chars,
                 )
-            body = self._expand_if_short(
-                topic=topic,
-                outline_text=outline_text,
-                consistency_text=consistency_text,
-                index=index,
-                section=section,
-                body=body,
-            )
+            try:
+                body = self._expand_if_short(
+                    topic=topic,
+                    outline_text=outline_text,
+                    consistency_text=consistency_text,
+                    index=index,
+                    section=section,
+                    body=body,
+                )
+            except LLMAbortedError:
+                self.stopped = True
+                if body.strip():
+                    written.append(body)
+                break
             if written:
                 body = trim_overlap(
                     written[-1],
@@ -194,6 +225,9 @@ class LongWriter:
 
         self.last_sections = written
         article = "\n\n".join(written)
+        if self.stopped or self._stop.is_set():
+            self.stopped = True
+            return article
         article = self._pad_to_total(
             topic=topic,
             article=article,

@@ -14,6 +14,7 @@ interface Props {
   onChange: (v: string) => void;
   onSend: () => void;
   onStop: () => void;
+  stopping?: boolean;
 }
 
 export function Composer({
@@ -29,6 +30,7 @@ export function Composer({
   onChange,
   onSend,
   onStop,
+  stopping = false,
 }: Props) {
   const used = segments.reduce((a, s) => a + s.chars, 0) + value.length;
 
@@ -73,8 +75,13 @@ export function Composer({
           }}
         />
         {running ? (
-          <button type="button" className="btn-danger" onClick={onStop}>
-            停止
+          <button
+            type="button"
+            className="btn-danger"
+            disabled={stopping}
+            onClick={onStop}
+          >
+            {stopping ? "正在停止…" : "停止"}
           </button>
         ) : (
           <button

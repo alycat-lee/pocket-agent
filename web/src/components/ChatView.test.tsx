@@ -20,6 +20,21 @@ function assistant(intentMode: "qa" | "agent" | "writer"): ChatMessage {
   };
 }
 
+describe("ChatView user bubble", () => {
+  it("applies msg-user class so short bubbles shrink to the right", () => {
+    render(
+      <ChatView
+        messages={[{ id: "u1", role: "user", content: "短消息" }]}
+        onSettlementClick={vi.fn()}
+        onCorrectIntent={vi.fn()}
+      />,
+    );
+    const bubble = screen.getByText("短消息").closest(".msg");
+    expect(bubble?.className).toContain("msg-user");
+    expect(bubble?.className).toContain("user");
+  });
+});
+
 describe("ChatView intent badge", () => {
   it("renders qa badge on the settlement row", () => {
     render(

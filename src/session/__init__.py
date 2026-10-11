@@ -10,7 +10,7 @@ from typing import Any, Protocol
 from pocket_agent.config import AgentConfig
 from pocket_agent.intent_router import IntentMode, IntentRouter, has_tool_hint
 from pocket_agent.ledger import CallLedger
-from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError
+from pocket_agent.llm_client import LLMAbortedError, LLMClientProtocol, LLMFormatError
 from pocket_agent.prompts import (
     FINAL_ANSWER,
     REWRITE_QUERY,
@@ -390,6 +390,11 @@ class SessionManager:
         if card.type == "qa":
             try:
                 answer = str(self._llm.generate(run_task)).strip()
+            except LLMAbortedError:
+                answer = "（已停止）"
+                self.last_result = None
+                self._emit_answer_done(answer, stop_reason="stopped")
+                return answer
             except LLMFormatError as exc:
                 answer = f"[生成回答失败] {exc}"
             self.last_result = None
@@ -440,13 +445,18 @@ class SessionManager:
             else max(1, self._config.section_char_target * 6)
         )
         goal = card.goal or topic
-        answer = writer.write(
-            goal,
-            total_chars=total_chars,
-            plan=list(card.plan) or None,
-        )
+        try:
+            answer = writer.write(
+                goal,
+                total_chars=total_chars,
+                plan=list(card.plan) or None,
+            )
+        except LLMAbortedError:
+            answer = "\n\n".join(writer.last_sections)
+            writer.stopped = True
         self.last_result = None
-        self._emit_answer_done(answer, stop_reason="writer")
+        reason = "stopped" if getattr(writer, "stopped", False) else "writer"
+        self._emit_answer_done(answer, stop_reason=reason)
         return answer
 
     def _agent_task(self, card: TaskCard, run_task: str) -> str:
@@ -484,6 +494,8 @@ class SessionManager:
             )
             try:
                 answer = str(self._llm.generate(prompt)).strip() or answer
+            except LLMAbortedError:
+                break
             except LLMFormatError:
                 break
             reasons = verify(answer, card)
@@ -504,6 +516,8 @@ class SessionManager:
     def _emit_answer_done(self, answer: str, *, stop_reason: str) -> None:
         if self._events is None:
             return
+        meta = getattr(self, "_run_meta", None)
+        extra = dict(meta) if isinstance(meta, dict) else {}
         self._events.emit(
             "answer.done",
             {
@@ -517,6 +531,7 @@ class SessionManager:
                 "intercepts": 0,
                 "prompt_tokens_max": 0,
                 "elapsed_ms": 0,
+                **extra,
             },
         )
 

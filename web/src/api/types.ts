@@ -31,6 +31,9 @@ export interface Settlement {
   prompt_tokens_max?: number;
   elapsed_ms?: number;
   stop_reason?: string;
+  provider_name?: string;
+  provider_type?: string;
+  model?: string;
 }
 
 export interface ChatMessage {

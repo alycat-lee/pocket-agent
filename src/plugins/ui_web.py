@@ -60,6 +60,7 @@ _BUS_EVENTS = (
     "task.planned",
     "task.step_done",
     "answer.rejected",
+    "run.start",
 )
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 
@@ -419,6 +420,20 @@ def build_app(
             if pc is not None:
                 return pc.base_url, pc.api_key or None
         return ac.base_url, ac.api_key or None
+
+    def _run_provider_meta(config: AgentConfig) -> dict[str, str]:
+        settings = _providers_settings()
+        raw = settings.get("providers")
+        if isinstance(raw, list) and raw:
+            from pocket_agent.providers import describe_provider, load_providers_config
+
+            pcfg = load_providers_config(settings, config)
+            return describe_provider(pcfg, role="generate", fallback_model=config.model)
+        return {
+            "provider_name": "本地模型",
+            "provider_type": "llamacpp",
+            "model": config.model,
+        }
 
     def _bind_routed_llm(config: AgentConfig) -> list[tuple[Any, Any]]:
         if not routing_from_settings:
@@ -823,12 +838,35 @@ def build_app(
 
     # ── 停止 ──────────────────────────────────────────────
 
+    def _abort_in_flight() -> None:
+        if ctx.has("writer"):
+            writer = ctx.require("writer")
+            fn = getattr(writer, "request_stop", None)
+            if callable(fn):
+                fn()
+        if ctx.has("sessions"):
+            sessions = ctx.require("sessions")
+            inner = getattr(sessions, "_writer", None)
+            fn = getattr(inner, "request_stop", None) if inner is not None else None
+            if callable(fn):
+                fn()
+            llm = getattr(sessions, "_llm", None)
+            abort = getattr(llm, "abort_current", None) if llm is not None else None
+            if callable(abort):
+                abort()
+        agent = ctx.require("agent") if ctx.has("agent") else None
+        abort_agent = getattr(agent, "request_stop", None) if agent is not None else None
+        if callable(abort_agent):
+            abort_agent()
+
     @app.post("/api/chat/{run_id}/stop")
     def api_chat_stop(run_id: str) -> JSONResponse:
         runner = runs.get(run_id)
+        if runner is not None:
+            runner.request_stop()
+        _abort_in_flight()
         if runner is None:
             return JSONResponse({"ok": False, "error": "run not found"}, 404)
-        runner.request_stop()
         return JSONResponse({"ok": True, "run_id": run_id})
 
     def _sse_stream(
@@ -897,6 +935,11 @@ def build_app(
         )
         agent.apply_config(live)
         bound = _bind_routed_llm(live)
+        meta = _run_provider_meta(live)
+        agent._run_meta = meta
+        if ctx.has("sessions"):
+            ctx.require("sessions")._run_meta = meta
+        ctx.emit("run.start", {"run_id": rid, **meta})
         runs[rid] = agent
         # overrides 中的 mode 是意图纠正，不是 AgentConfig 字段
         force_mode = None
@@ -933,8 +976,10 @@ def build_app(
                 media_type="text/event-stream",
             )
         session_id = str(body.session_id or "default")
-        run_id_s = str(body.run_id) if body.run_id else None
+        run_id_s = str(body.run_id) if body.run_id else str(uuid.uuid4())
         overrides = dict(body.overrides or {})
+        if ctx.has("agent"):
+            runs[run_id_s] = ctx.require("agent")
 
         def _run() -> None:
             _run_chat(
@@ -980,12 +1025,15 @@ def build_app(
                     parsed = {k: v for k, v in raw.items() if not str(k).startswith("_")}
             except json.JSONDecodeError:
                 parsed = {}
+        rid = run_id or str(uuid.uuid4())
+        if ctx.has("agent"):
+            runs[rid] = ctx.require("agent")
 
         def _run() -> None:
             _run_chat(
                 message=text,
                 session_id=session_id,
-                run_id=run_id,
+                run_id=rid,
                 overrides=parsed or None,
                 permission=permission,
                 workspace_id=workspace_id,

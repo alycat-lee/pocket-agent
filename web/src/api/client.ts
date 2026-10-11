@@ -83,8 +83,19 @@ export function exportSession(sessionId: string): Promise<Record<string, unknown
   return json(`/api/sessions/${encodeURIComponent(sessionId)}/export`);
 }
 
-export function stopRun(runId: string): Promise<{ ok: boolean }> {
-  return json(`/api/chat/${encodeURIComponent(runId)}/stop`, { method: "POST" });
+export async function stopRun(
+  runId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/chat/${encodeURIComponent(runId)}/stop`, {
+    method: "POST",
+  });
+  if (res.status === 404) {
+    return { ok: false, error: "run not found" };
+  }
+  if (!res.ok) {
+    return { ok: false, error: `${res.status} ${res.statusText}`.trim() };
+  }
+  return res.json() as Promise<{ ok: boolean; error?: string }>;
 }
 
 export function approve(

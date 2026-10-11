@@ -66,11 +66,27 @@ function titleOf(
   return event;
 }
 
+function runMetaOf(data: Record<string, unknown>): Record<string, string> {
+  const meta: Record<string, string> = {};
+  for (const key of ["model", "provider_name", "provider_type"] as const) {
+    const value = data[key];
+    if (typeof value === "string" && value) {
+      meta[key] = value;
+    }
+  }
+  return meta;
+}
+
 export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
   let turn = 0;
+  let lastRunMeta: Record<string, string> = {};
   const out: TrajectoryRecord[] = [];
   for (const ev of raw) {
     const data = ev.data || {};
+    if (ev.event === "run.start") {
+      lastRunMeta = runMetaOf(data);
+      continue;
+    }
     if (ev.event === "user.message" || data.role === "user") {
       turn += 1;
     } else if (ev.event === "answer.done") {
@@ -79,6 +95,8 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
       turn = Math.max(turn, Number(data.turn));
     }
     const kind = kindOf(ev.event, data);
+    const payload =
+      kind === "task" ? { ...data, ...lastRunMeta } : data;
     const badges: TrajectoryRecord["badges"] = [];
     if (ev.event === "step.cache_hit" || data.from_cache === true) {
       badges.push("cache_hit");
@@ -126,7 +144,7 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
       badges,
       errorCode: err,
       inProgress,
-      payload: data,
+      payload,
       input:
         typeof data.prompt === "string"
           ? data.prompt
@@ -160,6 +178,30 @@ export function upsertLiveEvent(
   data: Record<string, unknown>,
   seqHint?: number,
 ): TrajectoryRecord[] {
+  if (event === "run.start") {
+    const meta = runMetaOf(data);
+    if (!Object.keys(meta).length) return list;
+    const copy = list.slice();
+    for (let i = copy.length - 1; i >= 0; i -= 1) {
+      if (copy[i].kind === "task") {
+        copy[i] = {
+          ...copy[i],
+          payload: { ...copy[i].payload, ...meta },
+        };
+        return copy;
+      }
+    }
+    for (let i = copy.length - 1; i >= 0; i -= 1) {
+      if (copy[i].kind === "user") {
+        copy[i] = {
+          ...copy[i],
+          payload: { ...copy[i].payload, ...meta },
+        };
+        return copy;
+      }
+    }
+    return copy;
+  }
   if (event === "task.step_done") {
     const index = Number(data.index ?? data.step_index ?? -1);
     const copy = list.slice();
@@ -185,6 +227,17 @@ export function upsertLiveEvent(
   const projected = projectEvents([{ seq, event, data, ts: Date.now() / 1000 }]);
   const next = projected[0];
   if (!next) return list;
+  if (next.kind === "task") {
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const prior = list[i];
+      if (prior.kind !== "user" && prior.kind !== "task") continue;
+      const meta = runMetaOf(prior.payload);
+      if (Object.keys(meta).length) {
+        next.payload = { ...next.payload, ...meta };
+        break;
+      }
+    }
+  }
   const idx = list.findIndex((r) => r.seq === next.seq && r.event === next.event);
   if (idx >= 0) {
     const copy = list.slice();

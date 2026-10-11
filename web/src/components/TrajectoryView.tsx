@@ -321,6 +321,18 @@ function TaskCardInspector({ record }: { record: TrajectoryRecord }) {
         <dd>{String(record.payload.goal || "—")}</dd>
       </div>
       <div>
+        <dt>模型</dt>
+        <dd>
+          {record.payload.model
+            ? `${String(record.payload.model)}${
+                record.payload.provider_name
+                  ? `（${String(record.payload.provider_name)} · ${String(record.payload.provider_type || "")}）`
+                  : ""
+              }`
+            : "—"}
+        </dd>
+      </div>
+      <div>
         <dt>约束</dt>
         <dd>
           {constraints && typeof constraints === "object"

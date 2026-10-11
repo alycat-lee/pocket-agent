@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -8,6 +9,7 @@ import pytest
 from pocket_agent.config import AgentConfig
 from pocket_agent.llm_client import (
     LlamaCppClient,
+    LLMAbortedError,
     LLMConnectionError,
     LLMFormatError,
     OpenAICompatibleClient,
@@ -27,9 +29,23 @@ def _openai_response(content: str, status_code: int = 200) -> httpx.Response:
     )
 
 
+def _as_stream_cm(item: object) -> object:
+    if isinstance(item, BaseException):
+        return item
+    cm = MagicMock()
+    cm.__enter__.return_value = item
+    cm.__exit__.return_value = None
+    return cm
+
+
 def _patch_client(post_side_effect: object) -> MagicMock:
     mock_client = MagicMock()
-    mock_client.post.side_effect = post_side_effect
+    items = (
+        list(post_side_effect)
+        if isinstance(post_side_effect, list)
+        else [post_side_effect]
+    )
+    mock_client.stream.side_effect = [_as_stream_cm(item) for item in items]
     mock_client.__enter__.return_value = mock_client
     mock_client.__exit__.return_value = None
     return mock_client
@@ -44,7 +60,7 @@ def test_generate_parses_content() -> None:
         result = client.generate("请回答")
 
     assert result == "最终回答"
-    payload = mock_http.post.call_args.kwargs["json"]
+    payload = mock_http.stream.call_args.kwargs["json"]
     assert payload["messages"] == [
         {"role": "system", "content": ""},
         {"role": "user", "content": "请回答"},
@@ -100,7 +116,7 @@ def test_reasoning_enabled_captures_thinking_not_answer() -> None:
     with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
         assert client.generate("问") == "最终答案"
     assert "推理过程" in client.last_thinking
-    payload = mock_http.post.call_args.kwargs["json"]
+    payload = mock_http.stream.call_args.kwargs["json"]
     assert payload["chat_template_kwargs"] == {"enable_thinking": True}
 
 
@@ -112,7 +128,7 @@ def test_generate_int_from_json_schema_value() -> None:
         result = client.generate_int("选工具", minimum=-1, maximum=3)
 
     assert result == 2
-    payload = mock_http.post.call_args.kwargs["json"]
+    payload = mock_http.stream.call_args.kwargs["json"]
     assert payload["response_format"]["type"] == "json_schema"
     schema = payload["response_format"]["json_schema"]["schema"]
     assert schema["properties"]["value"]["minimum"] == -1
@@ -152,7 +168,7 @@ def test_generate_json_success() -> None:
         result = client.generate_json("填参", schema)
 
     assert result == body
-    rf = mock_http.post.call_args.kwargs["json"]["response_format"]
+    rf = mock_http.stream.call_args.kwargs["json"]["response_format"]
     assert rf["json_schema"]["schema"] == schema
 
 
@@ -183,7 +199,7 @@ def test_retries_on_5xx_then_succeeds() -> None:
     ):
         assert client.generate("hi") == "ok"
 
-    assert mock_http.post.call_count == 3
+    assert mock_http.stream.call_count == 3
     assert sleep.call_args_list == [((1.0,),), ((2.0,),)]
 
 
@@ -204,7 +220,7 @@ def test_retries_exhausted_raises_connection_error() -> None:
     ):
         client.generate("hi")
 
-    assert mock_http.post.call_count == 3
+    assert mock_http.stream.call_count == 3
 
 
 def test_retries_on_connect_error() -> None:
@@ -237,7 +253,7 @@ def test_4xx_does_not_retry() -> None:
     ):
         client.generate("hi")
 
-    assert mock_http.post.call_count == 1
+    assert mock_http.stream.call_count == 1
     sleep.assert_not_called()
 
 
@@ -249,7 +265,7 @@ def test_messages_are_single_turn_only() -> None:
         client.generate("turn-one")
         client.generate("turn-two")
 
-    for call in mock_http.post.call_args_list:
+    for call in mock_http.stream.call_args_list:
         messages = call.kwargs["json"]["messages"]
         assert len(messages) == 2
         assert messages[0]["role"] == "system"
@@ -284,7 +300,7 @@ def test_local_client_ignores_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None
         real_init(self, **kwargs)
 
     mock_http = MagicMock()
-    mock_http.post.side_effect = [_openai_response("ok")]
+    mock_http.stream.side_effect = [_as_stream_cm(_openai_response("ok"))]
     mock_http.__enter__.return_value = mock_http
     mock_http.__exit__.return_value = None
 
@@ -316,7 +332,7 @@ def test_thinking_off_sends_enable_false() -> None:
     mock_http = _patch_client([_openai_response("<think>隐</think>正文")])
     with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
         assert client.generate("问") == "正文"
-    payload = mock_http.post.call_args.kwargs["json"]
+    payload = mock_http.stream.call_args.kwargs["json"]
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert client.last_thinking == ""
 
@@ -341,7 +357,7 @@ def test_thinking_strip_omits_kwargs_and_drops_reasoning() -> None:
     mock_http = _patch_client([response])
     with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
         assert client.generate("问") == "答案"
-    payload = mock_http.post.call_args.kwargs["json"]
+    payload = mock_http.stream.call_args.kwargs["json"]
     assert "chat_template_kwargs" not in payload
     assert client.last_thinking == ""
 
@@ -353,7 +369,7 @@ def test_thinking_keep_captures_and_enables() -> None:
     )
     with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
         assert client.generate("问") == "最终答案"
-    payload = mock_http.post.call_args.kwargs["json"]
+    payload = mock_http.stream.call_args.kwargs["json"]
     assert payload["chat_template_kwargs"] == {"enable_thinking": True}
     assert "推理过程" in client.last_thinking
 
@@ -362,7 +378,7 @@ def test_public_host_respects_requested_trust_env() -> None:
     config = AgentConfig(base_url="https://api.deepseek.com/v1")
     captured: dict[str, object] = {}
     mock_http = MagicMock()
-    mock_http.post.side_effect = [_openai_response("ok")]
+    mock_http.stream.side_effect = [_as_stream_cm(_openai_response("ok"))]
     mock_http.__enter__.return_value = mock_http
     mock_http.__exit__.return_value = None
     client = OpenAICompatibleClient(config, trust_env=True, thinking="strip")
@@ -373,3 +389,52 @@ def test_public_host_respects_requested_trust_env() -> None:
         )[-1]
         assert client.generate("hi") == "ok"
     assert captured["kwargs"].get("trust_env") is True  # type: ignore[union-attr]
+
+
+def test_abort_current_interrupts_in_flight_stream() -> None:
+    started = threading.Event()
+    released = threading.Event()
+
+    class HangResponse:
+        status_code = 200
+        text = ""
+
+        def read(self) -> bytes:
+            started.set()
+            if not released.wait(timeout=5):
+                raise TimeoutError("abort_current did not close the stream")
+            raise httpx.ReadError(
+                "closed",
+                request=httpx.Request("POST", "http://localhost:8000/v1/chat/completions"),
+            )
+
+        def close(self) -> None:
+            released.set()
+
+    hang = HangResponse()
+    mock_http = MagicMock()
+    cm = MagicMock()
+    cm.__enter__.return_value = hang
+    cm.__exit__.return_value = None
+    mock_http.stream.return_value = cm
+    mock_http.__enter__.return_value = mock_http
+    mock_http.__exit__.return_value = None
+
+    client = OpenAICompatibleClient(AgentConfig())
+    caught: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            client.generate("长文")
+        except BaseException as exc:  # noqa: BLE001 — 测试捕获线程异常
+            caught.append(exc)
+
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        thread = threading.Thread(target=_worker)
+        thread.start()
+        assert started.wait(timeout=2)
+        client.abort_current()
+        thread.join(timeout=3)
+    assert not thread.is_alive()
+    assert caught
+    assert isinstance(caught[0], LLMAbortedError)

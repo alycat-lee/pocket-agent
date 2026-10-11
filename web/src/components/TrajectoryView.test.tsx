@@ -77,6 +77,9 @@ describe("TrajectoryView route record", () => {
         constraints: { total_chars: 20000 },
         plan: ["开篇", "发展"],
         plan_done: [true, false],
+        model: "deepseek-chat",
+        provider_name: "DeepSeek",
+        provider_type: "deepseek",
       },
     };
     render(
@@ -96,6 +99,7 @@ describe("TrajectoryView route record", () => {
     expect(screen.getByText("开篇")).toBeInTheDocument();
     expect(screen.getByText("发展")).toBeInTheDocument();
     expect(document.querySelector(".plan-list li.done")).not.toBeNull();
+    expect(screen.getByText(/deepseek-chat/)).toBeInTheDocument();
   });
 
   it("shows thinking block in inspector, distinct from answer body", () => {

@@ -117,6 +117,11 @@ export function ProvidersCard() {
               <label>model</label>
               <input
                 type="text"
+                list={
+                  (testResults[p.id]?.model_list.length || 0) > 1
+                    ? `models-${p.id}`
+                    : undefined
+                }
                 value={p.model}
                 onChange={(e) => {
                   setProviders((prev) =>
@@ -126,6 +131,13 @@ export function ProvidersCard() {
                   );
                 }}
               />
+              {(testResults[p.id]?.model_list.length || 0) > 1 ? (
+                <datalist id={`models-${p.id}`}>
+                  {testResults[p.id].model_list.map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+              ) : null}
             </div>
             <div className="provider-field">
               <label>api_key</label>
@@ -159,6 +171,15 @@ export function ProvidersCard() {
                         timeout: 10,
                       });
                       setTestResults((prev) => ({ ...prev, [p.id]: res }));
+                      if (res.ok && !p.model.trim() && res.model_list[0]) {
+                        const picked = res.model_list[0];
+                        setProviders((prev) =>
+                          prev.map((x) =>
+                            x.id === p.id ? { ...x, model: picked } : x,
+                          ),
+                        );
+                        setStatus(`已自动选择模型 ${picked}，可修改`);
+                      }
                     } catch (e) {
                       setTestResults((prev) => ({
                         ...prev,

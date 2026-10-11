@@ -253,6 +253,8 @@ button:disabled {
 }
 
 .session-title {
+  flex: 1;
+  min-width: 0;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -397,8 +399,25 @@ button:disabled {
   width: 100%;
 }
 
-.msg.user {
+.msg.user,
+.msg-user {
   align-self: flex-end;
+  margin-left: auto;
+  width: fit-content;
+  max-width: 72%;
+}
+
+.model-badge {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-muted-fg);
+  border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  border-radius: 999px;
+  padding: 2px 10px;
+  background: var(--color-muted);
 }
 
 .msg.assistant {

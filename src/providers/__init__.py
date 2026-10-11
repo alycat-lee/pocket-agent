@@ -226,6 +226,30 @@ def providers_to_dict(cfg: ProvidersConfig) -> dict[str, Any]:
     }
 
 
+def describe_provider(
+    cfg: ProvidersConfig,
+    *,
+    role: Literal["generate", "choose_fill"] = "generate",
+    fallback_model: str = "",
+) -> dict[str, str]:
+    """路由后实际生效的 provider 元数据（非设置默认值）。"""
+    pid = cfg.routing.generate if role == "generate" else cfg.routing.choose_fill
+    pc = next((p for p in cfg.providers if p.id == pid), None)
+    if pc is None and cfg.providers:
+        pc = cfg.providers[0]
+    if pc is None:
+        return {
+            "provider_name": "",
+            "provider_type": "",
+            "model": fallback_model,
+        }
+    return {
+        "provider_name": pc.name,
+        "provider_type": str(pc.type),
+        "model": pc.model or fallback_model,
+    }
+
+
 def redact_providers(cfg: ProvidersConfig) -> dict[str, Any]:
     """api_key 只写不读：返回时脱敏。"""
     data = providers_to_dict(cfg)
@@ -307,3 +331,15 @@ class ProviderRegistry:
         result = client.generate_json(prompt, schema)
         self._remember(client)
         return result
+
+    def abort_current(self) -> None:
+        for client in self._clients.values():
+            fn = getattr(client, "abort_current", None)
+            if callable(fn):
+                fn()
+
+    def reset_abort(self) -> None:
+        for client in self._clients.values():
+            fn = getattr(client, "reset_abort", None)
+            if callable(fn):
+                fn()

@@ -45,6 +45,35 @@ describe("projectEvents route", () => {
     expect(rows[0]?.input).toBe("写一篇关于春天的散文");
   });
 
+  it("merges run.start model into the task card payload", () => {
+    const rows = projectEvents([
+      {
+        seq: 1,
+        event: "run.start",
+        data: {
+          run_id: "r1",
+          provider_name: "DeepSeek",
+          provider_type: "deepseek",
+          model: "deepseek-chat",
+        },
+      },
+      {
+        seq: 2,
+        event: "task.planned",
+        data: {
+          type: "writer",
+          goal: "写一篇长文",
+          plan: ["开篇"],
+        },
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.kind).toBe("task");
+    expect(rows[0]?.payload.model).toBe("deepseek-chat");
+    expect(rows[0]?.payload.provider_name).toBe("DeepSeek");
+    expect(rows[0]?.payload.provider_type).toBe("deepseek");
+  });
+
   it("maps task.planned to task kind with goal title", () => {
     const rows = projectEvents([
       {

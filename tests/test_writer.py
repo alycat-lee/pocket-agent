@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pocket_agent.config import AgentConfig
-from pocket_agent.llm_client import LLMFormatError
+from pocket_agent.llm_client import LLMAbortedError, LLMFormatError
 from pocket_agent.writer import (
     LongWriter,
     SectionSpec,
@@ -217,6 +217,37 @@ def test_section_max_tokens_scales_with_target(mock_llm_factory: type) -> None:
     assert spy.seen
     assert max(spy.seen) == section_max_tokens(500)
     assert spy._config.max_tokens == 512
+
+
+def test_writer_stops_on_third_section_keeps_prior(mock_llm_factory: type) -> None:
+    outline = {
+        "sections": [
+            {"title": "一", "points": ["甲"]},
+            {"title": "二", "points": ["乙"]},
+            {"title": "三", "points": ["丙"]},
+            {"title": "四", "points": ["丁"]},
+        ]
+    }
+    bodies = [f"{chr(65 + i)}" * 400 for i in range(4)]
+    llm = mock_llm_factory([outline, *bodies])
+    writer = LongWriter(AgentConfig(section_char_target=500, max_tokens=256), llm)
+    original = llm.generate
+    section_writes = {"n": 0}
+
+    def _generate(prompt: str) -> str:
+        if "你正在逐段撰写文章" in prompt:
+            section_writes["n"] += 1
+            if section_writes["n"] == 3:
+                writer.request_stop()
+                raise LLMAbortedError("stopped")
+        return original(prompt)
+
+    llm.generate = _generate  # type: ignore[method-assign]
+    text = writer.write("长文主题", total_chars=2000)
+    assert writer.stopped is True
+    assert len(writer.last_sections) == 2
+    assert writer.last_sections[0] in text
+    assert writer.last_sections[1] in text
 
 
 def test_strip_section_echo_drops_instruction_line() -> None:

@@ -24,7 +24,7 @@ export function ChatView({
       {messages.map((m) => (
         <div
           key={m.id}
-          className={`msg ${m.role}${m.error ? " error" : ""}`}
+          className={`msg ${m.role}${m.role === "user" ? " msg-user" : ""}${m.error ? " error" : ""}`}
         >
           <div className="msg-bubble">{m.content}</div>
           {m.role === "assistant" && m.settlement ? (

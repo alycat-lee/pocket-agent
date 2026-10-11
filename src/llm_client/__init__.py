@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import threading
 import time
 from typing import Any, Literal, Protocol
 from urllib.parse import urlparse
@@ -97,6 +98,10 @@ class LLMConnectionError(Exception):
     """连接错误、超时或 5xx 在重试耗尽后抛出。"""
 
 
+class LLMAbortedError(Exception):
+    """用户中断在途请求；不重试，走优雅收尾。"""
+
+
 ThinkingMode = Literal["off", "strip", "keep"]
 
 
@@ -142,6 +147,23 @@ class OpenAICompatibleClient:
             self._thinking = "keep" if config.reasoning_enabled else "off"
         self._trust_env = resolve_trust_env(config.base_url, trust_env)
         self.last_thinking: str = ""
+        self._abort = threading.Event()
+        self._in_flight_lock = threading.Lock()
+        self._in_flight: httpx.Response | None = None
+
+    def abort_current(self) -> None:
+        """关闭在途 stream，使读取立即失败。"""
+        self._abort.set()
+        with self._in_flight_lock:
+            response = self._in_flight
+        if response is not None:
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001, S110 — 中断路径忽略二次关闭
+                pass
+
+    def reset_abort(self) -> None:
+        self._abort.clear()
 
     def generate(self, prompt: str) -> str:
         """自由生成（用于 final_answer、summarize）。"""
@@ -212,15 +234,32 @@ class OpenAICompatibleClient:
         last_error: Exception | None = None
 
         for attempt in range(_MAX_ATTEMPTS):
+            if self._abort.is_set():
+                raise LLMAbortedError("aborted")
             try:
                 headers: dict[str, str] = {"Content-Type": "application/json"}
                 if self._api_key:
                     headers["Authorization"] = f"Bearer {self._api_key}"
-                with httpx.Client(
-                    timeout=self._config.timeout, trust_env=self._trust_env
-                ) as client:
-                    response = client.post(url, json=payload, headers=headers)
+                with (
+                    httpx.Client(
+                        timeout=self._config.timeout, trust_env=self._trust_env
+                    ) as client,
+                    client.stream("POST", url, json=payload, headers=headers) as response,
+                ):
+                    with self._in_flight_lock:
+                        self._in_flight = response
+                    try:
+                        if self._abort.is_set():
+                            raise LLMAbortedError("aborted")
+                        raw_bytes = response.read()
+                    finally:
+                        with self._in_flight_lock:
+                            self._in_flight = None
+            except LLMAbortedError:
+                raise
             except httpx.RequestError as exc:
+                if self._abort.is_set():
+                    raise LLMAbortedError(str(exc)) from exc
                 last_error = exc
                 if attempt < len(_RETRY_DELAYS):
                     time.sleep(_RETRY_DELAYS[attempt])
@@ -242,7 +281,8 @@ class OpenAICompatibleClient:
                 )
 
             try:
-                data = response.json()
+                body = raw_bytes.decode("utf-8")
+                data = json.loads(body)
                 message = data["choices"][0]["message"]
                 if not isinstance(message, dict):
                     raise LLMFormatError("message is not object")
@@ -250,8 +290,12 @@ class OpenAICompatibleClient:
                 self.last_thinking = thinking if self._thinking == "keep" else ""
                 raw = message.get("content")
                 content = strip_think_blocks(raw) if isinstance(raw, str) else ""
-            except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-                raise LLMFormatError(f"unexpected response shape: {response.text!r}") from exc
+            except LLMFormatError:
+                raise
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise LLMFormatError(
+                    f"unexpected response shape: {raw_bytes[:400]!r}"
+                ) from exc
 
             if not content:
                 raise LLMFormatError(

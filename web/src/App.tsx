@@ -7,6 +7,7 @@ import {
   fetchConfig,
   fetchEvents,
   fetchHealthLlm,
+  fetchProviders,
   fetchSessions,
   fetchWorkspaces,
   openChatEventSource,
@@ -93,6 +94,12 @@ export default function App() {
   const [baseUrl, setBaseUrl] = useState<string | undefined>();
   const [promptBudget, setPromptBudget] = useState(5200);
   const [runId, setRunId] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [activeModel, setActiveModel] = useState<{
+    model: string;
+    provider_name: string;
+    provider_type: string;
+  } | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const esGenRef = useRef(0);
   const tickRef = useRef<number | null>(null);
@@ -158,6 +165,20 @@ export default function App() {
     fetchWorkspaces()
       .then((w) => {
         if (w.available) setWorkspaces(w.workspaces);
+      })
+      .catch(() => undefined);
+    fetchProviders()
+      .then((data) => {
+        const def =
+          data.providers.find((p) => p.id === data.default_provider_id) ||
+          data.providers[0];
+        if (def) {
+          setActiveModel({
+            model: def.model || "",
+            provider_name: def.name,
+            provider_type: def.type,
+          });
+        }
       })
       .catch(() => undefined);
   }, [reloadSessions, checkHealth, applyConfigToUi]);
@@ -291,6 +312,12 @@ export default function App() {
           reason: typeof data.reason === "string" ? data.reason : undefined,
           expiresAt: Date.now() + 60_000,
         });
+      } else if (event === "run.start") {
+        setActiveModel({
+          model: String(data.model || ""),
+          provider_name: String(data.provider_name || ""),
+          provider_type: String(data.provider_type || ""),
+        });
       } else if (event === "answer.done") {
         const settlement: Settlement = {
           total_steps: Number(data.total_steps ?? 0),
@@ -302,7 +329,17 @@ export default function App() {
           prompt_tokens_max: Number(data.prompt_tokens_max ?? 0),
           elapsed_ms: Number(data.elapsed_ms ?? 0),
           stop_reason: String(data.stop_reason || ""),
+          provider_name: String(data.provider_name || ""),
+          provider_type: String(data.provider_type || ""),
+          model: String(data.model || ""),
         };
+        if (data.model) {
+          setActiveModel({
+            model: String(data.model),
+            provider_name: String(data.provider_name || ""),
+            provider_type: String(data.provider_type || ""),
+          });
+        }
         const turnId = `turn-${turnCounter.current}`;
         const intent = pendingIntentRef.current;
         pendingIntentRef.current = null;
@@ -317,14 +354,16 @@ export default function App() {
             intent: intent ?? undefined,
           },
         ]);
+        const stopped = settlement.stop_reason === "stopped";
         setStatus((s) => ({
           ...s,
           running: false,
-          phase: "",
+          phase: stopped ? "已停止" : "",
           settlement,
           settlementUntil: Date.now() + 5000,
           timeline: s.timeline.map((n) => ({ ...n, active: false })),
         }));
+        setStopping(false);
         setRunId(null);
         closeEs();
         void reloadSessions();
@@ -428,6 +467,7 @@ export default function App() {
     runStarted.current = Date.now();
     closeEs();
     const gen = ++esGenRef.current;
+    setStopping(false);
     setStatus({
       ...EMPTY_STATUS,
       running: true,
@@ -465,6 +505,7 @@ export default function App() {
       "step.tool_call",
       "step.cache_hit",
       "step.intercepted",
+      "run.start",
       "answer.done",
       "approval.required",
       "intent.detected",
@@ -601,6 +642,14 @@ export default function App() {
           <>
             <header className="session-header">
               <div className="session-title">{sessionId}</div>
+              {activeModel?.model ? (
+                <span
+                  className="model-badge"
+                  title={`${activeModel.provider_name} · ${activeModel.provider_type}`}
+                >
+                  {activeModel.model}
+                </span>
+              ) : null}
               <div className="view-tabs" role="tablist">
                 <button
                   type="button"
@@ -754,8 +803,15 @@ export default function App() {
                 }}
                 onChange={setDraft}
                 onSend={() => void send()}
+                stopping={stopping}
                 onStop={() => {
-                  if (runId) void stopRun(runId);
+                  setStopping(true);
+                  if (!runId) return;
+                  void stopRun(runId).then((r) => {
+                    if (!r.ok && r.error === "run not found") {
+                      setStopping(false);
+                    }
+                  });
                 }}
               />
             </div>
