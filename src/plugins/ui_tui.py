@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
+
+if sys.platform == "win32":
+    from ctypes import byref, windll
+    from ctypes.wintypes import DWORD, HANDLE
+else:  # pragma: no cover — IME 仅 Windows 需要
+    byref = None  # type: ignore[misc,assignment]
+    windll = None  # type: ignore[misc,assignment]
+    DWORD = Any  # type: ignore[misc,assignment]
+    HANDLE = Any  # type: ignore[misc,assignment]
 
 from pocket_agent.agents import DEFAULT_AGENT
 from pocket_agent.config import AgentConfig, load_settings, save_settings
@@ -24,15 +34,24 @@ from pocket_agent.runtime import Context, PluginError
 PROMPT_TOOLKIT_AVAILABLE = True
 try:
     from prompt_toolkit.application import Application
+    from prompt_toolkit.filters import Condition
     from prompt_toolkit.formatted_text import StyleAndTextTuples
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.layout import Dimension, HSplit, Layout, Window
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.styles import Style
     from prompt_toolkit.widgets import TextArea
+
+    if sys.platform == "win32":
+        from prompt_toolkit.input.win32 import ConsoleInputReader as _ConsoleInputReader
+        from prompt_toolkit.input.win32 import Win32Input as _Win32Input
+    else:  # pragma: no cover — Windows IME 路径
+        _ConsoleInputReader = None  # type: ignore[misc,assignment]
+        _Win32Input = None  # type: ignore[misc,assignment]
 except ImportError:  # pragma: no cover — 装配时再报安装指引
     PROMPT_TOOLKIT_AVAILABLE = False
     Application = Any  # type: ignore[misc,assignment]
+    Condition = Any  # type: ignore[misc,assignment]
     StyleAndTextTuples = list  # type: ignore[misc,assignment]
     KeyBindings = Any  # type: ignore[misc,assignment]
     Dimension = Any  # type: ignore[misc,assignment]
@@ -42,11 +61,16 @@ except ImportError:  # pragma: no cover — 装配时再报安装指引
     FormattedTextControl = Any  # type: ignore[misc,assignment]
     Style = Any  # type: ignore[misc,assignment]
     TextArea = Any  # type: ignore[misc,assignment]
+    _ConsoleInputReader = None  # type: ignore[misc,assignment]
+    _Win32Input = None  # type: ignore[misc,assignment]
 
 _PT_MISSING = (
     "TUI 需要 prompt_toolkit：pip install 'pocket-agent[tui]' 或 pip install prompt_toolkit"
 )
 _APPROVAL_TIMEOUT = 60.0
+_ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+_STD_INPUT_HANDLE = -10
+_APPROVAL_KEYS = ("y", "Y", "n", "N")
 _SLASH_NAMES = (
     "help",
     "new",
@@ -184,6 +208,107 @@ def prompt_approval(
         emit("审批超时已拒绝")
         return False
     return resolve_approval_key(key)
+
+
+def strip_vt_input_flag(mode: int) -> int:
+    """去掉 ENABLE_VIRTUAL_TERMINAL_INPUT，让 IME 仍走 KEY_EVENT Unicode。"""
+    return mode & ~_ENABLE_VIRTUAL_TERMINAL_INPUT
+
+
+def disable_virtual_terminal_input() -> None:
+    if sys.platform != "win32":
+        return
+    handle = HANDLE(windll.kernel32.GetStdHandle(_STD_INPUT_HANDLE))
+    mode = DWORD(0)
+    if not windll.kernel32.GetConsoleMode(handle, byref(mode)):
+        return
+    windll.kernel32.SetConsoleMode(handle, strip_vt_input_flag(int(mode.value)))
+
+
+class _RawModeWithoutVt:
+    """raw_mode 进入后再清 VT 输入位（父终端常已打开该位）。"""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __enter__(self) -> None:
+        self._inner.__enter__()
+        disable_virtual_terminal_input()
+
+    def __exit__(self, *args: object) -> Any:
+        return self._inner.__exit__(*args)
+
+
+def configure_win32_ime_input(inp: Any) -> Any:
+    """强制 ConsoleInputReader，避免 VT 序列吞掉中文组字。"""
+    if inp is None or _ConsoleInputReader is None:
+        return inp
+    reader = getattr(inp, "console_input_reader", None)
+    if reader is not None and type(reader) is not _ConsoleInputReader:
+        closer = getattr(reader, "close", None)
+        if callable(closer):
+            closer()
+        inp.console_input_reader = _ConsoleInputReader(recognize_paste=False)
+    elif reader is not None:
+        reader.recognize_paste = False
+    if hasattr(inp, "_use_virtual_terminal_input"):
+        inp._use_virtual_terminal_input = False
+    original_raw = inp.raw_mode
+
+    def raw_mode() -> Any:
+        return _RawModeWithoutVt(original_raw())
+
+    inp.raw_mode = raw_mode
+    return inp
+
+
+def create_tui_input() -> Any | None:
+    if _Win32Input is None:
+        return None
+    return configure_win32_ime_input(_Win32Input())
+
+
+def bind_tui_keys(
+    kb: Any,
+    *,
+    is_approving: Callable[[], bool],
+    on_send: Callable[[Any], None],
+    on_newline: Callable[[Any], None],
+    on_ctrl_c: Callable[[Any], None],
+    on_eof: Callable[[Any], None],
+    on_approval_key: Callable[[str], None],
+) -> None:
+    """字母键只在审批时拦截，避免拼音 IME 被 y/n 吃掉。"""
+    approving = Condition(is_approving)
+
+    @kb.add("enter")
+    def _send(event: Any) -> None:
+        if is_approving():
+            return
+        on_send(event)
+
+    @kb.add("escape", "enter")
+    @kb.add("c-j")
+    def _newline(event: Any) -> None:
+        on_newline(event)
+
+    @kb.add("c-c")
+    def _ctrl_c(event: Any) -> None:
+        on_ctrl_c(event)
+
+    @kb.add("c-d")
+    def _eof(event: Any) -> None:
+        on_eof(event)
+
+    for key in _APPROVAL_KEYS:
+
+        @kb.add(key, filter=approving)
+        def _yn(event: Any, captured: str = key) -> None:
+            on_approval_key(captured.lower())
+
+    @kb.add("escape", filter=approving)
+    def _esc(_event: Any) -> None:
+        on_approval_key("esc")
 
 
 def pick_latest_session(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -343,21 +468,12 @@ class TuiApp:
         status = FormattedTextControl(lambda: [("class:status", self.status)])
         kb = KeyBindings()
 
-        @kb.add("enter")
         def _send(event: Any) -> None:
-            if self._approval_waiting:
-                return
             text = textarea.text
             textarea.text = ""
             self.submit(text)
             event.app.invalidate()
 
-        @kb.add("escape", "enter")
-        @kb.add("c-j")
-        def _newline(event: Any) -> None:
-            event.current_buffer.insert_text("\n")
-
-        @kb.add("c-c")
         def _ctrl_c(event: Any) -> None:
             if self.running:
                 self.request_stop()
@@ -371,25 +487,15 @@ class TuiApp:
             self._append("dim", "再按一次 Ctrl+C 退出")
             event.app.invalidate()
 
-        @kb.add("c-d")
-        def _eof(event: Any) -> None:
-            event.app.exit()
-
-        @kb.add("y")
-        @kb.add("n")
-        def _approval_yn(event: Any) -> None:
-            key = str(event.key_sequence[0].key)
-            if self._approval_waiting:
-                self._approval_key = key
-                self._approval_ready.set()
-                return
-            event.current_buffer.insert_text(key)
-
-        @kb.add("escape")
-        def _approval_esc(event: Any) -> None:
-            if self._approval_waiting:
-                self._approval_key = "esc"
-                self._approval_ready.set()
+        bind_tui_keys(
+            kb,
+            is_approving=lambda: self._approval_waiting,
+            on_send=_send,
+            on_newline=lambda event: event.current_buffer.insert_text("\n"),
+            on_ctrl_c=_ctrl_c,
+            on_eof=lambda event: event.app.exit(),
+            on_approval_key=self._resolve_approval_keypress,
+        )
 
         layout = Layout(
             HSplit(
@@ -420,6 +526,7 @@ class TuiApp:
             key_bindings=kb,
             style=style,
             full_screen=True,
+            input=create_tui_input(),
         )
         self._app = application
         self._invalidate = application.invalidate
@@ -654,6 +761,10 @@ class TuiApp:
             self.lines[-1] = ("assistant", text)
         else:
             self.lines.append(("assistant", text))
+
+    def _resolve_approval_keypress(self, key: str) -> None:
+        self._approval_key = key
+        self._approval_ready.set()
 
     def _wait_approval_key(self, timeout: float) -> str | None:
         self._approval_key = None

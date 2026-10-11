@@ -9,7 +9,10 @@ from pocket_agent.plugins.ui_tui import (
     SlashCommand,
     TuiApp,
     UiTuiPlugin,
+    _RawModeWithoutVt,
     apply_default_provider,
+    bind_tui_keys,
+    configure_win32_ime_input,
     format_approval_line,
     format_provider_rows,
     format_settlement,
@@ -20,6 +23,7 @@ from pocket_agent.plugins.ui_tui import (
     resolve_resume_token,
     running_status,
     slash_help_text,
+    strip_vt_input_flag,
     unknown_slash_hint,
 )
 from pocket_agent.providers import (
@@ -28,6 +32,7 @@ from pocket_agent.providers import (
     RoutingConfig,
 )
 from pocket_agent.runtime import Context, PluginError, assemble
+from prompt_toolkit.key_binding import KeyBindings
 
 
 def test_parse_slash_each_command() -> None:
@@ -102,6 +107,70 @@ def test_format_settlement_and_status() -> None:
     assert running_status({"step_index": 2, "current_tool": "read_file"}) == (
         "运行中 · S2 · read_file…"
     )
+
+
+def test_strip_vt_input_flag() -> None:
+    assert strip_vt_input_flag(0x0200 | 0x0004) == 0x0004
+    assert strip_vt_input_flag(0) == 0
+
+
+def test_configure_win32_ime_input_replaces_vt_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = {"n": 0}
+    created: dict[str, bool] = {}
+
+    class FakeVt:
+        def close(self) -> None:
+            closed["n"] += 1
+
+    class DummyReader:
+        def __init__(self, recognize_paste: bool = True) -> None:
+            created["paste"] = recognize_paste
+            self.recognize_paste = recognize_paste
+
+    class DummyCM:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class DummyInp:
+        def __init__(self) -> None:
+            self.console_input_reader = FakeVt()
+            self._use_virtual_terminal_input = True
+
+        def raw_mode(self) -> DummyCM:
+            return DummyCM()
+
+    monkeypatch.setattr("pocket_agent.plugins.ui_tui._ConsoleInputReader", DummyReader)
+    inp = DummyInp()
+    configure_win32_ime_input(inp)
+    assert inp._use_virtual_terminal_input is False
+    assert isinstance(inp.console_input_reader, DummyReader)
+    assert created["paste"] is False
+    assert closed["n"] == 1
+    assert isinstance(inp.raw_mode(), _RawModeWithoutVt)
+
+
+def test_approval_letter_bindings_idle_pass_through() -> None:
+    waiting = False
+    kb = KeyBindings()
+    bind_tui_keys(
+        kb,
+        is_approving=lambda: waiting,
+        on_send=lambda _e: None,
+        on_newline=lambda _e: None,
+        on_ctrl_c=lambda _e: None,
+        on_eof=lambda _e: None,
+        on_approval_key=lambda _k: None,
+    )
+    y_binds = [item for item in kb.bindings if item.keys == ("y",)]
+    assert y_binds
+    assert bool(y_binds[0].filter()) is False
+    waiting = True
+    assert bool(y_binds[0].filter()) is True
 
 
 def test_prompt_approval_yes_no_timeout() -> None:
