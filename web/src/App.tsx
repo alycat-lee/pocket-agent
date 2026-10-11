@@ -29,6 +29,7 @@ import type {
   TrajectoryRecord,
 } from "./api/types";
 import { ApprovalDialog } from "./components/ApprovalDialog";
+import { BuildStaleBanner } from "./components/BuildStaleBanner";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { GuidePage } from "./components/GuidePage";
@@ -575,6 +576,7 @@ export default function App() {
       "worker.done",
       "merger.start",
       "merger.done",
+      "rag.empty",
       "error",
     ];
     for (const name of names) {
@@ -645,6 +647,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <BuildStaleBanner />
       <Sidebar
         sessions={sessions}
         activeSession={sessionId}

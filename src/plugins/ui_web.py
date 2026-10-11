@@ -70,6 +70,7 @@ _BUS_EVENTS = (
     "worker.done",
     "merger.start",
     "merger.done",
+    "rag.empty",
 )
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 

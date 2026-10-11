@@ -36,7 +36,7 @@ _RESERVED = frozenset(
 _ILLEGAL_CHARS = set('<>:"|?*\0')
 _NAME_OK = re.compile(r"^[\w\u4e00-\u9fff][\w\u4e00-\u9fff.\- ]{0,62}$")
 
-DEFAULT_PROMPT = "你是 pocket-agent 的默认助手，通过工具逐步完成任务。\n"
+DEFAULT_PROMPT = "你是 pocket-agent 的默认助手「default」，运行在用户本地的模型上。你可以直接回答问题、调用工具完成任务、生成长文。回答直接简洁，不编造来源。\n"
 
 
 class AgentNameError(ValueError):
@@ -325,6 +325,14 @@ class AgentService:
     def system_preamble(self, name: str, task_text: str = "") -> str:
         """prompt.md + 实体槽位 + 命中技能，注入 Planner / final_answer。"""
         parts: list[str] = []
+        try:
+            profile = self.get(name)
+            desc = profile.description or "运行在用户本地的 AI 助手"
+        except (KeyError, AgentNameError):
+            desc = "运行在用户本地的 AI 助手"
+        parts.append(
+            f"你是「{name}」，{desc}。基于本地模型运行，回答直接简洁。"
+        )
         prompt = self.read_prompt(name).strip()
         if prompt:
             parts.append(prompt)

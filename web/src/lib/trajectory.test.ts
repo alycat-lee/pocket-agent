@@ -160,6 +160,18 @@ describe("projectEvents route", () => {
     expect(rows[0]?.title).toBe("思维链");
     expect(rows[0]?.output).toBe("先列大纲再写");
   });
+
+  it("maps rag.empty to other kind with fallback title", () => {
+    const rows = projectEvents([
+      {
+        seq: 1,
+        event: "rag.empty",
+        data: { query: "今年最新的汇率是多少", turn: 1 },
+      },
+    ]);
+    expect(rows[0]?.kind).toBe("other");
+    expect(rows[0]?.title).toBe("未检索到资料，由模型自身作答");
+  });
 });
 
 describe("orderRecordsForDisplay", () => {

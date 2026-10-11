@@ -33,7 +33,7 @@ from pocket_agent.task import (
     Planner,
     TaskCard,
     default_card,
-    infer_needs_knowledge,
+    infer_knowledge_mode,
 )
 from pocket_agent.verifier import attach_degrade, verify
 from pocket_agent.workspace import WorkspaceManager
@@ -456,8 +456,14 @@ class SessionManager:
         plan = list(card.plan)
         if new_type == "writer" and not plan:
             plan = list(DEFAULT_WRITER_PLAN)
-        needs_k = card.needs_knowledge or infer_needs_knowledge(user_input)
-        if new_type == card.type and plan == list(card.plan) and needs_k == card.needs_knowledge:
+        kmode = infer_knowledge_mode(user_input)
+        needs_k = kmode != "none"
+        if (
+            new_type == card.type
+            and plan == list(card.plan)
+            and needs_k == card.needs_knowledge
+            and kmode == card.knowledge_mode
+        ):
             return card
         return TaskCard(
             type=new_type,
@@ -466,6 +472,7 @@ class SessionManager:
             plan=plan,
             needs_history=card.needs_history or new_type == "agent",
             needs_knowledge=needs_k,
+            knowledge_mode=kmode,
         )
 
     def _dispatch(
@@ -477,7 +484,7 @@ class SessionManager:
         state: SessionState,
     ) -> str:
         if card.type == "qa":
-            return self._run_qa(card, run_task)
+            return self._run_qa(card, run_task, session_id)
         if self._orchestrator is not None and self._orchestrator.should_orchestrate(card):
             return self._run_orchestrated(
                 card, run_task, session_id, permission, state
@@ -594,16 +601,27 @@ class SessionManager:
         self._emit_answer_done(answer, stop_reason=reason)
         return answer
 
-    def _run_qa(self, card: TaskCard, run_task: str) -> str:
+    def _run_qa(self, card: TaskCard, run_task: str, session_id: str = "") -> str:
         prompt = run_task
         if card.needs_knowledge:
             evidence = self._retrieve(run_task)
             if _is_empty_retrieval(evidence):
-                answer = EMPTY_RESULT
-                self.last_result = None
-                self._emit_answer_done(answer, stop_reason="qa")
-                return answer
-            prompt = FINAL_ANSWER_QA.format(task=run_task, evidence=evidence)
+                if card.knowledge_mode != "augment":
+                    answer = EMPTY_RESULT
+                    self.last_result = None
+                    self._emit_answer_done(answer, stop_reason="qa")
+                    return answer
+                if self._events is not None:
+                    self._events.emit(
+                        "rag.empty",
+                        {
+                            "session_id": session_id,
+                            "turn": self._active_turn,
+                            "query": run_task,
+                        },
+                    )
+            else:
+                prompt = FINAL_ANSWER_QA.format(task=run_task, evidence=evidence)
         prompt = self._wrap_system(prompt)
         try:
             answer = str(self._llm.generate(prompt)).strip()

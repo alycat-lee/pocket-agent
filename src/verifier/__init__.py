@@ -89,7 +89,10 @@ def verify(answer: str, task_card: TaskCard, *, evidence: str = "") -> list[str]
         problems.append("回答过短")
     if _parrot_plan(text, task_card.plan):
         problems.append("复读计划")
-    if task_card.needs_knowledge:
+    if task_card.needs_knowledge and (
+        getattr(task_card, "knowledge_mode", "none") == "strict"
+        or (evidence and EMPTY_RESULT not in evidence and evidence.strip())
+    ):
         problems.extend(_citation_problems(text, evidence))
     return problems
 

@@ -154,11 +154,14 @@ def test_extract_claims_numbers_and_proper_nouns() -> None:
 
 
 def test_hallucination_trap_returns_not_found(
-    tmp_path: Path,
     mock_llm_factory: type,
 ) -> None:
-    kb = _kb(tmp_path)
-    cfg = AgentConfig(max_steps=3, verifier_enabled=True, planner_enabled=True)
+    cfg = AgentConfig(
+        max_steps=3,
+        verifier_enabled=True,
+        planner_enabled=True,
+        answer_max_retries=0,
+    )
     llm = mock_llm_factory(
         [
             {
@@ -177,9 +180,9 @@ def test_hallucination_trap_returns_not_found(
         llm,
         AgentRunner(cfg, llm, ToolRegistry(cfg)),
         events=_Bus(),
-        knowledge=kb,
+        knowledge=None,
     )
-    answer = mgr.chat("s1", "紫晶河水母币目前市值多少？")
+    answer = mgr.chat("s1", "根据文档介绍紫晶河水母币目前市值多少？")
     assert "未找到相关资料" in answer
     assert "亿美元" not in answer
     assert "不该被调用的编造答案" not in answer

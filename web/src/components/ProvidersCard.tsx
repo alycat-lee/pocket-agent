@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createProvider,
   deleteProvider,
@@ -57,11 +57,30 @@ export function ProvidersCard() {
   const [draftKey, setDraftKey] = useState("");
   const [draftThinking, setDraftThinking] = useState("off");
   const [draftTrustEnv, setDraftTrustEnv] = useState(false);
+  const savedNames = useRef<Record<string, string>>({});
+
+  const applyReturned = (raw: unknown) => {
+    if (!Array.isArray(raw) || raw.length === 0) return;
+    setProviders(raw as Provider[]);
+    for (const item of raw) {
+      if (item && typeof item === "object" && "id" in item && "name" in item) {
+        const row = item as Provider;
+        savedNames.current[row.id] = row.name;
+      }
+    }
+  };
+
+  const uniquifyName = (id: string, name: string, rows: Provider[]) => {
+    const others = rows.filter((item) => item.id !== id).map((item) => item.name);
+    return uniqueProviderName(name.trim() || name, others);
+  };
 
   const reload = useCallback(async () => {
     try {
       const data = await fetchProviders();
-      setProviders(data.providers as Provider[]);
+      const rows = data.providers as Provider[];
+      setProviders(rows);
+      savedNames.current = Object.fromEntries(rows.map((item) => [item.id, item.name]));
       setDefaultId(data.default_provider_id);
       setRouting(data.routing);
     } catch (e) {
@@ -115,6 +134,29 @@ export function ProvidersCard() {
                       x.id === p.id ? { ...x, name: e.target.value } : x,
                     ),
                   );
+                }}
+                onBlur={() => {
+                  void (async () => {
+                    const unique = uniquifyName(p.id, p.name, providers);
+                    if (unique !== p.name) {
+                      setProviders((prev) =>
+                        prev.map((x) =>
+                          x.id === p.id ? { ...x, name: unique } : x,
+                        ),
+                      );
+                      setStatus(`名称重名，已改为 ${unique}`);
+                    }
+                    if (unique === savedNames.current[p.id]) return;
+                    try {
+                      const res = await updateProvider(p.id, { name: unique });
+                      applyReturned(res.providers);
+                      savedNames.current[p.id] = unique;
+                      setStatus(`名称已保存：${unique}`);
+                      await reload();
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : String(e));
+                    }
+                  })();
                 }}
               />
               <span className="status-meta"> {p.type}</span>
@@ -246,13 +288,26 @@ export function ProvidersCard() {
                 onClick={() => {
                   void (async () => {
                     try {
-                      await updateProvider(p.id, {
-                        name: p.name,
+                      const unique = uniquifyName(p.id, p.name, providers);
+                      if (unique !== p.name) {
+                        setProviders((prev) =>
+                          prev.map((x) =>
+                            x.id === p.id ? { ...x, name: unique } : x,
+                          ),
+                        );
+                        setStatus(`名称重名，已改为 ${unique}`);
+                      }
+                      const res = await updateProvider(p.id, {
+                        name: unique,
                         base_url: p.base_url,
                         model: p.model,
-                        api_key: p.api_key.includes("***") ? undefined : p.api_key || undefined,
+                        api_key: p.api_key.includes("***")
+                          ? undefined
+                          : p.api_key || undefined,
                       });
-                      setStatus(`已保存 ${p.name}`);
+                      applyReturned(res.providers);
+                      savedNames.current[p.id] = unique;
+                      setStatus(`已保存 ${unique}`);
                       await reload();
                     } catch (e) {
                       setError(e instanceof Error ? e.message : String(e));

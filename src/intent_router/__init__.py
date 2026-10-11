@@ -73,6 +73,16 @@ class IntentRouter:
         hit = next((kw for kw in _WRITER_KEYWORDS if kw in text), None)
         if hit is not None:
             return "writer", 1.0, "rule", hit
+        identity = next(
+            (
+                kw
+                for kw in ("你是谁", "你是什么", "自我介绍", "介绍一下你自己")
+                if kw in text
+            ),
+            None,
+        )
+        if identity is not None:
+            return "qa", 0.95, "rule", "身份问答"
         has_tool = any(h in text for h in _TOOL_HINTS)
         if not has_tool:
             qa_hit = next((kw for kw in _QA_KEYWORDS if kw in text), None)

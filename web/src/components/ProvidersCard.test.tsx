@@ -51,4 +51,17 @@ describe("ProvidersCard", () => {
       expect.objectContaining({ model: "qwen3-8b-q4" }),
     );
   });
+
+  it("saves the provider name on blur when it changed", async () => {
+    render(<ProvidersCard />);
+    const nameInput = await screen.findByLabelText("provider name p1");
+    fireEvent.change(nameInput, { target: { value: "书房本机" } });
+    fireEvent.blur(nameInput);
+    await waitFor(() => {
+      expect(updateProvider).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({ name: "书房本机" }),
+      );
+    });
+  });
 });

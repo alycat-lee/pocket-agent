@@ -23,6 +23,7 @@ function kindOf(event: string, data: Record<string, unknown>): TrajectoryRecord[
   if (event === "worker.start" || event === "worker.done") return "worker";
   if (event === "merger.start" || event === "merger.done") return "merge";
   if (event === "step.thinking") return "thinking";
+  if (event === "rag.empty") return "other";
   if (event === "step.start" || event === "step.cache_hit") return "tool";
   return "other";
 }
@@ -79,6 +80,7 @@ function titleOf(
     return routeTitle({ mode, source, reason });
   }
   if (event === "step.start") return `步骤 ${data.step_index ?? ""}`.trim();
+  if (event === "rag.empty") return "未检索到资料，由模型自身作答";
   return event;
 }
 

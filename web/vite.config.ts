@@ -17,15 +17,19 @@ function gitShortHash(): string {
 }
 
 const outDir = path.resolve(root, "../src/plugins/static");
+const version = gitShortHash();
 
 export default defineConfig({
+  define: {
+    __BUILD_VERSION__: JSON.stringify(version),
+  },
   plugins: [
     react(),
     {
       name: "build-info",
       closeBundle() {
         const info = {
-          version: gitShortHash(),
+          version,
           built_at: new Date().toISOString(),
         };
         writeFileSync(

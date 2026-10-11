@@ -10,6 +10,7 @@ from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError
 from pocket_agent.prompts import PLANNER
 
 TaskType = Literal["qa", "agent", "writer"]
+KnowledgeMode = Literal["none", "augment", "strict"]
 
 TASK_CARD_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -26,6 +27,7 @@ TASK_CARD_SCHEMA: dict[str, Any] = {
 
 _TOTAL_CHARS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(万)?\s*字")
 _MODES: tuple[TaskType, ...] = ("qa", "agent", "writer")
+# deprecated：新逻辑一律走 infer_knowledge_mode；保留导出兼容。
 _KNOWLEDGE_HINTS = (
     "是什么",
     "谁写",
@@ -45,6 +47,43 @@ _KNOWLEDGE_HINTS = (
     "几月几日",
     "哪个国家",
 )
+_IDENTITY_HINTS = (
+    "你是谁",
+    "你是什么",
+    "介绍一下你自己",
+    "自我介绍",
+    "你会什么",
+    "你能做什么",
+)
+_STRICT_HINTS = (
+    "根据文档",
+    "按照文档",
+    "根据资料",
+    "按资料",
+    "知识库",
+    "资料库",
+    "文档里",
+    "文档中",
+    "根据我上传",
+    "参考资料回答",
+)
+_AUGMENT_HINTS = (
+    "最新",
+    "今年",
+    "市值",
+    "签署",
+    "哪一年",
+    "哪年",
+    "何时",
+    "几月几日",
+    "哪个国家",
+    "百科",
+    "是什么",
+    "谁是",
+    "谁写",
+    "作者",
+)
+_KNOWLEDGE_MODES: tuple[KnowledgeMode, ...] = ("none", "augment", "strict")
 DEFAULT_WRITER_PLAN: list[str] = [
     "确定题材与人物",
     "展开开篇场景",
@@ -62,15 +101,34 @@ class TaskCard:
     plan: list[str] = field(default_factory=list)
     needs_history: bool = False
     needs_knowledge: bool = False
+    knowledge_mode: KnowledgeMode = "none"
+
+    def __post_init__(self) -> None:
+        if self.knowledge_mode not in _KNOWLEDGE_MODES:
+            self.knowledge_mode = "none"
+        if self.knowledge_mode == "none" and self.needs_knowledge:
+            self.knowledge_mode = "strict"
+        self.needs_knowledge = self.knowledge_mode != "none"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def infer_needs_knowledge(text: str) -> bool:
-    """规则推断是否需要先检索；旧任务卡缺字段时的兜底。"""
+def infer_knowledge_mode(text: str) -> KnowledgeMode:
+    """三档知识依赖：身份 none / 显式资料 strict / 事实 augment。"""
     body = text or ""
-    return any(token in body for token in _KNOWLEDGE_HINTS)
+    if any(token in body for token in _IDENTITY_HINTS):
+        return "none"
+    if any(token in body for token in _STRICT_HINTS):
+        return "strict"
+    if any(token in body for token in _AUGMENT_HINTS):
+        return "augment"
+    return "none"
+
+
+def infer_needs_knowledge(text: str) -> bool:
+    """deprecated：请使用 infer_knowledge_mode。"""
+    return infer_knowledge_mode(text) != "none"
 
 
 def parse_total_chars(text: str, default: int = 0) -> int:
@@ -90,13 +148,15 @@ def default_card(mode: TaskType, goal: str, *, user_input: str = "") -> TaskCard
     chars = parse_total_chars(user_input or goal, default=0)
     if chars:
         constraints["total_chars"] = chars
+    kmode = infer_knowledge_mode(user_input or goal)
     return TaskCard(
         type=mode,
         goal=goal or user_input,
         constraints=constraints,
         plan=list(DEFAULT_WRITER_PLAN) if mode == "writer" else [],
         needs_history=mode == "agent",
-        needs_knowledge=infer_needs_knowledge(user_input or goal),
+        needs_knowledge=kmode != "none",
+        knowledge_mode=kmode,
     )
 
 
@@ -117,17 +177,21 @@ def card_from_dict(data: dict[str, Any], *, user_input: str = "") -> TaskCard:
     if isinstance(raw_plan, list):
         plan = [str(p).strip() for p in raw_plan if str(p).strip()]
     needs = bool(data.get("needs_history", False))
-    if "needs_knowledge" in data:
-        needs_k = bool(data.get("needs_knowledge"))
+    raw_mode = str(data.get("knowledge_mode") or "").strip()
+    if raw_mode in _KNOWLEDGE_MODES:
+        kmode: KnowledgeMode = raw_mode  # type: ignore[assignment]
+    elif "needs_knowledge" in data:
+        kmode = "strict" if bool(data.get("needs_knowledge")) else "none"
     else:
-        needs_k = infer_needs_knowledge(user_input or goal)
+        kmode = infer_knowledge_mode(user_input or goal)
     return TaskCard(
         type=raw_type,  # type: ignore[arg-type]
         goal=goal,
         constraints=constraints,
         plan=plan,
         needs_history=needs,
-        needs_knowledge=needs_k,
+        needs_knowledge=kmode != "none",
+        knowledge_mode=kmode,
     )
 
 
