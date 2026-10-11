@@ -15,11 +15,12 @@ from typing import Any, ClassVar
 
 if sys.platform == "win32":
     import msvcrt
-    from ctypes import byref, windll
+    from ctypes import byref, create_unicode_buffer, windll
     from ctypes.wintypes import DWORD, HANDLE
 else:  # pragma: no cover — IME 仅 Windows 需要
     msvcrt = None  # type: ignore[misc,assignment]
     byref = None  # type: ignore[misc,assignment]
+    create_unicode_buffer = None  # type: ignore[misc,assignment]
     windll = None  # type: ignore[misc,assignment]
     DWORD = Any  # type: ignore[misc,assignment]
     HANDLE = Any  # type: ignore[misc,assignment]
@@ -72,7 +73,13 @@ _PT_MISSING = (
 )
 _APPROVAL_TIMEOUT = 60.0
 _ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+_ENABLE_PROCESSED_INPUT = 0x0001
+_ENABLE_LINE_INPUT = 0x0002
+_ENABLE_ECHO_INPUT = 0x0004
 _STD_INPUT_HANDLE = -10
+_ERROR_OPERATION_ABORTED = 995
+_CP_UTF8 = 65001
+_CONSOLE_LINE_CHARS = 4096
 _APPROVAL_KEYS = ("y", "Y", "n", "N")
 _SLASH_NAMES = (
     "help",
@@ -218,7 +225,7 @@ def needs_cooked_ime_input(
     platform: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> bool:
-    """Cursor/VS Code 集成终端的 ConPTY raw/fullscreen 会吞掉 IME，改走 input()。"""
+    """Cursor/VS Code 集成终端的 ConPTY raw/fullscreen 会吞掉 IME，改走 ReadConsoleW。"""
     plat = platform if platform is not None else sys.platform
     data = env if env is not None else os.environ
     if plat != "win32":
@@ -262,6 +269,71 @@ def poll_console_key(
 def strip_vt_input_flag(mode: int) -> int:
     """去掉 ENABLE_VIRTUAL_TERMINAL_INPUT，让 IME 仍走 KEY_EVENT Unicode。"""
     return mode & ~_ENABLE_VIRTUAL_TERMINAL_INPUT
+
+
+def cooked_console_mode(current: int) -> int:
+    """行编辑 + 回显，并关掉 VT 输入，把 IME 交给控制台主机。"""
+    mode = current | _ENABLE_PROCESSED_INPUT | _ENABLE_LINE_INPUT | _ENABLE_ECHO_INPUT
+    return strip_vt_input_flag(mode)
+
+
+def normalize_console_line(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+
+
+def prepare_console_for_ime() -> None:
+    if sys.platform != "win32" or windll is None:
+        return
+    windll.kernel32.SetConsoleCP(_CP_UTF8)
+    windll.kernel32.SetConsoleOutputCP(_CP_UTF8)
+    handle = HANDLE(windll.kernel32.GetStdHandle(_STD_INPUT_HANDLE))
+    mode = DWORD(0)
+    if windll.kernel32.GetConsoleMode(handle, byref(mode)):
+        windll.kernel32.SetConsoleMode(handle, cooked_console_mode(int(mode.value)))
+    encoding = getattr(sys.stdin, "encoding", None)
+    reconfigure = getattr(sys.stdin, "reconfigure", None)
+    if encoding and encoding.lower() not in {"utf-8", "utf8"} and callable(reconfigure):
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
+def read_console_w() -> str | None:
+    if windll is None or create_unicode_buffer is None:
+        return None
+    handle = HANDLE(windll.kernel32.GetStdHandle(_STD_INPUT_HANDLE))
+    buf = create_unicode_buffer(_CONSOLE_LINE_CHARS)
+    nread = DWORD(0)
+    ok = windll.kernel32.ReadConsoleW(
+        handle, buf, _CONSOLE_LINE_CHARS - 1, byref(nread), None
+    )
+    if ok:
+        return buf.value
+    err = int(windll.kernel32.GetLastError())
+    if err == _ERROR_OPERATION_ABORTED:
+        raise KeyboardInterrupt
+    return None
+
+
+def read_ime_line(
+    prompt: str,
+    *,
+    writer: Callable[[str], None] | None = None,
+    reader: Callable[[], str] | None = None,
+) -> str:
+    """优先 ReadConsoleW（控制台 IME）；失败再退回 stdin。"""
+    emit = writer or (lambda text: print(text, end="", flush=True))
+    emit(prompt)
+    if reader is not None:
+        return normalize_console_line(reader())
+    raw = read_console_w()
+    if raw is not None:
+        return normalize_console_line(raw)
+    line = sys.stdin.readline()
+    if line == "":
+        raise EOFError
+    return normalize_console_line(line)
 
 
 def disable_virtual_terminal_input() -> None:
@@ -515,9 +587,10 @@ class TuiApp:
         self._run_prompt_toolkit()
 
     def _run_cooked(self) -> None:
-        """集成终端行模式：走系统 input()，中文 IME 才能组字。"""
+        """集成终端行模式：ReadConsoleW 行编辑，把 IME 交给控制台。"""
         self._cooked = True
         self._cook_quit = False
+        prepare_console_for_ime()
         print(self._title_text(), flush=True)
         print("（行模式：可直接输入中文；Enter 发送，/quit 退出）", flush=True)
         for kind, text in list(self.lines):
@@ -526,8 +599,9 @@ class TuiApp:
             if self.running:
                 self._wait_running()
                 continue
+            prepare_console_for_ime()
             try:
-                text = input("❯ ")
+                text = read_ime_line("❯ ")
             except EOFError:
                 return
             except KeyboardInterrupt:

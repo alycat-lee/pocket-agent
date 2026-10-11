@@ -13,15 +13,18 @@ from pocket_agent.plugins.ui_tui import (
     apply_default_provider,
     bind_tui_keys,
     configure_win32_ime_input,
+    cooked_console_mode,
     format_approval_line,
     format_cooked_line,
     format_provider_rows,
     format_settlement,
     needs_cooked_ime_input,
+    normalize_console_line,
     parse_slash,
     poll_console_key,
     project_event,
     prompt_approval,
+    read_ime_line,
     resolve_approval_key,
     resolve_resume_token,
     running_status,
@@ -130,6 +133,12 @@ def test_needs_cooked_ime_input_for_cursor_not_windows_terminal() -> None:
     )
     assert format_cooked_line("user", "你好") == "❯ 你好"
     assert format_cooked_line("dim", "就绪") == "就绪"
+    assert normalize_console_line("你好\r\n") == "你好"
+    assert cooked_console_mode(0x0200) & 0x0200 == 0
+    assert cooked_console_mode(0) & 0x0002
+    written: list[str] = []
+    assert read_ime_line("❯ ", writer=written.append, reader=lambda: "你好\r\n") == "你好"
+    assert written == ["❯ "]
 
 
 def test_poll_console_key_yes_and_timeout() -> None:
