@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from pocket_agent.intent_router import IntentRouter
 from pocket_agent.llm_client import LLMFormatError
+
+_CASES_PATH = Path(__file__).parent / "fixtures" / "intent_cases.json"
 
 
 class _ScriptedLlm:
@@ -99,3 +104,23 @@ def test_fallback_empty_input():
     assert conf == 0.5
     assert source == "fallback"
     assert reason == "空输入"
+
+
+def test_accident_sentence_routes_to_writer():
+    r = IntentRouter(_ScriptedLlm(1))
+    mode, conf, source, reason = r.classify("给我生成一篇2万字的小说 内容随意")
+    assert mode == "writer"
+    assert conf == 1.0
+    assert source == "rule"
+    assert "小说" in reason
+
+
+def test_intent_cases_regression():
+    cases = json.loads(_CASES_PATH.read_text(encoding="utf-8"))
+    assert cases, "intent_cases.json 不能为空"
+    assert cases[0]["input"] == "给我生成一篇2万字的小说 内容随意"
+    router = IntentRouter(_ScriptedLlm(1))
+    for case in cases:
+        mode, _conf, source, _reason = router.classify(case["input"])
+        assert mode == case["mode"], case
+        assert source == case["source"], case

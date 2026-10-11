@@ -19,3 +19,6 @@ class WriterPlugin:
         llm = ctx.require("llm")
         writer = LongWriter(ac, llm)
         ctx.provide("writer", writer)
+        # session 只依赖 llm/agent，可能先于 writer 挂载；补绑避免创作任务落入 agent 循环
+        if ctx.has("sessions"):
+            ctx.require("sessions")._writer = writer

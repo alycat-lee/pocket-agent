@@ -57,6 +57,7 @@ export interface TrajectoryRecord {
     | "compress"
     | "approval"
     | "route"
+    | "thinking"
     | "other";
   title: string;
   ts: number | null;

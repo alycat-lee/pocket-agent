@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from pocket_agent.config import AgentConfig
-from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError
+from pocket_agent.llm_client import (
+    LLMClientProtocol,
+    LLMFormatError,
+    apply_max_tokens,
+    strip_think_blocks,
+    take_thinking,
+)
 from pocket_agent.prompts import OUTLINE, OUTLINE_SCHEMA, SECTION_WRITE
 
 _SENT_SPLIT = re.compile(r"(?<=[。！？\n])")
@@ -21,11 +27,14 @@ _LABEL_BEFORE_RE = re.compile(
 )
 _CONSISTENCY_CHAR_LIMIT = 300
 # 段长不足目标此比例时触发续写（最多一轮，仍用 SECTION_WRITE）
-_SHORT_SECTION_RATIO = 0.65
+_SHORT_SECTION_RATIO = 0.60
+_MAX_SECTIONS = 100
+_DEFAULT_TOTAL_CHARS = 3000
+_TOTAL_CHARS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(万)?\s*字")
 # 单段允许略超目标；全文硬顶
 _SECTION_MAX_RATIO = 1.05
 _ARTICLE_MAX_RATIO = 1.08
-_ARTICLE_MIN_RATIO = 0.85
+_ARTICLE_MIN_RATIO = 0.90
 _MIN_TRIM_CHARS = 4
 _SEAM_TARGET = 0.05
 
@@ -106,6 +115,7 @@ class LongWriter:
         self._config = config
         self._llm = llm
         self.on_section: Callable[[int, SectionSpec, str], None] | None = None
+        self.on_thinking: Callable[[str], None] | None = None
         self.last_outline: list[SectionSpec] = []
         self.last_sections: list[str] = []
         self.last_card: ConsistencyCard = ConsistencyCard()
@@ -221,7 +231,17 @@ class LongWriter:
             target_chars=section.target_chars,
             seam_text=seam_text,
         )
-        return _strip_thinking(str(self._llm.generate(prompt)).strip())
+        saved_tokens = _current_max_tokens(self._llm)
+        apply_max_tokens(self._llm, section_max_tokens(section.target_chars))
+        try:
+            raw = str(self._llm.generate(prompt)).strip()
+        finally:
+            if saved_tokens is not None:
+                apply_max_tokens(self._llm, saved_tokens)
+        thinking = take_thinking(self._llm)
+        if thinking and self._config.reasoning_enabled and self.on_thinking is not None:
+            self.on_thinking(thinking)
+        return strip_think_blocks(raw)
 
     def _expand_if_short(
         self,
@@ -509,17 +529,43 @@ def _resync_sections_to_article(sections: list[str], article: str) -> list[str]:
     return kept or ([article] if article else [])
 
 
+def parse_total_chars(text: str, default: int = _DEFAULT_TOTAL_CHARS) -> int:
+    """解析「N万字 / N字」为 total_chars；未指定则用 default。"""
+    match = _TOTAL_CHARS_RE.search(text or "")
+    if match is None:
+        return max(1, default)
+    n = float(match.group(1))
+    if match.group(2):
+        n *= 10000.0
+    return max(1, int(n))
+
+
+def section_max_tokens(target_chars: int) -> int:
+    """中文字数 × 1.5 + 冗余，保证单段不被全局 512 截断。"""
+    return max(256, int(max(1, target_chars) * 1.5) + 64)
+
+
+def _current_max_tokens(llm: object) -> int | None:
+    cfg = getattr(llm, "_config", None)
+    if cfg is not None and hasattr(cfg, "max_tokens"):
+        return int(cfg.max_tokens)
+    if hasattr(llm, "_max_tokens"):
+        return int(llm._max_tokens)
+    return None
+
+
 def _desired_section_count(total_chars: int, section_chars: int) -> int:
     chunk = section_chars if section_chars > 0 else 500
-    return max(1, math.ceil(total_chars / chunk))
+    return min(_MAX_SECTIONS, max(1, math.ceil(total_chars / chunk)))
 
 
 def _ensure_section_count(
     sections: list[SectionSpec],
     desired_n: int,
 ) -> list[SectionSpec]:
+    desired_n = min(_MAX_SECTIONS, max(1, desired_n))
     if len(sections) >= desired_n:
-        return sections
+        return sections[:desired_n]
     out = list(sections)
     while len(out) < desired_n:
         i = len(out) + 1
@@ -543,14 +589,8 @@ def _uniform_outline(total_chars: int, section_chars: int) -> list[SectionSpec]:
 
 
 def _strip_thinking(text: str) -> str:
-    """去掉误落入正文的思考痕迹（content 空时回退 reasoning 的情形）。"""
-    if not text:
-        return text
-    # 常见思考开头：若整段以推理口吻起笔且含明确结论分隔，取后半
-    for sep in ("</think>", "最终回答：", "正文：", "输出："):
-        if sep in text:
-            text = text.split(sep)[-1].strip()
-    return text
+    """兼容入口：统一走 strip_think_blocks。"""
+    return strip_think_blocks(text)
 
 
 def _extract_facts_from_material(material: str) -> list[str]:

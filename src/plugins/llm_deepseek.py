@@ -7,7 +7,13 @@ import time
 from typing import Any
 
 import httpx
-from pocket_agent.llm_client import LLMClientProtocol, LLMConnectionError, LLMFormatError
+from pocket_agent.llm_client import (
+    LLMClientProtocol,
+    LLMConnectionError,
+    LLMFormatError,
+    extract_thinking,
+    strip_think_blocks,
+)
 from pocket_agent.plugins._config import agent_config_from
 from pocket_agent.runtime import Context, PluginError
 
@@ -37,6 +43,7 @@ class DeepSeekClient:
         max_tokens: int = 512,
         timeout: float = 60.0,
         trust_env: bool = True,
+        reasoning_enabled: bool = False,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -47,6 +54,8 @@ class DeepSeekClient:
         self._timeout = timeout
         # 云端可能需要代理（trust_env=True 默认）；本地云端混跑时可覆盖
         self._trust_env = trust_env
+        self._reasoning_enabled = reasoning_enabled
+        self.last_thinking: str = ""
 
     def generate(self, prompt: str) -> str:
         return self._complete(prompt, response_format=None)
@@ -140,17 +149,21 @@ class DeepSeekClient:
             try:
                 data = response.json()
                 message = data["choices"][0]["message"]
-                content = message.get("content")
-                if not content:
-                    alt = message.get("reasoning_content")
-                    if isinstance(alt, str) and alt.strip():
-                        content = alt
+                if not isinstance(message, dict):
+                    raise LLMFormatError("message is not object")
+                thinking = extract_thinking(message)
+                self.last_thinking = thinking if self._reasoning_enabled else ""
+                raw = message.get("content")
+                content = strip_think_blocks(raw) if isinstance(raw, str) else ""
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
                 raise LLMFormatError(
                     f"unexpected response shape: {response.text!r}"
                 ) from exc
-            if not isinstance(content, str):
-                raise LLMFormatError(f"content is not str: {content!r}")
+            if not content:
+                raise LLMFormatError(
+                    "empty content after stripping think blocks "
+                    "(reasoning_content is not used as the answer)"
+                )
             return content
         raise LLMConnectionError(str(last_error))
 
@@ -161,20 +174,33 @@ class RoutingLLM:
     def __init__(self, local: LLMClientProtocol, cloud: LLMClientProtocol) -> None:
         self._local = local
         self._cloud = cloud
+        self.last_thinking: str = ""
 
     def _pick(self, prompt: str) -> LLMClientProtocol:
         if any(marker in prompt for marker in _CLOUD_MARKERS):
             return self._cloud
         return self._local
 
+    def _remember(self, client: LLMClientProtocol) -> None:
+        self.last_thinking = str(getattr(client, "last_thinking", "") or "")
+
     def generate(self, prompt: str) -> str:
-        return self._pick(prompt).generate(prompt)
+        client = self._pick(prompt)
+        result = client.generate(prompt)
+        self._remember(client)
+        return result
 
     def generate_int(self, prompt: str, minimum: int, maximum: int) -> int:
-        return self._pick(prompt).generate_int(prompt, minimum, maximum)
+        client = self._pick(prompt)
+        result = client.generate_int(prompt, minimum, maximum)
+        self._remember(client)
+        return result
 
     def generate_json(self, prompt: str, schema: dict) -> dict:
-        return self._pick(prompt).generate_json(prompt, schema)
+        client = self._pick(prompt)
+        result = client.generate_json(prompt, schema)
+        self._remember(client)
+        return result
 
 
 class LlmDeepSeekPlugin:
@@ -214,6 +240,7 @@ class LlmDeepSeekPlugin:
             max_tokens=ac.max_tokens,
             timeout=ac.timeout,
             trust_env=bool(config.get("trust_env", True)),
+            reasoning_enabled=ac.reasoning_enabled,
         )
 
         if bool(config.get("route", False)):

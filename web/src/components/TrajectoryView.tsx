@@ -1,4 +1,4 @@
-import { Path } from "@phosphor-icons/react";
+import { Brain, Path } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TrajectoryRecord } from "../api/types";
 import { formatMs } from "../lib/format";
@@ -59,6 +59,7 @@ export function TrajectoryView({
     () =>
       displayRecords.map((r) => {
         if (r.kind === "route") return "route";
+        if (r.kind === "thinking") return "thinking";
         if (r.badges.includes("tool_error")) return "tool_error";
         if (r.badges.includes("intercepted")) return "intercepted";
         if (r.badges.includes("cache_hit")) return "cache_hit";
@@ -142,12 +143,14 @@ export function TrajectoryView({
                 ) : null}
                 <button
                   type="button"
-                  className={`record ${r.kind === "route" ? "route" : ""} ${selected?.id === r.id ? "selected" : ""}`}
+                  className={`record ${r.kind === "route" ? "route" : ""} ${r.kind === "thinking" ? "thinking" : ""} ${selected?.id === r.id ? "selected" : ""}`}
                   onClick={() => setSelectedId(r.id)}
                 >
                   <span className="record-step">
                     {r.kind === "route" ? (
                       <Path size={16} weight="bold" />
+                    ) : r.kind === "thinking" ? (
+                      <Brain size={16} weight="duotone" />
                     ) : r.stepIndex != null ? (
                       `S${r.stepIndex}`
                     ) : (
@@ -205,12 +208,22 @@ export function TrajectoryView({
 
 function InspectorBody({ record }: { record: TrajectoryRecord }) {
   const info = routeInfoOf(record);
+  const thinking =
+    record.kind === "thinking"
+      ? String(record.output || record.payload.text || "")
+      : "";
   return (
     <dl>
       <div>
         <dt>事件</dt>
         <dd>{record.event}</dd>
       </div>
+      {thinking ? (
+        <div>
+          <dt>思维链</dt>
+          <dd className="thinking-block">{thinking}</dd>
+        </div>
+      ) : null}
       {info ? (
         <>
           <div>
@@ -260,10 +273,12 @@ function InspectorBody({ record }: { record: TrajectoryRecord }) {
         <dt>输入</dt>
         <dd>{record.input || info?.query || "—"}</dd>
       </div>
-      <div>
-        <dt>输出</dt>
-        <dd>{record.output || "—"}</dd>
-      </div>
+      {thinking ? null : (
+        <div>
+          <dt>输出</dt>
+          <dd>{record.output || "—"}</dd>
+        </div>
+      )}
       <div>
         <dt>参数</dt>
         <dd>

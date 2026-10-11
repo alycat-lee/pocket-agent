@@ -25,6 +25,7 @@ class AgentConfig:
     repeat_penalty: float = 1.1
     top_p: float = 0.9
     max_tokens: int = 512  # 单次生成的最大输出 token
+    reasoning_enabled: bool = False  # True：保留思维链经 step.thinking 发出
 
     # 上下文预算（字符数）
     prompt_char_budget: int = 5200  # ≈ 3500 tokens（× 1.5 换算）

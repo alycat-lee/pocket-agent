@@ -63,4 +63,32 @@ describe("TrajectoryView route record", () => {
     expect(screen.getByText("写一篇关于春天的散文")).toBeInTheDocument();
     expect(screen.getByText("规则命中")).toBeInTheDocument();
   });
+
+  it("shows thinking block in inspector, distinct from answer body", () => {
+    const thinking: TrajectoryRecord = {
+      ...routeRecord(),
+      id: "t1",
+      kind: "thinking",
+      event: "step.thinking",
+      title: "思维链",
+      payload: { text: "先构思情节再落笔" },
+      output: "先构思情节再落笔",
+      input: undefined,
+    };
+    render(
+      <TrajectoryView
+        records={[thinking]}
+        hasMore={false}
+        loadingEarlier={false}
+        followTail
+        focusId={null}
+        onFollowChange={vi.fn()}
+        onLoadEarlier={vi.fn()}
+        onExport={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /思维链/ }));
+    expect(screen.getByText("先构思情节再落笔")).toBeInTheDocument();
+    expect(document.querySelector(".thinking-block")).not.toBeNull();
+  });
 });

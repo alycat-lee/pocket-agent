@@ -125,6 +125,7 @@ def test_headless_builtin_assemble_without_ui_web() -> None:
         assert ctx.has("tools")
         assert ctx.has("sessions")
         assert ctx.has("writer")
+        assert ctx.require("sessions")._writer is not None
         assert ctx.has("checkpoint")
         result = ctx.require("agent").run("无需工具")
         assert result.answer == "ok"

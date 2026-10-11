@@ -746,6 +746,15 @@ button:disabled {
   color: var(--color-accent-muted);
 }
 
+.record.thinking .record-title {
+  font-style: italic;
+  color: var(--color-muted-fg);
+}
+
+.overview-seg.thinking {
+  background: color-mix(in srgb, var(--color-muted-fg) 45%, transparent);
+}
+
 .record-step {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -831,6 +840,13 @@ button:disabled {
   border: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
   border-radius: var(--radius);
   padding: var(--space-md);
+}
+
+.inspector dd.thinking-block {
+  font-style: italic;
+  color: var(--color-muted-fg);
+  background: color-mix(in srgb, var(--color-muted-fg) 10%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-muted-fg) 22%, transparent);
 }
 
 .settings-layout,

@@ -9,8 +9,59 @@ import httpx
 from pocket_agent.config import AgentConfig
 
 _INT_RE = re.compile(r"-?\d+")
+_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_UNCLOSED = re.compile(r"<think\b[^>]*>.*", re.DOTALL | re.IGNORECASE)
 _RETRY_DELAYS = (1.0, 2.0)
 _MAX_ATTEMPTS = 3  # 首次 + 重试 2 次
+
+
+def strip_think_blocks(text: str) -> str:
+    """移除完整与未闭合的 <think> 块，避免思维链落入回答。"""
+    if not text:
+        return text
+    cleaned = _THINK_BLOCK.sub("", text)
+    cleaned = _THINK_UNCLOSED.sub("", cleaned)
+    return cleaned.strip()
+
+
+def extract_thinking(message: dict[str, Any]) -> str:
+    """从 message 收集思维链（think 标签 + reasoning_content），不作为回答。"""
+    parts: list[str] = []
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        for match in _THINK_BLOCK.finditer(content):
+            inner = re.sub(r"</?think\b[^>]*>", "", match.group(0), flags=re.IGNORECASE)
+            if inner.strip():
+                parts.append(inner.strip())
+        unclosed = _THINK_UNCLOSED.search(_THINK_BLOCK.sub("", content))
+        if unclosed is not None:
+            inner = re.sub(r"<think\b[^>]*>", "", unclosed.group(0), flags=re.IGNORECASE)
+            if inner.strip():
+                parts.append(inner.strip())
+    alt = message.get("reasoning_content")
+    if isinstance(alt, str) and alt.strip():
+        parts.append(alt.strip())
+    return "\n".join(parts)
+
+
+def take_thinking(llm: object) -> str:
+    """取出并清空客户端上一次请求捕获的思维链。"""
+    text = getattr(llm, "last_thinking", "") or ""
+    if hasattr(llm, "last_thinking"):
+        llm.last_thinking = ""
+    return str(text)
+
+
+def apply_max_tokens(llm: object, max_tokens: int) -> None:
+    """尽力把单次生成 max_tokens 写到客户端（不改协议签名）。"""
+    if hasattr(llm, "_config") and hasattr(llm._config, "max_tokens"):
+        llm._config.max_tokens = max_tokens
+    if hasattr(llm, "_max_tokens"):
+        llm._max_tokens = max_tokens
+    for name in ("_local", "_cloud", "_llm"):
+        child = getattr(llm, name, None)
+        if child is not None and child is not llm:
+            apply_max_tokens(child, max_tokens)
 
 
 class LLMClientProtocol(Protocol):
@@ -53,6 +104,7 @@ class LlamaCppClient:
 
     def __init__(self, config: AgentConfig) -> None:
         self._config = config
+        self.last_thinking: str = ""
 
     def generate(self, prompt: str) -> str:
         """自由生成（用于 final_answer、summarize）。"""
@@ -109,6 +161,9 @@ class LlamaCppClient:
             "repeat_penalty": self._config.repeat_penalty,
             "top_p": self._config.top_p,
             "max_tokens": self._config.max_tokens,
+            "chat_template_kwargs": {
+                "enable_thinking": bool(self._config.reasoning_enabled),
+            },
         }
         if response_format is not None:
             payload["response_format"] = response_format
@@ -148,17 +203,22 @@ class LlamaCppClient:
             try:
                 data = response.json()
                 message = data["choices"][0]["message"]
-                content = message.get("content")
-                # 部分思考模型在 content 为空时把正文放进 reasoning_content
-                if not content:
-                    alt = message.get("reasoning_content")
-                    if isinstance(alt, str) and alt.strip():
-                        content = alt
+                if not isinstance(message, dict):
+                    raise LLMFormatError("message is not object")
+                thinking = extract_thinking(message)
+                self.last_thinking = (
+                    thinking if self._config.reasoning_enabled else ""
+                )
+                raw = message.get("content")
+                content = strip_think_blocks(raw) if isinstance(raw, str) else ""
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
                 raise LLMFormatError(f"unexpected response shape: {response.text!r}") from exc
 
-            if not isinstance(content, str):
-                raise LLMFormatError(f"content is not str: {content!r}")
+            if not content:
+                raise LLMFormatError(
+                    "empty content after stripping think blocks "
+                    "(reasoning_content is not used as the answer)"
+                )
             return content
 
         raise LLMConnectionError(str(last_error))

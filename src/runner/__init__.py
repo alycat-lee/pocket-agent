@@ -15,7 +15,7 @@ from pocket_agent.compressor import ContextCompressor
 from pocket_agent.config import AgentConfig
 from pocket_agent.guard import LoopGuard
 from pocket_agent.ledger import CallLedger
-from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError
+from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError, take_thinking
 from pocket_agent.prompts import CHOOSE_TOOL, FILL_ARGS, FINAL_ANSWER, SYSTEM_BASE
 from pocket_agent.tools import Tool, ToolRegistry
 
@@ -95,6 +95,15 @@ class AgentRunner:
             enriched = dict(payload)
             enriched.setdefault("session_id", self._run_session_id)
             self._events.emit(event, enriched)
+
+    def _emit_thinking(self, *, step: int | None = None) -> None:
+        text = take_thinking(self._llm)
+        if not text or not self._config.reasoning_enabled:
+            return
+        payload: dict[str, Any] = {"text": text}
+        if step is not None:
+            payload["step_index"] = step
+        self._emit("step.thinking", payload)
 
     def _step_fields(
         self,
@@ -197,6 +206,7 @@ class AgentRunner:
                     minimum=-1,
                     maximum=len(candidates) - 1,
                 )
+                self._emit_thinking(step=step)
             except LLMFormatError as exc:
                 llm_ms += (time.perf_counter() - llm_t0) * 1000
                 result = f"[格式错误] {exc}"
@@ -291,6 +301,7 @@ class AgentRunner:
             llm_t0 = time.perf_counter()
             try:
                 args = self._llm.generate_json(fill_prompt, tool.schema)
+                self._emit_thinking(step=step)
             except LLMFormatError as exc:
                 llm_ms += (time.perf_counter() - llm_t0) * 1000
                 result = f"[工具错误] {exc}"
@@ -462,6 +473,7 @@ class AgentRunner:
         llm_t0 = time.perf_counter()
         try:
             answer = self._llm.generate(final_prompt)
+            self._emit_thinking()
         except LLMFormatError as exc:
             answer = f"[生成回答失败] {exc}"
         llm_ms += (time.perf_counter() - llm_t0) * 1000

@@ -1,0 +1,74 @@
+[
+  {
+    "id": "accident-novel",
+    "input": "给我生成一篇2万字的小说 内容随意",
+    "mode": "writer",
+    "source": "rule"
+  },
+  {
+    "id": "write-analysis",
+    "input": "写一篇关于新能源汽车的分析",
+    "mode": "writer",
+    "source": "rule"
+  },
+  {
+    "id": "generate-story",
+    "input": "生成一个短故事给孩子听",
+    "mode": "writer",
+    "source": "rule"
+  },
+  {
+    "id": "create-prose",
+    "input": "创作一篇散文",
+    "mode": "writer",
+    "source": "rule"
+  },
+  {
+    "id": "come-poem",
+    "input": "来一首诗歌怎么样",
+    "mode": "writer",
+    "source": "rule"
+  },
+  {
+    "id": "translate",
+    "input": "翻译这段英文",
+    "mode": "writer",
+    "source": "rule"
+  },
+  {
+    "id": "continue-write",
+    "input": "续写上一章",
+    "mode": "writer",
+    "source": "rule"
+  },
+  {
+    "id": "hello",
+    "input": "你好",
+    "mode": "qa",
+    "source": "rule"
+  },
+  {
+    "id": "chitchat-keyword",
+    "input": "我们闲聊一会儿吧今天心情不错",
+    "mode": "qa",
+    "source": "rule"
+  },
+  {
+    "id": "encyclopedia",
+    "input": "什么是量子纠缠",
+    "mode": "qa",
+    "source": "rule"
+  },
+  {
+    "id": "weather-tool",
+    "input": "查北京天气",
+    "mode": "agent",
+    "source": "llm"
+  },
+  {
+    "id": "empty",
+    "input": "   ",
+    "mode": "agent",
+    "source": "fallback"
+  }
+]

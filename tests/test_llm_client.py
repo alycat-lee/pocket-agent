@@ -47,10 +47,11 @@ def test_generate_parses_content() -> None:
     assert payload["repeat_penalty"] == config.repeat_penalty
     assert payload["top_p"] == config.top_p
     assert payload["max_tokens"] == config.max_tokens
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert "response_format" not in payload
 
 
-def test_generate_falls_back_to_reasoning_content() -> None:
+def test_generate_rejects_reasoning_content_fallback() -> None:
     client = LlamaCppClient(AgentConfig())
     response = httpx.Response(
         200,
@@ -68,8 +69,33 @@ def test_generate_falls_back_to_reasoning_content() -> None:
         request=httpx.Request("POST", "http://localhost:8000/v1/chat/completions"),
     )
     mock_http = _patch_client([response])
+    with (
+        patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http),
+        pytest.raises(LLMFormatError, match="reasoning_content"),
+    ):
+        client.generate("介绍北京")
+
+
+def test_generate_strips_think_blocks_from_answer() -> None:
+    client = LlamaCppClient(AgentConfig())
+    mock_http = _patch_client(
+        [_openai_response("<think>不该出现</think>可见正文")]
+    )
     with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
-        assert client.generate("介绍北京") == "北京是中国的首都。"
+        assert client.generate("问") == "可见正文"
+    assert client.last_thinking == ""
+
+
+def test_reasoning_enabled_captures_thinking_not_answer() -> None:
+    client = LlamaCppClient(AgentConfig(reasoning_enabled=True))
+    mock_http = _patch_client(
+        [_openai_response("<think>推理过程</think>最终答案")]
+    )
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        assert client.generate("问") == "最终答案"
+    assert "推理过程" in client.last_thinking
+    payload = mock_http.post.call_args.kwargs["json"]
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
 
 
 def test_generate_int_from_json_schema_value() -> None:

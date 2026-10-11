@@ -109,6 +109,12 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         maximum=600.0,
         deprecated=True,
     ),
+    _item(
+        "reasoning_enabled",
+        type="boolean",
+        group="模型",
+        description="是否保留思维链（仅轨迹检查器可见，默认关闭）",
+    ),
     # 上下文
     _item(
         "prompt_char_budget",

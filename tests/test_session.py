@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pocket_agent.config import AgentConfig
 from pocket_agent.runner import AgentRunner
 from pocket_agent.session import SessionManager
@@ -270,3 +272,49 @@ def test_force_mode_manual_reuses_rewritten(mock_llm_factory: type) -> None:
     assert intents[-1]["reason"] == "用户纠正"
     assert intents[-1]["mode"] == "agent"
     assert len(mgr.get_state("s1").turns) == 2
+
+
+def test_compose_excludes_unrelated_history_for_writer_and_qa(
+    mock_llm_factory: type,
+) -> None:
+    """跨轮无关历史不得进入 writer/qa 的任务 prompt。"""
+    cfg = AgentConfig(max_steps=3)
+    registry = ToolRegistry(cfg)
+    llm = mock_llm_factory([1, "上海多云 18℃", "天气标题", "闲聊回答"])
+    runner = AgentRunner(cfg, llm, registry)
+
+    class _Writer:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        def write(self, topic: str, **kwargs: Any) -> str:
+            self.calls.append((topic, dict(kwargs)))
+            return "小说正文若干字"
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            del event, payload
+
+    writer = _Writer()
+    mgr = SessionManager(cfg, llm, runner, events=_Bus(), writer=writer)
+    mgr.chat("s1", "查询上海天气")
+    mgr.chat("s1", "给我生成一篇2万字的小说 内容随意")
+
+    assert mgr.last_intent == "writer"
+    assert "上海" not in mgr.last_run_task
+    assert writer.calls
+    topic, kwargs = writer.calls[0]
+    assert "上海" not in topic
+    assert kwargs.get("total_chars") == 20000
+    for prompt in llm.prompts:
+        if "你正在逐段撰写文章" in prompt or "为主题「" in prompt:
+            assert "上海" not in prompt
+
+    mgr.chat("s1", "你好")
+    assert mgr.last_intent == "qa"
+    assert "上海" not in mgr.last_run_task
+    for prompt in llm.prompts:
+        if "请回答：你好" in prompt or prompt.strip() == "你好":
+            assert "上海" not in prompt
+        if "基于以上信息回答任务" in prompt and "你好" in prompt:
+            assert "上海" not in prompt

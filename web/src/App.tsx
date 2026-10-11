@@ -469,6 +469,7 @@ export default function App() {
       "approval.required",
       "intent.detected",
       "session.renamed",
+      "step.thinking",
       "error",
     ];
     for (const name of names) {

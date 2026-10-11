@@ -6,7 +6,10 @@ from pocket_agent.writer import (
     LongWriter,
     SectionSpec,
     WriterMetrics,
+    _desired_section_count,
     clip_to_target,
+    parse_total_chars,
+    section_max_tokens,
     trim_overlap,
 )
 
@@ -162,3 +165,54 @@ def test_metrics() -> None:
     full = "本文先讲背景概述，并说明定义范围，然后展开其他内容。"
     coverage = metrics.outline_coverage(outline, full)
     assert coverage == 0.5
+
+
+def test_parse_total_chars_wanzi() -> None:
+    assert parse_total_chars("给我生成一篇2万字的小说 内容随意") == 20000
+    assert parse_total_chars("写20000字报告") == 20000
+    assert parse_total_chars("写 2.5 万字") == 25000
+    assert parse_total_chars("随便写一篇") == 3000
+
+
+def test_desired_section_count_independent_and_capped() -> None:
+    assert _desired_section_count(20000, 500) == 40
+    assert _desired_section_count(1_000_000, 500) == 100
+
+
+def test_short_section_continues_once(mock_llm_factory: type) -> None:
+    outline = {"sections": [{"title": "一段", "points": ["展开"]}]}
+    short = "甲" * 100
+    more = "乙" * 80
+    llm = mock_llm_factory([outline, short, more])
+    writer = LongWriter(AgentConfig(section_char_target=500), llm)
+    text = writer.write("续写测", total_chars=200)
+    assert "甲" in text
+    assert "乙" in text
+    assert sum(1 for p in llm.prompts if "你正在逐段撰写文章" in p) == 2
+
+
+def test_section_max_tokens_scales_with_target(mock_llm_factory: type) -> None:
+    outline = {"sections": [{"title": "一段", "points": ["a"]}]}
+    inner = mock_llm_factory([outline, "正" * 460])
+
+    class _Spy:
+        def __init__(self) -> None:
+            self._config = AgentConfig(max_tokens=512)
+            self.seen: list[int] = []
+
+        def generate(self, prompt: str) -> str:
+            self.seen.append(self._config.max_tokens)
+            return inner.generate(prompt)
+
+        def generate_int(self, prompt: str, minimum: int, maximum: int) -> int:
+            return inner.generate_int(prompt, minimum, maximum)
+
+        def generate_json(self, prompt: str, schema: dict) -> dict:
+            return inner.generate_json(prompt, schema)
+
+    spy = _Spy()
+    writer = LongWriter(AgentConfig(section_char_target=500, max_tokens=512), spy)
+    writer.write("字数", total_chars=500)
+    assert spy.seen
+    assert max(spy.seen) == section_max_tokens(500)
+    assert spy._config.max_tokens == 512

@@ -19,12 +19,24 @@ from pocket_agent.prompts import (
 from pocket_agent.runner import AgentRunner, EventEmitter, StepRecord
 from pocket_agent.tools import ToolRegistry
 from pocket_agent.workspace import WorkspaceManager
+from pocket_agent.writer import parse_total_chars
+
+_WRITER_CARRY = ("根据", "基于", "接着")
+_TURN_ANSWER_DIGEST = 120
 
 _SID_SAFE = re.compile(r"[^\w.\-]+")
 
 
 def _safe_sid(session_id: str) -> str:
     return _SID_SAFE.sub("_", session_id.strip()) or "default"
+
+
+def _digest_answer(answer: str, limit: int = _TURN_ANSWER_DIGEST) -> str:
+    """轮次摘要：只保留回答短摘，去掉工具步骤式长文。"""
+    text = " ".join((answer or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
 
 
 class WriterProtocol(Protocol):
@@ -260,14 +272,35 @@ class SessionManager:
             )
 
         if rewritten is None:
-            rewritten = self._rewrite_if_needed(state, user_input)
+            if mode == "writer":
+                # 创作任务保持原文，避免跨轮历史改写污染
+                rewritten = user_input
+            elif mode == "qa":
+                rewritten = self._rewrite_if_needed(
+                    state, user_input, summary_only=True
+                )
+            else:
+                rewritten = self._rewrite_if_needed(state, user_input)
         self.last_rewritten = rewritten
 
-        run_task = self._compose_run_task(state, rewritten)
+        run_task = self._compose_run_task(state, rewritten, mode=mode)
         self.last_run_task = run_task
 
         if mode == "writer" and self._writer is not None:
-            answer = self._writer.write(rewritten)
+            if self._events is not None and hasattr(self._writer, "on_thinking"):
+                def _emit_think(text: str) -> None:
+                    if text and self._config.reasoning_enabled and self._events is not None:
+                        self._events.emit(
+                            "step.thinking",
+                            {"text": text, "session_id": session_id},
+                        )
+
+                self._writer.on_thinking = _emit_think
+            total_chars = parse_total_chars(
+                rewritten,
+                default=max(1, self._config.section_char_target * 6),
+            )
+            answer = self._writer.write(rewritten, total_chars=total_chars)
             self.last_result = None
             if self._events is not None:
                 self._events.emit(
@@ -345,10 +378,22 @@ class SessionManager:
                 {"session_id": state.session_id, "title": title},
             )
 
-    def _rewrite_if_needed(self, state: SessionState, user_input: str) -> str:
+    def _rewrite_if_needed(
+        self,
+        state: SessionState,
+        user_input: str,
+        *,
+        summary_only: bool = False,
+    ) -> str:
         if not state.turns and not state.rolling_summary:
             return user_input
-        history_text = self._history_text(state)
+        if summary_only:
+            summary = state.rolling_summary.strip()
+            if not summary:
+                return user_input
+            history_text = f"摘要：{summary}"
+        else:
+            history_text = self._history_text(state)
         prompt = REWRITE_QUERY.format(
             history_text=history_text or "（无）",
             user_input=user_input,
@@ -360,16 +405,48 @@ class SessionManager:
             return user_input
         return rewritten or user_input
 
-    def _compose_run_task(self, state: SessionState, rewritten: str) -> str:
-        """把会话记忆注入当轮任务，保证 needle 类信息可被回答。"""
+    def _compose_run_task(
+        self,
+        state: SessionState,
+        rewritten: str,
+        mode: IntentMode = "agent",
+    ) -> str:
+        """按模式分流注入：qa 仅摘要，writer 默认关闭，agent 有预算。"""
+        if mode == "qa":
+            summary = state.rolling_summary.strip()
+            if not summary:
+                return rewritten
+            return (
+                f"以下是本会话已知信息：\n会话摘要：{summary}\n\n请回答：{rewritten}"
+            )
+        if mode == "writer" and not any(k in rewritten for k in _WRITER_CARRY):
+            return rewritten
+        return self._compose_budgeted(state, rewritten)
+
+    def _compose_budgeted(self, state: SessionState, rewritten: str) -> str:
+        """agent / writer 承接：滚动摘要 + 轮次摘要，不含工具步骤细节。"""
+        budget = max(1, self._config.session_summary_limit)
         blocks: list[str] = []
-        if state.rolling_summary.strip():
-            blocks.append(f"会话摘要：{state.rolling_summary.strip()}")
+        used = 0
+        summary = state.rolling_summary.strip()
+        if summary:
+            piece = f"会话摘要：{summary}"
+            blocks.append(piece)
+            used += len(piece)
         for turn in state.turns:
-            blocks.append(f"用户：{turn.query_rewritten}\n助手：{turn.answer}")
+            digest = (
+                f"用户：{turn.query_rewritten}\n助手：{_digest_answer(turn.answer)}"
+            )
+            extra = len(digest) + (1 if blocks else 0)
+            if used + extra > budget:
+                break
+            blocks.append(digest)
+            used += extra
         if not blocks:
             return rewritten
         known = "\n".join(blocks)
+        if len(known) > budget:
+            known = known[:budget]
         return f"以下是本会话已知信息：\n{known}\n\n请回答：{rewritten}"
 
     def _history_text(self, state: SessionState) -> str:

@@ -16,6 +16,7 @@ function kindOf(event: string, data: Record<string, unknown>): TrajectoryRecord[
   if (event === "step.compress" || event === "session.compress") return "compress";
   if (event === "approval.required") return "approval";
   if (event === "intent.detected") return "route";
+  if (event === "step.thinking") return "thinking";
   if (event === "step.start" || event === "step.cache_hit") return "tool";
   return "other";
 }
@@ -48,6 +49,7 @@ function titleOf(
   }
   if (kind === "compress") return "上下文压缩";
   if (kind === "approval") return `审批 ${data.tool || ""}`.trim();
+  if (kind === "thinking") return "思维链";
   if (kind === "route") {
     const mode = String(data.mode || "agent") as IntentMode;
     const source = String(data.source || "fallback") as IntentSource;
@@ -125,13 +127,17 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
               ? data.query
               : undefined,
       output:
-        typeof data.result === "string"
-          ? data.result
-          : typeof data.answer === "string"
-            ? data.answer
-            : typeof data.output === "string"
-              ? data.output
-              : undefined,
+        ev.event === "step.thinking" && typeof data.text === "string"
+          ? data.text
+          : typeof data.result === "string"
+            ? data.result
+            : typeof data.answer === "string"
+              ? data.answer
+              : typeof data.output === "string"
+                ? data.output
+                : typeof data.text === "string"
+                  ? data.text
+                  : undefined,
       args: data.args,
     });
   }

@@ -44,6 +44,19 @@ describe("projectEvents route", () => {
     expect(rows[0]?.title).toBe('意图：长文写作 ← 规则命中"写一篇"');
     expect(rows[0]?.input).toBe("写一篇关于春天的散文");
   });
+
+  it("maps step.thinking to thinking kind and text output", () => {
+    const rows = projectEvents([
+      {
+        seq: 2,
+        event: "step.thinking",
+        data: { text: "先列大纲再写", step_index: 1 },
+      },
+    ]);
+    expect(rows[0]?.kind).toBe("thinking");
+    expect(rows[0]?.title).toBe("思维链");
+    expect(rows[0]?.output).toBe("先列大纲再写");
+  });
 });
 
 describe("orderRecordsForDisplay", () => {

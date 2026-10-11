@@ -77,3 +77,74 @@ def test_step_events_include_status_fields() -> None:
         assert "ttft_ms" in p
         assert p["ttft_ms"] is None
         assert p.get("session_id") == "fields"
+
+
+def test_step_thinking_emitted_but_not_in_answer() -> None:
+    config = AgentConfig(reasoning_enabled=True, max_steps=2)
+
+    class _ThinkLlm:
+        def __init__(self) -> None:
+            self.last_thinking = ""
+
+        def generate(self, prompt: str) -> str:
+            del prompt
+            self.last_thinking = "FINAL_CHAIN"
+            return "可见正文"
+
+        def generate_int(self, prompt: str, minimum: int, maximum: int) -> int:
+            del prompt, minimum, maximum
+            self.last_thinking = "CHOOSE_CHAIN"
+            return -1
+
+        def generate_json(self, prompt: str, schema: dict) -> dict:
+            del prompt, schema
+            return {}
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    class _Bus:
+        def emit(self, event: str, payload: dict[str, Any]) -> None:
+            seen.append((event, payload))
+
+    runner = AgentRunner(config, _ThinkLlm(), _registry(config))
+    runner._events = _Bus()
+    result = runner.run("你好", session_id="think1")
+    assert result.answer == "可见正文"
+    assert "CHAIN" not in result.answer
+    thinking = [p for name, p in seen if name == "step.thinking"]
+    assert thinking
+    assert thinking[-1]["text"] == "FINAL_CHAIN"
+
+
+def test_step_thinking_suppressed_when_disabled() -> None:
+    config = AgentConfig(reasoning_enabled=False, max_steps=2)
+
+    class _ThinkLlm:
+        last_thinking = "HIDDEN"
+
+        def generate(self, prompt: str) -> str:
+            del prompt
+            self.last_thinking = "HIDDEN"
+            return "正文"
+
+        def generate_int(self, prompt: str, minimum: int, maximum: int) -> int:
+            del prompt, minimum, maximum
+            self.last_thinking = "HIDDEN"
+            return -1
+
+        def generate_json(self, prompt: str, schema: dict) -> dict:
+            del prompt, schema
+            return {}
+
+    seen: list[str] = []
+
+    class _Bus:
+        def emit(self, event: str, payload: dict[str, Any]) -> None:
+            del payload
+            seen.append(event)
+
+    runner = AgentRunner(config, _ThinkLlm(), ToolRegistry(config))
+    runner._events = _Bus()
+    result = runner.run("你好")
+    assert result.answer == "正文"
+    assert "step.thinking" not in seen

@@ -55,6 +55,7 @@ _BUS_EVENTS = (
     "intent.detected",
     "session.permission_changed",
     "session.workspace_changed",
+    "step.thinking",
 )
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 
