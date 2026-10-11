@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from pocket_agent.config import AgentConfig
-from pocket_agent.demo_tools import register_demo_tools
+from pocket_agent.plugins.tools_core import register_core_tools
 from pocket_agent.tools import ToolRegistry, tool
+
+from fixtures.fixture_tools import register_fixture_tools
 
 
 def test_schema_generation_four_types() -> None:
@@ -60,13 +62,20 @@ def test_recall_ranking_and_threshold() -> None:
 
     # 不超过阈值返回全部
     small = ToolRegistry(AgentConfig(tool_recall_threshold=8))
-    register_demo_tools(small)
+    register_fixture_tools(small)
     assert len(small.recall("任意", top_n=2)) == 4
+
+
+def test_core_tools_exclude_fabricated_weather() -> None:
+    registry = ToolRegistry()
+    register_core_tools(registry)
+    names = {t.name for t in registry.all()}
+    assert names == {"calculator", "read_file", "get_current_time"}
 
 
 def test_demo_get_weather_cities() -> None:
     registry = ToolRegistry()
-    register_demo_tools(registry)
+    register_fixture_tools(registry)
     weather = registry.get("get_weather")
     assert "25℃" in weather.fn(city="北京")
     assert "18℃" in weather.fn(city="上海")
@@ -78,7 +87,7 @@ def test_demo_get_weather_cities() -> None:
 
 def test_demo_calculator_ast_safe() -> None:
     registry = ToolRegistry()
-    register_demo_tools(registry)
+    register_fixture_tools(registry)
     calc = registry.get("calculator")
     assert calc.fn(expression="25 - 18") == "7"
     assert calc.fn(expression="(1+2)*3") == "9"
@@ -87,7 +96,7 @@ def test_demo_calculator_ast_safe() -> None:
 
 def test_demo_read_file_and_time(tmp_path: Path) -> None:
     registry = ToolRegistry()
-    register_demo_tools(registry)
+    register_fixture_tools(registry)
     path = tmp_path / "note.txt"
     path.write_text("你好" * 2000, encoding="utf-8")
     content = registry.get("read_file").fn(path=str(path))

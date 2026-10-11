@@ -106,7 +106,7 @@ def test_read_file_workspace_fencing(tmp_path: Path) -> None:
     sandbox.mkdir()
     (sandbox / "report.txt").write_text("hello", encoding="utf-8")
 
-    ctx = _stack_with_workspace(tmp_path, [1, 3, {"path": "report.txt"}, -1, "done"])
+    ctx = _stack_with_workspace(tmp_path, [1, 2, {"path": "report.txt"}, -1, "done"])
     ws = ctx.require("workspace")
     # 改默认工作区根到 sandbox
     ws._workspaces["default"].root = str(sandbox)
@@ -135,8 +135,8 @@ def test_permission_readonly_disables_write(tmp_path: Path) -> None:
 
 def test_permission_full_skips_approval(tmp_path: Path) -> None:
     """full 模式下写工具免审批直接执行。"""
-    # write_file is at index 4 (after get_weather, calculator, read_file, get_current_time)
-    ctx = _stack_with_workspace(tmp_path, [1, 4, {"path": "x.txt", "content": "ok"}, -1, "done"])
+    # write_file is at index 3 (after calculator, get_current_time, read_file)
+    ctx = _stack_with_workspace(tmp_path, [1, 3, {"path": "x.txt", "content": "ok"}, -1, "done"])
     broker = ApprovalBroker(timeout_sec=0.3)
     ctx.require("agent").approval_gate = broker.request
     sessions = ctx.require("sessions")
@@ -151,7 +151,7 @@ def test_permission_full_skips_approval(tmp_path: Path) -> None:
 
 def test_permission_workspace_triggers_approval(tmp_path: Path) -> None:
     """workspace 模式下写工具弹审批，超时拒绝。"""
-    ctx = _stack_with_workspace(tmp_path, [1, 4, {"path": "x.txt", "content": "ok"}, -1, "done"])
+    ctx = _stack_with_workspace(tmp_path, [1, 3, {"path": "x.txt", "content": "ok"}, -1, "done"])
     broker = ApprovalBroker(timeout_sec=0.3)
     ctx.require("agent").approval_gate = broker.request
     sessions = ctx.require("sessions")

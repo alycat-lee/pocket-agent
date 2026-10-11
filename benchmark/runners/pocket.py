@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 from pocket_agent.config import AgentConfig
-from pocket_agent.demo_tools import register_demo_tools
+
+_TESTS = Path(__file__).resolve().parents[2] / "tests"
+if str(_TESTS) not in sys.path:
+    sys.path.insert(0, str(_TESTS))
+
 from pocket_agent.llm_client import LlamaCppClient, LLMConnectionError, LLMFormatError
 from pocket_agent.runner import AgentRunner
 from pocket_agent.session import SessionManager
@@ -14,6 +20,7 @@ from pocket_agent.writer import LongWriter
 
 from benchmark.runners import TrackResult, plan_only_fields
 from benchmark.schema import task_turns
+from fixtures.fixture_tools import register_fixture_tools
 
 
 class _Bus:
@@ -33,7 +40,7 @@ class PocketRunner:
         )
         self._llm = LlamaCppClient(self._config)
         registry = ToolRegistry(self._config)
-        register_demo_tools(registry)
+        register_fixture_tools(registry)
         self._agent = AgentRunner(self._config, self._llm, registry)
         self._writer = LongWriter(self._config, self._llm)
 

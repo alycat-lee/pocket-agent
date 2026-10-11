@@ -2,11 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import {
   createProvider,
   deleteProvider,
+  fetchProviderPresets,
   fetchProviders,
   setDefaultProvider,
   testProvider,
   updateProvider,
   updateRouting,
+  type ProviderPreset,
 } from "../api/client";
 
 interface Provider {
@@ -35,6 +37,14 @@ export function ProvidersCard() {
   const [status, setStatus] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
+  const [presets, setPresets] = useState<ProviderPreset[]>([]);
+  const [draftType, setDraftType] = useState("llamacpp");
+  const [draftName, setDraftName] = useState("");
+  const [draftUrl, setDraftUrl] = useState("http://localhost:8000/v1");
+  const [draftModel, setDraftModel] = useState("");
+  const [draftKey, setDraftKey] = useState("");
+  const [draftThinking, setDraftThinking] = useState("off");
+  const [draftTrustEnv, setDraftTrustEnv] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -50,6 +60,26 @@ export function ProvidersCard() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  useEffect(() => {
+    void fetchProviderPresets()
+      .then((data) => {
+        setPresets(data.presets);
+        const first = data.presets.find((p) => p.id === "llamacpp") || data.presets[0];
+        if (first) applyPreset(first);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  const applyPreset = (preset: ProviderPreset) => {
+    setDraftType(preset.id);
+    setDraftUrl(preset.base_url || "");
+    setDraftThinking(preset.thinking || "strip");
+    setDraftTrustEnv(Boolean(preset.trust_env));
+    if (!draftName) {
+      setDraftName(preset.label);
+    }
+  };
 
   const ids = providers.map((p) => p.id);
 
@@ -231,31 +261,88 @@ export function ProvidersCard() {
       <div className="provider-add">
         <h4>添加 Provider</h4>
         <div className="provider-add-row">
+          <select
+            aria-label="预设模板"
+            value={draftType}
+            onChange={(e) => {
+              const preset = presets.find((p) => p.id === e.target.value);
+              if (preset) applyPreset(preset);
+              else setDraftType(e.target.value);
+            }}
+          >
+            {(presets.length > 0
+              ? presets
+              : [
+                  { id: "llamacpp", label: "llama.cpp（本地）" },
+                  { id: "deepseek", label: "DeepSeek" },
+                  { id: "openai_compatible", label: "OpenAI 兼容" },
+                ]
+            ).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
           <input
             type="text"
             placeholder="名称"
-            id="new-provider-name"
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
           />
-          <input type="text" placeholder="base_url" id="new-provider-url" />
-          <input type="text" placeholder="model" id="new-provider-model" />
+          <input
+            type="text"
+            placeholder="base_url"
+            value={draftUrl}
+            onChange={(e) => setDraftUrl(e.target.value)}
+          />
+          <input
+            type="text"
+            placeholder="model"
+            value={draftModel}
+            onChange={(e) => setDraftModel(e.target.value)}
+          />
+          <input
+            type="password"
+            placeholder="api_key（可选）"
+            value={draftKey}
+            onChange={(e) => setDraftKey(e.target.value)}
+          />
+          <select
+            aria-label="thinking"
+            value={draftThinking}
+            onChange={(e) => setDraftThinking(e.target.value)}
+          >
+            <option value="off">thinking: off</option>
+            <option value="strip">thinking: strip</option>
+            <option value="keep">thinking: keep</option>
+          </select>
+          <label className="status-meta">
+            <input
+              type="checkbox"
+              checked={draftTrustEnv}
+              onChange={(e) => setDraftTrustEnv(e.target.checked)}
+            />{" "}
+            trust_env
+          </label>
           <button
             type="button"
             className="btn-primary"
             onClick={() => {
               void (async () => {
-                const name = (
-                  document.getElementById("new-provider-name") as HTMLInputElement
-                ).value;
-                const url = (
-                  document.getElementById("new-provider-url") as HTMLInputElement
-                ).value;
-                const model = (
-                  document.getElementById("new-provider-model") as HTMLInputElement
-                ).value;
-                if (!name || !url) return;
+                if (!draftName || !draftUrl) return;
                 try {
-                  await createProvider({ name, type: "llamacpp", base_url: url, model });
-                  setStatus(`已添加 ${name}`);
+                  await createProvider({
+                    name: draftName,
+                    type: draftType,
+                    base_url: draftUrl,
+                    model: draftModel,
+                    api_key: draftKey || undefined,
+                    thinking: draftThinking,
+                    trust_env: draftTrustEnv,
+                  });
+                  setStatus(`已添加 ${draftName}`);
+                  setDraftName("");
+                  setDraftKey("");
                   await reload();
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e));

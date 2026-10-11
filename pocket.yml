@@ -6,12 +6,6 @@ plugins:
   - name: llm-llamacpp
     config:
       base_url: "http://localhost:8000/v1"
-  # 启用云端混合路由时：将本项 disabled 改为 false，并为 llm-llamacpp 加 local_only: true
-  - name: llm-deepseek
-    disabled: true
-    config:
-      api_key_env: DEEPSEEK_API_KEY
-      route: true
   - name: tools-core
   # MCP 桥接：启用后把外部 MCP tools 注册为 mcp_*（需本机有对应 server）
   # 示例（mock）：

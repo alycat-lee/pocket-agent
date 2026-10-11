@@ -49,7 +49,7 @@ class WorkspacePlugin:
             except OSError as exc:
                 return f"写入失败：{exc}"
 
-        # 覆盖 demo_tools 的 read_file（如果已注册则先注销）
+        # 覆盖 tools-core 的 read_file（如果已注册则先注销）
         try:
             registry.unregister("read_file")
         except Exception:  # noqa: BLE001, S110

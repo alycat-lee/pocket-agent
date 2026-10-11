@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pocket-agent", description="pocket-agent CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    demo_parser = subparsers.add_parser("demo", help="运行内置演示工具任务")
+    demo_parser = subparsers.add_parser("demo", help="连接真实模型跑真实任务")
     demo_parser.add_argument("task", help="任务文本")
     demo_parser.add_argument(
         "--base-url",
@@ -113,8 +113,11 @@ def run_demo(
         try:
             result = agent.run(task, run_id=run_id)
         except LLMConnectionError as exc:
-            print(f"连接 LLM 失败：{exc}", file=sys.stderr)
-            print("请确认已启动 llama-server（见 README）。", file=sys.stderr)
+            print(f"模型未连接：{exc}", file=sys.stderr)
+            print(
+                "请先启动 llama-server，或在设置页添加可用的 OpenAI 兼容端点后再试。",
+                file=sys.stderr,
+            )
             return 2
     finally:
         ctx.unmount_all()

@@ -8,11 +8,54 @@ from typing import Any, Literal
 
 from pocket_agent.config import AgentConfig
 from pocket_agent.llm_client import (
-    LlamaCppClient,
     LLMClientProtocol,
+    OpenAICompatibleClient,
+    ThinkingMode,
 )
 
 ProviderType = Literal["llamacpp", "openai_compatible", "deepseek"]
+
+PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
+    "llamacpp": {
+        "base_url": "http://localhost:8000/v1",
+        "requires_key": False,
+        "trust_env": False,
+        "thinking": "off",
+    },
+    "deepseek": {
+        "base_url": "https://api.deepseek.com/v1",
+        "requires_key": True,
+        "trust_env": True,
+        "thinking": "strip",
+    },
+    "openai_compatible": {
+        "requires_key": True,
+        "trust_env": True,
+        "thinking": "strip",
+    },
+}
+
+PRESET_LABELS: dict[str, str] = {
+    "llamacpp": "llama.cpp（本地）",
+    "deepseek": "DeepSeek",
+    "openai_compatible": "OpenAI 兼容",
+}
+
+
+def preset_catalog() -> list[dict[str, Any]]:
+    """设置页下拉：预设 id + 中文标签 + 默认可改字段。"""
+    catalog: list[dict[str, Any]] = []
+    for key, preset in PROVIDER_PRESETS.items():
+        item: dict[str, Any] = {"id": key, "label": PRESET_LABELS[key]}
+        item.update(preset)
+        catalog.append(item)
+    return catalog
+
+
+def apply_preset(name: str) -> dict[str, Any]:
+    if name in PROVIDER_PRESETS:
+        return dict(PROVIDER_PRESETS[name])
+    return dict(PROVIDER_PRESETS["openai_compatible"])
 
 
 @dataclass
@@ -23,13 +66,15 @@ class ProviderConfig:
     base_url: str
     api_key: str = ""
     model: str = ""
-    sampling: dict[str, Any] | None = None  # 可空覆盖 AgentConfig 采样参数
+    sampling: dict[str, Any] | None = None
+    thinking: ThinkingMode | None = None
+    trust_env: bool | None = None
 
 
 @dataclass
 class RoutingConfig:
-    choose_fill: str  # provider id（choose_tool / fill_args）
-    generate: str  # provider id（final_answer / summarize / rewrite）
+    choose_fill: str
+    generate: str
 
 
 @dataclass
@@ -37,7 +82,7 @@ class ProvidersConfig:
     providers: list[ProviderConfig] = field(default_factory=list)
     default_provider_id: str = ""
     routing: RoutingConfig = field(
-    default_factory=lambda: RoutingConfig(choose_fill="", generate="")
+        default_factory=lambda: RoutingConfig(choose_fill="", generate="")
     )
 
 
@@ -45,28 +90,65 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def _normalize_type(raw: object) -> ProviderType:
+    if raw in PROVIDER_PRESETS:
+        return raw  # type: ignore[return-value]
+    return "openai_compatible"
+
+
+def _normalize_thinking(raw: object, fallback: ThinkingMode) -> ThinkingMode:
+    if raw in {"off", "strip", "keep"}:
+        return raw  # type: ignore[return-value]
+    return fallback
+
+
+def upgrade_provider_item(
+    item: dict[str, Any],
+    base_config: AgentConfig,
+) -> dict[str, Any]:
+    """旧 provider 条目补 thinking/trust_env，不覆盖已有业务字段。"""
+    out = dict(item)
+    ptype = _normalize_type(out.get("type") or "llamacpp")
+    out["type"] = ptype
+    preset = apply_preset(ptype)
+    if out.get("thinking") not in {"off", "strip", "keep"}:
+        out["thinking"] = preset["thinking"]
+    if "trust_env" not in out:
+        out["trust_env"] = preset["trust_env"]
+    if not out.get("base_url"):
+        out["base_url"] = str(preset.get("base_url") or base_config.base_url)
+    if not out.get("model"):
+        out["model"] = base_config.model
+    return out
+
+
 def migrate_providers(
     settings: dict[str, Any],
     base_config: AgentConfig,
 ) -> dict[str, Any]:
-    """旧扁平模型字段 → providers[0]；已迁移则跳过。"""
-    if "providers" in settings and isinstance(settings["providers"], list):
-        return settings
-    pid = "local"
-    providers = [
-        {
-            "id": pid,
-            "name": "本地模型",
-            "type": "llamacpp",
-            "base_url": base_config.base_url,
-            "api_key": base_config.api_key,
-            "model": base_config.model,
-        }
-    ]
+    """旧扁平模型字段 → providers[0]；已有列表则逐条升级且不丢数据。"""
     settings = dict(settings)
-    settings["providers"] = providers
-    settings["default_provider_id"] = pid
-    settings["routing"] = {"choose_fill": pid, "generate": pid}
+    if "providers" not in settings or not isinstance(settings["providers"], list):
+        pid = "local"
+        settings["providers"] = [
+            {
+                "id": pid,
+                "name": "本地模型",
+                "type": "llamacpp",
+                "base_url": base_config.base_url,
+                "api_key": base_config.api_key,
+                "model": base_config.model,
+            }
+        ]
+        settings["default_provider_id"] = pid
+        settings["routing"] = {"choose_fill": pid, "generate": pid}
+    upgraded: list[Any] = []
+    for item in settings["providers"]:
+        if isinstance(item, dict):
+            upgraded.append(upgrade_provider_item(item, base_config))
+        else:
+            upgraded.append(item)
+    settings["providers"] = upgraded
     return settings
 
 
@@ -81,15 +163,26 @@ def load_providers_config(
     for item in raw_list:
         if not isinstance(item, dict) or "id" not in item:
             continue
+        ptype = _normalize_type(item.get("type", "llamacpp"))
+        preset = apply_preset(ptype)
+        thinking = _normalize_thinking(item.get("thinking"), preset["thinking"])
+        trust_raw = item.get("trust_env")
+        trust_env: bool | None
+        if trust_raw is None:
+            trust_env = bool(preset["trust_env"])
+        else:
+            trust_env = bool(trust_raw)
         providers.append(
             ProviderConfig(
                 id=str(item["id"]),
                 name=str(item.get("name") or item["id"]),
-                type=item.get("type", "llamacpp"),  # type: ignore[arg-type]
+                type=ptype,
                 base_url=str(item.get("base_url") or base_config.base_url),
                 api_key=str(item.get("api_key") or ""),
                 model=str(item.get("model") or base_config.model),
                 sampling=item.get("sampling") if isinstance(item.get("sampling"), dict) else None,
+                thinking=thinking,
+                trust_env=trust_env,
             )
         )
     default_id = str(migrated.get("default_provider_id") or "")
@@ -120,6 +213,8 @@ def providers_to_dict(cfg: ProvidersConfig) -> dict[str, Any]:
                 "api_key": p.api_key,
                 "model": p.model,
                 "sampling": p.sampling,
+                "thinking": p.thinking,
+                "trust_env": p.trust_env,
             }
             for p in cfg.providers
         ],
@@ -157,6 +252,7 @@ class ProviderRegistry:
         self._config = config
         self._base = base
         self._clients: dict[str, LLMClientProtocol] = {}
+        self.last_thinking: str = ""
 
     def _build_client(self, pc: ProviderConfig) -> LLMClientProtocol:
         ac = replace(
@@ -169,20 +265,16 @@ class ProviderRegistry:
             for k, v in pc.sampling.items():
                 if k in AgentConfig.known_keys() and v is not None:
                     ac = replace(ac, **{k: v})
-        if pc.type == "llamacpp":
-            return LlamaCppClient(ac)
-        # openai_compatible / deepseek：延迟导入避免 providers → plugins 循环依赖
-        from pocket_agent.plugins.llm_deepseek import DeepSeekClient
-
-        return DeepSeekClient(
+        preset = apply_preset(pc.type)
+        thinking: ThinkingMode = pc.thinking or preset["thinking"]
+        trust_requested = (
+            pc.trust_env if pc.trust_env is not None else bool(preset["trust_env"])
+        )
+        return OpenAICompatibleClient(
+            ac,
+            trust_env=trust_requested,
+            thinking=thinking,
             api_key=pc.api_key,
-            base_url=pc.base_url,
-            model=pc.model or "local-model",
-            temperature=ac.temperature,
-            top_p=ac.top_p,
-            max_tokens=ac.max_tokens,
-            timeout=ac.timeout,
-            trust_env=pc.type != "llamacpp",
         )
 
     def _get_client(self, provider_id: str) -> LLMClientProtocol:
@@ -195,15 +287,23 @@ class ProviderRegistry:
             self._clients[provider_id] = self._build_client(pc)
         return self._clients[provider_id]
 
+    def _remember(self, client: LLMClientProtocol) -> None:
+        self.last_thinking = str(getattr(client, "last_thinking", "") or "")
+
     def generate(self, prompt: str) -> str:
-        return self._get_client(self._config.routing.generate).generate(prompt)
+        client = self._get_client(self._config.routing.generate)
+        result = client.generate(prompt)
+        self._remember(client)
+        return result
 
     def generate_int(self, prompt: str, minimum: int, maximum: int) -> int:
-        return self._get_client(self._config.routing.choose_fill).generate_int(
-            prompt, minimum, maximum
-        )
+        client = self._get_client(self._config.routing.choose_fill)
+        result = client.generate_int(prompt, minimum, maximum)
+        self._remember(client)
+        return result
 
     def generate_json(self, prompt: str, schema: dict) -> dict:
-        return self._get_client(self._config.routing.choose_fill).generate_json(
-            prompt, schema
-        )
+        client = self._get_client(self._config.routing.choose_fill)
+        result = client.generate_json(prompt, schema)
+        self._remember(client)
+        return result

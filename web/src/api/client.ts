@@ -131,6 +131,19 @@ export function testProvider(body: {
   return json("/api/providers/test", { method: "POST", body: JSON.stringify(body) });
 }
 
+export interface ProviderPreset {
+  id: string;
+  label: string;
+  base_url?: string;
+  requires_key?: boolean;
+  trust_env?: boolean;
+  thinking?: string;
+}
+
+export function fetchProviderPresets(): Promise<{ presets: ProviderPreset[] }> {
+  return json("/api/providers/presets");
+}
+
 export function fetchProviders(): Promise<{
   providers: Array<{
     id: string;
@@ -140,6 +153,8 @@ export function fetchProviders(): Promise<{
     api_key: string;
     model: string;
     sampling: Record<string, unknown> | null;
+    thinking?: string | null;
+    trust_env?: boolean | null;
   }>;
   default_provider_id: string;
   routing: { choose_fill: string; generate: string };
@@ -154,6 +169,8 @@ export function createProvider(body: {
   api_key?: string;
   model?: string;
   sampling?: Record<string, unknown> | null;
+  thinking?: string;
+  trust_env?: boolean;
 }): Promise<{ ok: boolean; providers: unknown[] }> {
   return json("/api/providers", { method: "POST", body: JSON.stringify(body) });
 }
@@ -167,6 +184,8 @@ export function updateProvider(
     api_key: string;
     model: string;
     sampling: Record<string, unknown> | null;
+    thinking: string;
+    trust_env: boolean;
   }>,
 ): Promise<{ ok: boolean; providers: unknown[] }> {
   return json(`/api/providers/${encodeURIComponent(id)}`, {

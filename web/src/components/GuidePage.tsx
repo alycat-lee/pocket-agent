@@ -10,11 +10,11 @@ export function GuidePage({ baseUrl, detail, onRetry }: Props) {
   return (
     <div className="guide">
       <div className="guide-card">
-        <h2>{is502 ? "llama-server 推理失败 (502)" : "llama-server 未就绪"}</h2>
+        <h2>{is502 ? "模型推理失败 (502)" : "模型未连接"}</h2>
         <p>
           {is502
-            ? "端口可能仍在监听，但模型推理已不可用（常见于显存不足、模型加载失败或服务僵死）。请查看 llama-server 终端日志并重启。"
-            : "本地模型服务不可达。请先启动 llama-server（或其它 OpenAI 兼容接口），再重试。"}
+            ? "端口可能仍在监听，但模型推理已不可用（常见于显存不足、模型加载失败或服务僵死）。请查看模型服务终端日志并重启。"
+            : "模型服务不可达。请先启动 llama-server 或在设置页添加可用的 OpenAI 兼容端点，再重试。"}
         </p>
         {detail ? <p className="status-meta">详情：{detail}</p> : null}
         <pre>{`# 示例：重启 llama-server（窗口需足够大）

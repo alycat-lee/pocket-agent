@@ -1,12 +1,13 @@
-"""跑道 C：DeepSeek API（复用 llm-deepseek 的 DeepSeekClient）。"""
+"""跑道 C：DeepSeek API（统一 OpenAICompatibleClient + deepseek 预设）。"""
 
 from __future__ import annotations
 
 import os
 from typing import Any
 
-from pocket_agent.llm_client import LLMConnectionError, LLMFormatError
-from pocket_agent.plugins.llm_deepseek import DeepSeekClient
+from pocket_agent.config import AgentConfig
+from pocket_agent.llm_client import LLMConnectionError, LLMFormatError, OpenAICompatibleClient
+from pocket_agent.providers import PROVIDER_PRESETS
 
 from benchmark.runners import TrackResult
 from benchmark.schema import task_turns
@@ -15,15 +16,32 @@ API_KEY_ENV = "DEEPSEEK_API_KEY"
 SKIP_REASON = f"{API_KEY_ENV} 缺失"
 
 
+def _deepseek_client(*, max_tokens: int, timeout: float) -> OpenAICompatibleClient | None:
+    key = os.environ.get(API_KEY_ENV, "").strip()
+    if not key:
+        return None
+    preset = PROVIDER_PRESETS["deepseek"]
+    ac = AgentConfig(
+        base_url=str(preset["base_url"]),
+        model="deepseek-chat",
+        api_key=key,
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    return OpenAICompatibleClient(
+        ac,
+        trust_env=bool(preset["trust_env"]),
+        thinking=preset["thinking"],
+        api_key=key,
+    )
+
+
 def cloud_available() -> bool:
     return bool(os.environ.get(API_KEY_ENV, "").strip())
 
 
-def make_judge_client(*, max_tokens: int = 512, timeout: float = 60.0) -> DeepSeekClient | None:
-    key = os.environ.get(API_KEY_ENV, "").strip()
-    if not key:
-        return None
-    return DeepSeekClient(api_key=key, max_tokens=max_tokens, timeout=timeout)
+def make_judge_client(*, max_tokens: int = 512, timeout: float = 60.0) -> OpenAICompatibleClient | None:
+    return _deepseek_client(max_tokens=max_tokens, timeout=timeout)
 
 
 def _quota_or_auth(exc: Exception) -> bool:
@@ -35,13 +53,8 @@ class CloudRunner:
     name = "cloud"
 
     def __init__(self, *, max_tokens: int = 1024, timeout: float = 60.0) -> None:
-        key = os.environ.get(API_KEY_ENV, "").strip()
-        self._client = (
-            DeepSeekClient(api_key=key, max_tokens=max_tokens, timeout=timeout)
-            if key
-            else None
-        )
-        self._dead_reason = "" if key else SKIP_REASON
+        self._client = _deepseek_client(max_tokens=max_tokens, timeout=timeout)
+        self._dead_reason = "" if self._client is not None else SKIP_REASON
 
     def run_task(self, task: dict[str, Any]) -> TrackResult:
         tid = str(task["id"])

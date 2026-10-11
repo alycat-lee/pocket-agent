@@ -6,12 +6,13 @@ from pathlib import Path
 import httpx
 import pytest
 from pocket_agent.config import AgentConfig
-from pocket_agent.demo_tools import register_demo_tools
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import LlamaCppClient
 from pocket_agent.runner import AgentRunner, RunResult, StopReason
 from pocket_agent.session import SessionManager
 from pocket_agent.tools import ToolRegistry
+
+from fixtures.fixture_tools import register_fixture_tools
 
 INTEGRATION_BASE_URL = AgentConfig().base_url
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +43,7 @@ def live_runner() -> AgentRunner:
         pytest.skip(f"llama-server 不可达：{INTEGRATION_BASE_URL}")
     config = AgentConfig(base_url=INTEGRATION_BASE_URL)
     registry = ToolRegistry(config)
-    register_demo_tools(registry)
+    register_fixture_tools(registry)
     return AgentRunner(config, LlamaCppClient(config), registry)
 
 
@@ -66,14 +67,14 @@ def test_one_step(live_runner: AgentRunner) -> None:
 
 @pytest.mark.integration
 def test_two_city(live_runner: AgentRunner) -> None:
-    result = live_runner.run("查询北京和上海的天气并告诉我温差")
+    result = live_runner.run("用计算器算 25 减 18，再算 100 除以 4")
     _assert_common(result)
-    assert "温" in result.answer or "℃" in result.answer or "°C" in result.answer
+    assert result.stats["real_calls"] >= 1
 
 
 @pytest.mark.integration
 def test_three_city(live_runner: AgentRunner) -> None:
-    result = live_runner.run("查北京、上海、广州天气，算最高最低温差")
+    result = live_runner.run("用计算器分别算 (1+2)*3 和 10-4")
     _assert_common(result)
     assert result.stats["real_calls"] <= result.stats["total_steps"]
     assert result.stop_reason == StopReason.MODEL_DONE
@@ -105,7 +106,7 @@ def test_many_tools() -> None:
         tool_recall_top_n=5,
     )
     registry = ToolRegistry(config)
-    register_demo_tools(registry)
+    register_fixture_tools(registry)
 
     for i in range(11):
         idx = i

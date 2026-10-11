@@ -15,7 +15,6 @@ from typing import Any
 
 import httpx
 from pocket_agent.config import AgentConfig
-from pocket_agent.demo_tools import register_demo_tools
 from pocket_agent.ledger import CallLedger, canonical_json
 from pocket_agent.llm_client import LlamaCppClient, LLMConnectionError
 from pocket_agent.runner import AgentRunner, StopReason
@@ -25,28 +24,33 @@ from pocket_agent.writer import LongWriter, WriterMetrics
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+_TESTS = REPO_ROOT / "tests"
+if str(_TESTS) not in sys.path:
+    sys.path.insert(0, str(_TESTS))
 
 from benchmark.run import parse_dims, parse_tracks, run_benchmark
 from benchmark.schema import TRACKS
+
+from fixtures.fixture_tools import register_fixture_tools
 
 REPORT_PATH = REPO_ROOT / "tests" / "fixtures" / "report.txt"
 DEFAULT_BASE_URL = AgentConfig().base_url
 
 TASKS: list[dict[str, str]] = [
     {"id": "one_step", "task": "现在几点了"},
-    {"id": "two_city", "task": "查询北京和上海的天气并告诉我温差"},
-    {"id": "three_city", "task": "查北京、上海、广州天气，算最高最低温差"},
+    {"id": "two_city", "task": "用计算器算 25 减 18，再算 100 除以 4"},
+    {"id": "three_city", "task": "用计算器分别算 (1+2)*3 和 10-4"},
     {
         "id": "long_file",
         "task": f"读取 {REPORT_PATH.as_posix()} 并总结要点",
     },
-    {"id": "many_tools", "task": "北京天气怎么样"},
+    {"id": "many_tools", "task": "现在几点了"},
 ]
 
 
 def _make_registry(config: AgentConfig, *, many_tools: bool) -> ToolRegistry:
     registry = ToolRegistry(config)
-    register_demo_tools(registry)
+    register_fixture_tools(registry)
     if many_tools:
         for i in range(11):
             idx = i
@@ -109,9 +113,9 @@ def _chat(base_url: str, messages: list[dict[str, str]], *, timeout: float = 60.
 
 
 def _demo_tool_fns() -> dict[str, Callable[..., str]]:
-    """裸循环直接调用的工具函数表（复用 demo_tools 注册结果）。"""
+    """裸循环直接调用的工具函数表（复用测试道具注册结果）。"""
     registry = ToolRegistry(AgentConfig())
-    register_demo_tools(registry)
+    register_fixture_tools(registry)
     return {t.name: t.fn for t in registry.all()}
 
 

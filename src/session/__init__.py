@@ -533,7 +533,7 @@ class SessionManager:
     def _maybe_rename(self, state: SessionState, user_input: str) -> None:
         """首轮问答完成后自动生成会话标题；失败回退为用户输入前 12 字截断。
 
-        仅在接入事件总线时触发——单元测试无 events 时不消耗 MockLLM 队列。
+        仅在接入事件总线时触发——单元测试无 events 时不消耗测试替身队列。
         """
         if self._events is None:
             return

@@ -71,7 +71,7 @@ python cli.py demo "查询北京和上海的天气并告诉我温差"
 指定服务地址并打印详细日志：
 
 ```bash
-python cli.py demo "查询北京和上海的天气并告诉我温差" \
+python cli.py demo "用计算器算 25 减 18" \
   --base-url http://localhost:8000/v1 \
   --verbose
 ```
@@ -79,28 +79,23 @@ python cli.py demo "查询北京和上海的天气并告诉我温差" \
 断点续跑（中途 Ctrl+C 后用同一 `run_id` 恢复，已完成步骤走账本缓存）：
 
 ```bash
-python cli.py demo "查询北京和上海的天气并告诉我温差" --resume demo-1
+python cli.py demo "读取 README.md 前两段并总结" --resume demo-1
 # 中断后：
-python cli.py demo "查询北京和上海的天气并告诉我温差" --resume demo-1
+python cli.py demo "读取 README.md 前两段并总结" --resume demo-1
 ```
 
-预期：
-
-- 至少 3 步（查北京、查上海、计算温差，或等价路径）
-- 无重复真实工具调用（重复请求由账本拦截，`cache=hit`）
-- 正常输出温差相关最终回答
+模型连不上时进入「模型未连接」引导，不会回退假数据。
 
 每步日志格式：
 
 ```text
-[Step 1] choose=get_weather args={"city": "北京"} cache=miss tokens≈820
+[Step 1] choose=calculator args={"expression": "25-18"} cache=miss tokens≈820
 ```
 
-## 内置演示工具
+## 内置核心工具
 
 | 工具 | 说明 |
 |---|---|
-| `get_weather` | mock 城市天气（北京/上海/广州/深圳/成都等） |
 | `calculator` | `ast` 安全四则运算（禁止 `eval`） |
 | `read_file` | 读取本地文件前 2000 字 |
 | `get_current_time` | 当前时间字符串 |
@@ -113,15 +108,15 @@ python cli.py demo "查询北京和上海的天气并告诉我温差" --resume d
 
 ```python
 from pocket_agent import AgentConfig, AgentRunner, tool
-from pocket_agent.demo_tools import register_demo_tools
 from pocket_agent.llm_client import LlamaCppClient
+from pocket_agent.plugins.tools_core import register_core_tools
 from pocket_agent.tools import ToolRegistry
 
 config = AgentConfig()
 registry = ToolRegistry(config)
-register_demo_tools(registry)
+register_core_tools(registry)
 runner = AgentRunner(config, LlamaCppClient(config), registry)
-result = runner.run("查询北京天气")
+result = runner.run("用计算器算 25 减 18")
 print(result.answer)
 ```
 

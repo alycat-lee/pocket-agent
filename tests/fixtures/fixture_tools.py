@@ -31,8 +31,8 @@ _UNARY_OPS: dict[type, Any] = {
 }
 
 
-def register_demo_tools(registry: ToolRegistry) -> None:
-    """向 registry 注册四个内置演示工具。"""
+def register_fixture_tools(registry: ToolRegistry) -> None:
+    """测试用工具（含编造天气）。运行时禁止引用。"""
 
     @tool(registry, "查询指定城市天气")
     def get_weather(city: str) -> str:
@@ -45,7 +45,7 @@ def register_demo_tools(registry: ToolRegistry) -> None:
     def calculator(expression: str) -> str:
         try:
             value = _safe_eval(expression)
-        except Exception as exc:  # noqa: BLE001 — 演示工具返回错误文本
+        except Exception as exc:  # noqa: BLE001 — 测试工具返回错误文本
             return f"计算失败：{exc}"
         return str(value)
 
@@ -66,7 +66,6 @@ def register_demo_tools(registry: ToolRegistry) -> None:
 
 
 def _safe_eval(expression: str) -> float | int:
-    """用 ast 安全求值四则运算，禁止 eval。"""
     tree = ast.parse(expression, mode="eval")
     return _eval_node(tree.body)
 

@@ -8,6 +8,7 @@ import pytest
 from pocket_agent.config import AgentConfig
 from pocket_agent.plugins.ui_web import ApprovalBroker, build_app
 from pocket_agent.providers import (
+    PROVIDER_PRESETS,
     load_providers_config,
     migrate_providers,
 )
@@ -30,9 +31,40 @@ def test_migrate_creates_providers_from_flat_fields() -> None:
 
 def test_migrate_idempotent() -> None:
     base = AgentConfig()
-    settings = {"providers": [{"id": "custom"}]}
+    settings = {"providers": [{"id": "custom", "name": "Keep Me", "api_key": "sk-keep"}]}
     migrated = migrate_providers(settings, base)
-    assert migrated["providers"] == [{"id": "custom"}]
+    item = migrated["providers"][0]
+    assert item["id"] == "custom"
+    assert item["name"] == "Keep Me"
+    assert item["api_key"] == "sk-keep"
+    assert item["thinking"] == PROVIDER_PRESETS["llamacpp"]["thinking"]
+    assert item["trust_env"] is False
+
+
+def test_migrate_upgrades_old_deepseek_without_dropping_data() -> None:
+    base = AgentConfig(model="fallback-model")
+    settings = {
+        "providers": [
+            {
+                "id": "cloud",
+                "name": "DeepSeek",
+                "type": "deepseek",
+                "base_url": "https://api.deepseek.com/v1",
+                "api_key": "sk-keep-me",
+                "model": "deepseek-chat",
+            }
+        ],
+        "default_provider_id": "cloud",
+        "routing": {"choose_fill": "cloud", "generate": "cloud"},
+    }
+    migrated = migrate_providers(settings, base)
+    item = migrated["providers"][0]
+    assert item["api_key"] == "sk-keep-me"
+    assert item["model"] == "deepseek-chat"
+    assert item["base_url"] == "https://api.deepseek.com/v1"
+    assert item["thinking"] == "strip"
+    assert item["trust_env"] is True
+    assert migrated["default_provider_id"] == "cloud"
 
 
 def test_load_providers_config() -> None:
@@ -123,4 +155,21 @@ def test_providers_crud_api(tmp_path: Path) -> None:
     assert len(remaining) == 1
     assert remaining[0]["id"] != pid
 
+    ctx.unmount_all()
+
+
+def test_providers_presets_api(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    ctx = Context()
+    app = build_app(
+        ctx,
+        broker=ApprovalBroker(1),
+        settings_path=settings,
+        pocket_data={"plugins": []},
+    )
+    res = asyncio.run(_request(app, "GET", "/api/providers/presets"))
+    assert res.status_code == 200
+    ids = {p["id"] for p in res.json()["presets"]}
+    assert ids == {"llamacpp", "deepseek", "openai_compatible"}
     ctx.unmount_all()

@@ -1241,7 +1241,8 @@ button:disabled {
   flex-wrap: wrap;
 }
 
-.provider-add-row input {
+.provider-add-row input,
+.provider-add-row select {
   flex: 1;
   min-width: 120px;
   padding: 5px 8px;

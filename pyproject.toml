@@ -35,7 +35,7 @@ packages = [
     "pocket_agent.events",
     "pocket_agent.llm_client",
     "pocket_agent.tools",
-    "pocket_agent.demo_tools",
+    "pocket_agent.providers",
     "pocket_agent.ledger",
     "pocket_agent.compressor",
     "pocket_agent.prompts",

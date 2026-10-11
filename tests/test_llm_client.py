@@ -6,7 +6,13 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 from pocket_agent.config import AgentConfig
-from pocket_agent.llm_client import LlamaCppClient, LLMConnectionError, LLMFormatError
+from pocket_agent.llm_client import (
+    LlamaCppClient,
+    LLMConnectionError,
+    LLMFormatError,
+    OpenAICompatibleClient,
+    resolve_trust_env,
+)
 
 
 def _openai_response(content: str, status_code: int = 200) -> httpx.Response:
@@ -294,3 +300,76 @@ def test_local_client_ignores_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None
     # trust_env=False → httpx 不读取 HTTP_PROXY 环境变量
     kwargs = captured.get("kwargs", {})
     assert kwargs.get("trust_env") is False
+
+
+def test_resolve_trust_env_localhost_intranet_public() -> None:
+    assert resolve_trust_env("http://localhost:8000/v1") is False
+    assert resolve_trust_env("http://127.0.0.1:8000/v1", True) is False
+    assert resolve_trust_env("http://10.0.0.8:11434/v1") is False
+    assert resolve_trust_env("http://192.168.1.10:8000/v1", True) is False
+    assert resolve_trust_env("https://api.deepseek.com/v1") is True
+    assert resolve_trust_env("https://api.openai.com/v1", False) is False
+
+
+def test_thinking_off_sends_enable_false() -> None:
+    client = OpenAICompatibleClient(AgentConfig(), thinking="off")
+    mock_http = _patch_client([_openai_response("<think>隐</think>正文")])
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        assert client.generate("问") == "正文"
+    payload = mock_http.post.call_args.kwargs["json"]
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert client.last_thinking == ""
+
+
+def test_thinking_strip_omits_kwargs_and_drops_reasoning() -> None:
+    client = OpenAICompatibleClient(AgentConfig(), thinking="strip")
+    response = httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "<think>推理</think>答案",
+                        "reasoning_content": "云端思维",
+                    }
+                }
+            ]
+        },
+        request=httpx.Request("POST", "http://localhost:8000/v1/chat/completions"),
+    )
+    mock_http = _patch_client([response])
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        assert client.generate("问") == "答案"
+    payload = mock_http.post.call_args.kwargs["json"]
+    assert "chat_template_kwargs" not in payload
+    assert client.last_thinking == ""
+
+
+def test_thinking_keep_captures_and_enables() -> None:
+    client = OpenAICompatibleClient(AgentConfig(), thinking="keep")
+    mock_http = _patch_client(
+        [_openai_response("<think>推理过程</think>最终答案")]
+    )
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        assert client.generate("问") == "最终答案"
+    payload = mock_http.post.call_args.kwargs["json"]
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "推理过程" in client.last_thinking
+
+
+def test_public_host_respects_requested_trust_env() -> None:
+    config = AgentConfig(base_url="https://api.deepseek.com/v1")
+    captured: dict[str, object] = {}
+    mock_http = MagicMock()
+    mock_http.post.side_effect = [_openai_response("ok")]
+    mock_http.__enter__.return_value = mock_http
+    mock_http.__exit__.return_value = None
+    client = OpenAICompatibleClient(config, trust_env=True, thinking="strip")
+    with patch("pocket_agent.llm_client.httpx.Client") as mock_cls:
+        mock_cls.side_effect = lambda **kw: (
+            captured.__setitem__("kwargs", kw),
+            mock_http,
+        )[-1]
+        assert client.generate("hi") == "ok"
+    assert captured["kwargs"].get("trust_env") is True  # type: ignore[union-attr]

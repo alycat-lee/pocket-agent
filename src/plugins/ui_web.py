@@ -22,6 +22,7 @@ from pocket_agent.config import (
 )
 from pocket_agent.config_schema import get_config_schema
 from pocket_agent.events import EventStore
+from pocket_agent.llm_client import resolve_trust_env
 from pocket_agent.runtime import Context, PluginError, PluginInUse
 from pydantic import BaseModel, Field
 
@@ -63,13 +64,6 @@ _BUS_EVENTS = (
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 
 
-def _is_local_addr(base_url: str) -> bool:
-    """判断是否为本地地址（localhost/127.0.0.1/0.0.0.0/::1）。"""
-    parsed = urlparse(base_url if "://" in base_url else f"http://{base_url}")
-    host = (parsed.hostname or "").lower()
-    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1", ""}
-
-
 def probe_llm_full(
     base_url: str,
     *,
@@ -98,14 +92,14 @@ def probe_llm_full(
     for item in candidates:
         if item not in urls:
             urls.append(item)
-    local = _is_local_addr(root)
+    trust_env = resolve_trust_env(root, None)
     headers = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     last_err = "unreachable"
     for url in urls:
         try:
-            with httpx.Client(timeout=timeout, trust_env=not local) as client:
+            with httpx.Client(timeout=timeout, trust_env=trust_env) as client:
                 resp = client.get(url, headers=headers)
             latency = int((time.perf_counter() - t0) * 1000)
             if 200 <= resp.status_code < 500:
@@ -158,7 +152,7 @@ def probe_provider(
             "model_list": [],
             "error": "base_url 为空",
         }
-    local = _is_local_addr(root)
+    trust_env = resolve_trust_env(root, None)
     headers = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -173,7 +167,7 @@ def probe_provider(
     model_list: list[str] = []
     try:
         t0 = time.perf_counter()
-        with httpx.Client(timeout=timeout, trust_env=not local) as client:
+        with httpx.Client(timeout=timeout, trust_env=trust_env) as client:
             resp = client.get(models_url, headers=headers)
         connect_ms = int((time.perf_counter() - t0) * 1000)
         if resp.status_code >= 400:
@@ -215,7 +209,7 @@ def probe_provider(
     generate_ms = 0
     try:
         t0 = time.perf_counter()
-        with httpx.Client(timeout=timeout, trust_env=not local) as client:
+        with httpx.Client(timeout=timeout, trust_env=trust_env) as client:
             resp = client.post(chat_url, json=payload, headers=headers)
         generate_ms = int((time.perf_counter() - t0) * 1000)
         if resp.status_code >= 400:
@@ -279,6 +273,8 @@ class ProviderIn(BaseModel):
     api_key: str = ""
     model: str = ""
     sampling: dict[str, Any] | None = None
+    thinking: str | None = None
+    trust_env: bool | None = None
 
 
 class ProviderUpdateIn(BaseModel):
@@ -288,6 +284,8 @@ class ProviderUpdateIn(BaseModel):
     api_key: str | None = None
     model: str | None = None
     sampling: dict[str, Any] | None = None
+    thinking: str | None = None
+    trust_env: bool | None = None
 
 
 class RoutingIn(BaseModel):
@@ -375,7 +373,8 @@ def build_app(
     chat_lock = threading.Lock()
     config_lock = threading.Lock()
     store = event_store or EventStore()
-    settings_file = Path(settings_path) if settings_path is not None else Path("settings.json")
+    routing_from_settings = settings_path is not None
+    settings_file = Path(settings_path) if routing_from_settings else Path("settings.json")
     pocket = pocket_data or {}
     catalog = plugin_catalog or {}
     configs = plugin_configs or {}
@@ -401,6 +400,45 @@ def build_app(
         if ctx.has("agent"):
             ctx.require("agent").apply_config(config)
 
+    def _providers_settings() -> dict[str, Any]:
+        return load_settings(settings_file)
+
+    def _active_provider_endpoint() -> tuple[str, str | None]:
+        """health / 探测走当前 generate 路由（无 providers 则用扁平 base_url）。"""
+        settings = _providers_settings()
+        raw = settings.get("providers")
+        ac = _resolved_config()
+        if isinstance(raw, list) and raw:
+            from pocket_agent.providers import load_providers_config
+
+            pcfg = load_providers_config(settings, ac)
+            pid = pcfg.routing.generate or pcfg.default_provider_id
+            pc = next((p for p in pcfg.providers if p.id == pid), None)
+            if pc is None and pcfg.providers:
+                pc = pcfg.providers[0]
+            if pc is not None:
+                return pc.base_url, pc.api_key or None
+        return ac.base_url, ac.api_key or None
+
+    def _bind_routed_llm(config: AgentConfig) -> list[tuple[Any, Any]]:
+        if not routing_from_settings:
+            return []
+        settings = _providers_settings()
+        raw = settings.get("providers")
+        if not isinstance(raw, list) or not raw:
+            return []
+        from pocket_agent.providers import ProviderRegistry, load_providers_config
+
+        routed = ProviderRegistry(load_providers_config(settings, config), config)
+        saved: list[tuple[Any, Any]] = []
+        for key in ("agent", "sessions", "writer"):
+            if ctx.has(key):
+                svc = ctx.require(key)
+                if hasattr(svc, "_llm"):
+                    saved.append((svc, svc._llm))
+                    svc._llm = routed
+        return saved
+
     def _probe_llm(base_url: str, timeout: float = 2.0) -> tuple[bool, str]:
         """HTTP 探测 LLM 是否可用；返回 (ok, 可操作错误文案)。"""
         result = probe_llm_full(base_url, timeout=timeout)
@@ -415,25 +453,27 @@ def build_app(
 
     @app.get("/api/health")
     def api_health() -> dict[str, Any]:
-        cfg = _resolved_config()
-        ok, message = _probe_llm(cfg.base_url)
+        base_url, api_key = _active_provider_endpoint()
+        result = probe_llm_full(base_url, timeout=2.0, api_key=api_key)
+        ok = bool(result["ok"])
+        message = str(result.get("error") or "")
         return {
             "ok": True,
             "llm": ok,
-            "base_url": cfg.base_url,
+            "base_url": base_url,
             "message": message,
             "ui_build": _BUILD_INFO,
             "hint": (
                 None
                 if ok
-                else "启动 llama-server 后点击重试；示例：./llama-server -m model.gguf --port 8080"
+                else "模型未连接。请启动本地 llama-server，或在设置页添加可用的 OpenAI 兼容端点后重试。"
             ),
         }
 
     @app.get("/api/health/llm")
     def api_health_llm() -> dict[str, Any]:
-        cfg = _resolved_config()
-        return probe_llm_full(cfg.base_url, timeout=2.0)
+        base_url, api_key = _active_provider_endpoint()
+        return probe_llm_full(base_url, timeout=2.0, api_key=api_key)
 
     @app.post("/api/providers/test")
     def api_providers_test(body: ProviderTestIn) -> dict[str, Any]:
@@ -529,6 +569,12 @@ def build_app(
             current["routing"] = data["routing"]
             save_settings(current, settings_file)
 
+    @app.get("/api/providers/presets")
+    def api_providers_presets() -> dict[str, Any]:
+        from pocket_agent.providers import preset_catalog
+
+        return {"presets": preset_catalog()}
+
     @app.get("/api/providers")
     def api_providers_list() -> dict[str, Any]:
         from pocket_agent.providers import redact_providers
@@ -540,10 +586,15 @@ def build_app(
     def api_providers_create(body: ProviderIn) -> JSONResponse:
         import uuid as _uuid
 
-        from pocket_agent.providers import ProviderConfig
+        from pocket_agent.providers import ProviderConfig, apply_preset
 
         cfg = _load_providers_cfg()
         pid = _uuid.uuid4().hex[:8]
+        preset = apply_preset(body.type)
+        thinking = body.thinking if body.thinking in {"off", "strip", "keep"} else preset["thinking"]
+        trust_env = (
+            body.trust_env if body.trust_env is not None else bool(preset["trust_env"])
+        )
         pc = ProviderConfig(
             id=pid,
             name=body.name,
@@ -552,6 +603,8 @@ def build_app(
             api_key=body.api_key,
             model=body.model,
             sampling=body.sampling,
+            thinking=thinking,
+            trust_env=trust_env,
         )
         cfg.providers.append(pc)
         if not cfg.default_provider_id:
@@ -583,6 +636,10 @@ def build_app(
             pc.model = body.model
         if body.sampling is not None:
             pc.sampling = body.sampling
+        if body.thinking in {"off", "strip", "keep"}:
+            pc.thinking = body.thinking  # type: ignore[assignment]
+        if body.trust_env is not None:
+            pc.trust_env = body.trust_env
         _save_providers_cfg(cfg)
         from pocket_agent.providers import redact_providers
 
@@ -839,6 +896,7 @@ def build_app(
             overrides=overrides or {},
         )
         agent.apply_config(live)
+        bound = _bind_routed_llm(live)
         runs[rid] = agent
         # overrides 中的 mode 是意图纠正，不是 AgentConfig 字段
         force_mode = None
@@ -860,6 +918,8 @@ def build_app(
                 agent.run(message, run_id=run_id, session_id=session_id)
         finally:
             runs.pop(rid, None)
+            for svc, llm in bound:
+                svc._llm = llm
             # overrides 不污染 settings：恢复 settings 层
             agent.apply_config(base_cfg)
 

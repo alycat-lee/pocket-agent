@@ -137,7 +137,7 @@ def test_bridge_plugin_registers_tools() -> None:
     names = {t.name for t in registry.all()}
     assert "mcp_echo" in names
     assert "mcp_write_note" in names
-    assert "get_weather" in names
+    assert "calculator" in names
     assert registry.get("mcp_echo").fn(text="z") == "echo:z"
     assert registry.get("mcp_write_note").cacheable is False
     ctx.unmount_all()
@@ -186,7 +186,7 @@ def test_unmount_removes_tools_and_kills_subprocess() -> None:
     names_after = {t.name for t in registry.all()}
     assert "mcp_echo" not in names_after
     assert "mcp_write_note" not in names_after
-    assert "get_weather" in names_after
+    assert "calculator" in names_after
     with pytest.raises(KeyError):
         registry.get("mcp_echo")
 

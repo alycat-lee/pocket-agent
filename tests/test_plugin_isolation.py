@@ -146,8 +146,14 @@ class _FakeLlmAsLlama:
         ctx.provide("llm", llm)
 
 
-def test_routing_llm_picks_cloud_for_final_answer() -> None:
-    from pocket_agent.plugins.llm_deepseek import RoutingLLM
+def test_provider_registry_routes_generate_vs_choose() -> None:
+    from pocket_agent.config import AgentConfig
+    from pocket_agent.providers import (
+        ProviderConfig,
+        ProviderRegistry,
+        ProvidersConfig,
+        RoutingConfig,
+    )
 
     calls: list[str] = []
 
@@ -156,39 +162,32 @@ def test_routing_llm_picks_cloud_for_final_answer() -> None:
             self.tag = tag
 
         def generate(self, prompt: str) -> str:
-            calls.append(self.tag)
+            calls.append(f"g:{self.tag}")
             return self.tag
 
         def generate_int(self, prompt: str, minimum: int, maximum: int) -> int:
-            calls.append(self.tag)
+            calls.append(f"i:{self.tag}")
             return minimum
 
         def generate_json(self, prompt: str, schema: dict) -> dict:
-            calls.append(self.tag)
+            calls.append(f"j:{self.tag}")
             return {}
 
-    router = RoutingLLM(_Tagged("local"), _Tagged("cloud"))
-    assert router.generate("请选择工具") == "local"
-    assert router.generate("基于以上信息回答任务：天气") == "cloud"
-    assert router.generate("你正在逐段撰写文章，第1段") == "cloud"
-    assert calls == ["local", "cloud", "cloud"]
-
-
-def test_deepseek_route_prepare_requires_llm_local() -> None:
-    from pocket_agent.plugins.llm_deepseek import LlmDeepSeekPlugin
-
-    p = LlmDeepSeekPlugin()
-    p.prepare({"route": True, "api_key": "sk-test"})
-    assert p.requires == ["llm_local"]
-
-    ctx = Context()
-    ctx.provide("llm_local", _FakeLlm())
-    # provide outside plugin apply — ok for unit test
-    p.apply(ctx, {"route": True, "api_key": "sk-test"})
-    assert ctx.has("llm")
-    from pocket_agent.plugins.llm_deepseek import RoutingLLM
-
-    assert isinstance(ctx.require("llm"), RoutingLLM)
+    cfg = ProvidersConfig(
+        providers=[
+            ProviderConfig(id="local", name="L", type="llamacpp", base_url="http://l/v1"),
+            ProviderConfig(id="cloud", name="C", type="deepseek", base_url="https://c/v1"),
+        ],
+        default_provider_id="local",
+        routing=RoutingConfig(choose_fill="local", generate="cloud"),
+    )
+    registry = ProviderRegistry(cfg, AgentConfig())
+    registry._clients["local"] = _Tagged("local")  # type: ignore[assignment]
+    registry._clients["cloud"] = _Tagged("cloud")  # type: ignore[assignment]
+    assert registry.generate("回答") == "cloud"
+    assert registry.generate_int("选", -1, 3) == -1
+    assert registry.generate_json("填", {}) == {}
+    assert calls == ["g:cloud", "i:local", "j:local"]
 
 
 def test_llamacpp_local_only_does_not_provide_llm() -> None:

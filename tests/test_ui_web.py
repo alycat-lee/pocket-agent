@@ -243,11 +243,11 @@ def test_sse_cache_hit_and_intercept_markers() -> None:
         [
             1,  # intent → agent
             0,
-            {"city": "北京"},
+            {"expression": "1+1"},
             0,
-            {"city": "北京"},
+            {"expression": "1+1"},
             -1,
-            "已查过",
+            "已算过",
         ],
     )
     broker = ApprovalBroker(timeout_sec=2)
@@ -255,7 +255,7 @@ def test_sse_cache_hit_and_intercept_markers() -> None:
     app = build_app(ctx, broker=broker)
 
     _, _, body = asyncio.run(
-        _stream_post(app, "/chat", {"message": "查两次北京", "session_id": "cache"})
+        _stream_post(app, "/chat", {"message": "计算 1+1 两次", "session_id": "cache"})
     )
     events = _parse_sse(body)
     names = [n for n, _ in events]

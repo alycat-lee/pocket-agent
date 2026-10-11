@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import time
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+from urllib.parse import urlparse
 
 import httpx
 from pocket_agent.config import AgentConfig
@@ -62,10 +64,15 @@ def apply_max_tokens(llm: object, max_tokens: int) -> None:
         child = getattr(llm, name, None)
         if child is not None and child is not llm:
             apply_max_tokens(child, max_tokens)
+    clients = getattr(llm, "_clients", None)
+    if isinstance(clients, dict):
+        for child in clients.values():
+            if child is not None and child is not llm:
+                apply_max_tokens(child, max_tokens)
 
 
 class LLMClientProtocol(Protocol):
-    """所有 LLM 交互的唯一抽象。测试中注入 MockLLM 实现此协议。"""
+    """所有 LLM 交互的唯一抽象。测试中注入符合本协议的替身实现。"""
 
     def generate(self, prompt: str) -> str:
         """自由生成（用于 final_answer、summarize）。"""
@@ -90,20 +97,50 @@ class LLMConnectionError(Exception):
     """连接错误、超时或 5xx 在重试耗尽后抛出。"""
 
 
-class LlamaCppClient:
-    """llama.cpp server 的 OpenAI 兼容接口封装，基于 httpx。
+ThinkingMode = Literal["off", "strip", "keep"]
 
-    - POST {base_url}/chat/completions
-    - generate_int: response_format = {"type": "json_schema",
-        "json_schema": {"name": "choice", "schema": {...integer...}}}
-      返回 {"value": N} 结构，取 value 字段
-    - generate_json: response_format 携带调用方传入的 schema
-    - 所有采样参数从 AgentConfig 读取
-    - 请求失败（连接错误/超时/5xx）重试 2 次后抛 LLMConnectionError
-    """
 
-    def __init__(self, config: AgentConfig) -> None:
+def is_private_host(host: str) -> bool:
+    """localhost / 回环 / RFC1918 / 链路本地 → True。"""
+    name = (host or "").strip().lower().rstrip(".")
+    if name in {"localhost", "127.0.0.1", "::1", "0.0.0.0", ""}:
+        return True
+    if name.endswith(".localhost"):
+        return True
+    try:
+        addr = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return bool(addr.is_private or addr.is_loopback or addr.is_link_local)
+
+
+def resolve_trust_env(base_url: str, requested: bool | None = None) -> bool:
+    """内网/localhost 强制 False；公网才尊重 requested（默认 True）。"""
+    parsed = urlparse(base_url if "://" in (base_url or "") else f"http://{base_url}")
+    host = parsed.hostname or ""
+    if is_private_host(host):
+        return False
+    return True if requested is None else bool(requested)
+
+
+class OpenAICompatibleClient:
+    """唯一 OpenAI 兼容实现：trust_env / thinking / api_key 由调用方驱动。"""
+
+    def __init__(
+        self,
+        config: AgentConfig,
+        *,
+        trust_env: bool | None = None,
+        thinking: ThinkingMode | None = None,
+        api_key: str | None = None,
+    ) -> None:
         self._config = config
+        self._api_key = (api_key if api_key is not None else config.api_key) or ""
+        if thinking is not None:
+            self._thinking: ThinkingMode = thinking
+        else:
+            self._thinking = "keep" if config.reasoning_enabled else "off"
+        self._trust_env = resolve_trust_env(config.base_url, trust_env)
         self.last_thinking: str = ""
 
     def generate(self, prompt: str) -> str:
@@ -161,10 +198,11 @@ class LlamaCppClient:
             "repeat_penalty": self._config.repeat_penalty,
             "top_p": self._config.top_p,
             "max_tokens": self._config.max_tokens,
-            "chat_template_kwargs": {
-                "enable_thinking": bool(self._config.reasoning_enabled),
-            },
         }
+        if self._thinking == "off":
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        elif self._thinking == "keep":
+            payload["chat_template_kwargs"] = {"enable_thinking": True}
         if response_format is not None:
             payload["response_format"] = response_format
         return self._request_with_retry(payload)
@@ -175,10 +213,13 @@ class LlamaCppClient:
 
         for attempt in range(_MAX_ATTEMPTS):
             try:
-                # 本地 provider 必须 trust_env=False，否则系统代理（HTTP_PROXY/HTTPS_PROXY）
-                # 会劫持 localhost 请求，导致 502 Bad Gateway（代理返回的，非 llama-server）
-                with httpx.Client(timeout=self._config.timeout, trust_env=False) as client:
-                    response = client.post(url, json=payload)
+                headers: dict[str, str] = {"Content-Type": "application/json"}
+                if self._api_key:
+                    headers["Authorization"] = f"Bearer {self._api_key}"
+                with httpx.Client(
+                    timeout=self._config.timeout, trust_env=self._trust_env
+                ) as client:
+                    response = client.post(url, json=payload, headers=headers)
             except httpx.RequestError as exc:
                 last_error = exc
                 if attempt < len(_RETRY_DELAYS):
@@ -206,9 +247,7 @@ class LlamaCppClient:
                 if not isinstance(message, dict):
                     raise LLMFormatError("message is not object")
                 thinking = extract_thinking(message)
-                self.last_thinking = (
-                    thinking if self._config.reasoning_enabled else ""
-                )
+                self.last_thinking = thinking if self._thinking == "keep" else ""
                 raw = message.get("content")
                 content = strip_think_blocks(raw) if isinstance(raw, str) else ""
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
@@ -243,3 +282,11 @@ class LlamaCppClient:
         raise LLMFormatError(
             f"cannot parse int in [{minimum}, {maximum}] from {content!r}"
         )
+
+
+class LlamaCppClient(OpenAICompatibleClient):
+    """docs/03 兼容旧名：本地默认 thinking=off（reasoning_enabled 时 keep）。"""
+
+    def __init__(self, config: AgentConfig) -> None:
+        thinking: ThinkingMode = "keep" if config.reasoning_enabled else "off"
+        super().__init__(config, trust_env=None, thinking=thinking)
