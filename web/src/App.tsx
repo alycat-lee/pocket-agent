@@ -15,6 +15,7 @@ import {
 import type {
   ApprovalRequest,
   ChatMessage,
+  IntentInfo,
   IntentMode,
   PermissionMode,
   SessionInfo,
@@ -80,8 +81,6 @@ export default function App() {
     { id: string; name: string; root: string }[]
   >([]);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [intent, setIntent] = useState<IntentMode | null>(null);
-  const [intentConfidence, setIntentConfidence] = useState(1);
   const [permission, setPermission] = useState<PermissionMode>(() =>
     getPermission("default"),
   );
@@ -99,7 +98,7 @@ export default function App() {
   const tickRef = useRef<number | null>(null);
   const runStarted = useRef<number>(0);
   const turnCounter = useRef(0);
-  const correctedModeRef = useRef<IntentMode | null>(null);
+  const pendingIntentRef = useRef<IntentInfo | null>(null);
 
   const reloadSessions = useCallback(async () => {
     try {
@@ -179,9 +178,7 @@ export default function App() {
     setStatus(EMPTY_STATUS);
     setApproval(null);
     setView(getSessionView(sessionId));
-    setIntent(null);
-    setIntentConfidence(1);
-    correctedModeRef.current = null;
+    pendingIntentRef.current = null;
     setPermission(getPermission(sessionId));
     setMessages([]);
     setRecords([]);
@@ -307,6 +304,8 @@ export default function App() {
           stop_reason: String(data.stop_reason || ""),
         };
         const turnId = `turn-${turnCounter.current}`;
+        const intent = pendingIntentRef.current;
+        pendingIntentRef.current = null;
         setMessages((prev) => [
           ...prev,
           {
@@ -315,6 +314,7 @@ export default function App() {
             content: String(data.answer || ""),
             settlement,
             turnId,
+            intent: intent ?? undefined,
           },
         ]);
         setStatus((s) => ({
@@ -329,12 +329,18 @@ export default function App() {
         closeEs();
         void reloadSessions();
       } else if (event === "intent.detected") {
-        const mode = String(data.mode || "agent") as IntentMode;
-        const conf = Number(data.confidence ?? 1);
-        if (correctedModeRef.current === null) {
-          setIntent(mode);
-          setIntentConfidence(conf);
-        }
+        pendingIntentRef.current = {
+          mode: String(data.mode || "agent") as IntentMode,
+          confidence: Number(data.confidence ?? 1),
+          source: (["rule", "llm", "fallback", "manual"].includes(
+            String(data.source),
+          )
+            ? String(data.source)
+            : "fallback") as IntentInfo["source"],
+          reason: String(data.reason || ""),
+          turn: Number(data.turn ?? turnCounter.current),
+          query: typeof data.query === "string" ? data.query : undefined,
+        };
       } else if (event === "session.renamed") {
         const sid = String(data.session_id || "");
         const title = String(data.title || "新会话");
@@ -375,8 +381,12 @@ export default function App() {
     [reloadSessions, sessionId],
   );
 
-  const send = async () => {
-    const text = draft.trim();
+  const send = async (opts?: {
+    text?: string;
+    forceMode?: IntentMode;
+    rerunTurnId?: string;
+  }) => {
+    const text = (opts?.text ?? draft).trim();
     if (!text || status.running) return;
     const ok = await checkHealth();
     if (!ok) {
@@ -385,14 +395,29 @@ export default function App() {
     }
     setOffline(false);
     setSoftError(null);
-    turnCounter.current += 1;
+    const rerunTurnId = opts?.rerunTurnId;
+    if (!rerunTurnId) {
+      turnCounter.current += 1;
+      setDraft("");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: newId(),
+          role: "user",
+          content: text,
+          turnId: `turn-${turnCounter.current}`,
+        },
+      ]);
+    } else {
+      setMessages((prev) =>
+        prev.filter(
+          (m) => !(m.role === "assistant" && m.turnId === rerunTurnId),
+        ),
+      );
+    }
     const rid = newId();
     setRunId(rid);
-    setDraft("");
-    setMessages((prev) => [
-      ...prev,
-      { id: newId(), role: "user", content: text, turnId: `turn-${turnCounter.current}` },
-    ]);
+    pendingIntentRef.current = null;
     setRecords((prev) =>
       upsertLiveEvent(prev, "user.message", {
         message: text,
@@ -401,6 +426,8 @@ export default function App() {
       }),
     );
     runStarted.current = Date.now();
+    closeEs();
+    const gen = ++esGenRef.current;
     setStatus({
       ...EMPTY_STATUS,
       running: true,
@@ -419,12 +446,9 @@ export default function App() {
           : s,
       );
     }, 250);
-
-    closeEs();
-    const gen = ++esGenRef.current;
     const overrides = buildOverrides(permission);
-    if (correctedModeRef.current) {
-      overrides["mode"] = correctedModeRef.current;
+    if (opts?.forceMode) {
+      overrides.mode = opts.forceMode;
     }
     const es = openChatEventSource({
       message: text,
@@ -630,6 +654,17 @@ export default function App() {
                 <ChatView
                   messages={messages}
                   errorHint={softError}
+                  onCorrectIntent={(turnId, mode) => {
+                    const user = messages.find(
+                      (m) => m.role === "user" && m.turnId === turnId,
+                    );
+                    if (!user) return;
+                    void send({
+                      text: user.content,
+                      forceMode: mode,
+                      rerunTurnId: turnId,
+                    });
+                  }}
                   onSettlementClick={(turnId) => {
                     setView("trajectory");
                     setSessionView(sessionId, "trajectory");
@@ -698,8 +733,6 @@ export default function App() {
                 />
               ) : null}
               <Composer
-                intent={intent}
-                intentConfidence={intentConfidence}
                 permission={permission}
                 workspaces={workspaces}
                 workspaceId={workspaceId}
@@ -707,11 +740,6 @@ export default function App() {
                 running={status.running}
                 promptCharBudget={promptBudget}
                 segments={segments}
-                onCorrectIntent={(m) => {
-                  correctedModeRef.current = m;
-                  setIntent(m);
-                  setIntentConfidence(1);
-                }}
                 onPermission={(p) => {
                   setPermission(p);
                   persistPermission(sessionId, p);

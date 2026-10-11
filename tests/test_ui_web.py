@@ -144,6 +144,10 @@ def test_sse_chat_event_stream_format() -> None:
 
     events = _parse_sse(body)
     names = [name for name, _ in events]
+    assert names[0] == "intent.detected"
+    intent_ev = events[0][1]
+    for key in ("mode", "confidence", "source", "reason", "turn"):
+        assert key in intent_ev
     assert "step.start" in names
     assert "step.tool_call" in names
     assert "answer.done" in names
@@ -203,7 +207,11 @@ def test_sse_get_eventsource_with_overrides() -> None:
     status, ctype, body = asyncio.run(_stream_get(app, path))
     assert status == 200
     assert "text/event-stream" in ctype
-    names = [n for n, _ in _parse_sse(body)]
+    events = _parse_sse(body)
+    names = [n for n, _ in events]
+    assert names[0] == "intent.detected"
+    assert events[0][1]["mode"] == "qa"
+    assert events[0][1]["source"] == "rule"
     assert "answer.done" in names
     ctx.unmount_all()
 

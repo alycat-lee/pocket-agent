@@ -843,8 +843,8 @@ def build_app(
             if fm in ("qa", "agent", "writer"):
                 force_mode = fm  # type: ignore[assignment]
         try:
-            if ctx.has("sessions") and run_id is None:
-                # 会话路径：自动 run_id 仅用于 stop，不启用 checkpoint resume
+            if ctx.has("sessions"):
+                # run_id 只用于停止登记，会话路径始终走 SessionManager（意图路由）
                 ctx.require("sessions").chat(
                     session_id,
                     message,

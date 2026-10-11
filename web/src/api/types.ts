@@ -2,7 +2,17 @@ export type SessionView = "chat" | "trajectory";
 
 export type ChatMode = "qa" | "tools" | "writer";
 export type IntentMode = "qa" | "agent" | "writer";
+export type IntentSource = "rule" | "llm" | "fallback" | "manual";
 export type PermissionMode = "readonly" | "workspace" | "full";
+
+export interface IntentInfo {
+  mode: IntentMode;
+  confidence: number;
+  source: IntentSource;
+  reason: string;
+  turn: number;
+  query?: string;
+}
 
 export interface SessionInfo {
   session_id: string;
@@ -29,6 +39,7 @@ export interface ChatMessage {
   content: string;
   settlement?: Settlement;
   turnId?: string;
+  intent?: IntentInfo;
   error?: boolean;
 }
 
@@ -38,7 +49,15 @@ export interface TrajectoryRecord {
   event: string;
   turn: number;
   stepIndex: number | null;
-  kind: "user" | "assistant" | "tool" | "intercept" | "compress" | "approval" | "other";
+  kind:
+    | "user"
+    | "assistant"
+    | "tool"
+    | "intercept"
+    | "compress"
+    | "approval"
+    | "route"
+    | "other";
   title: string;
   ts: number | null;
   elapsedMs: number | null;

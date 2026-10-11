@@ -1,13 +1,20 @@
-import type { ChatMessage } from "../api/types";
+import type { ChatMessage, IntentMode } from "../api/types";
 import { formatCacheHitRate } from "../lib/format";
+import { IntentBadge } from "./IntentBadge";
 
 interface Props {
   messages: ChatMessage[];
   errorHint?: string | null;
   onSettlementClick: (turnId?: string) => void;
+  onCorrectIntent: (turnId: string, mode: IntentMode) => void;
 }
 
-export function ChatView({ messages, errorHint, onSettlementClick }: Props) {
+export function ChatView({
+  messages,
+  errorHint,
+  onSettlementClick,
+  onCorrectIntent,
+}: Props) {
   return (
     <div className="messages">
       {errorHint ? <div className="toast-error">{errorHint}</div> : null}
@@ -21,15 +28,23 @@ export function ChatView({ messages, errorHint, onSettlementClick }: Props) {
         >
           <div className="msg-bubble">{m.content}</div>
           {m.role === "assistant" && m.settlement ? (
-            <button
-              type="button"
-              className="settlement-line"
-              onClick={() => onSettlementClick(m.turnId)}
-            >
-              {m.settlement.total_steps} 步 · 缓存命中{" "}
-              {formatCacheHitRate(m.settlement.cache_hit_rate)} · 拦截{" "}
-              {m.settlement.intercepts ?? 0}
-            </button>
+            <div className="settlement-row">
+              {m.intent && m.turnId ? (
+                <IntentBadge
+                  intent={m.intent}
+                  onCorrect={(mode) => onCorrectIntent(m.turnId as string, mode)}
+                />
+              ) : null}
+              <button
+                type="button"
+                className="settlement-line"
+                onClick={() => onSettlementClick(m.turnId)}
+              >
+                {m.settlement.total_steps} 步 · 缓存命中{" "}
+                {formatCacheHitRate(m.settlement.cache_hit_rate)} · 拦截{" "}
+                {m.settlement.intercepts ?? 0}
+              </button>
+            </div>
           ) : null}
         </div>
       ))}

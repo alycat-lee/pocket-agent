@@ -1,9 +1,7 @@
-import type { IntentMode, PermissionMode } from "../api/types";
+import type { PermissionMode } from "../api/types";
 import { formatChars } from "../lib/format";
 
 interface Props {
-  intent: IntentMode | null;
-  intentConfidence: number;
   permission: PermissionMode;
   workspaces: { id: string; name: string; root: string }[];
   workspaceId: string | null;
@@ -11,7 +9,6 @@ interface Props {
   running: boolean;
   promptCharBudget: number;
   segments: { label: string; chars: number }[];
-  onCorrectIntent: (mode: IntentMode) => void;
   onPermission: (p: PermissionMode) => void;
   onWorkspace: (id: string) => void;
   onChange: (v: string) => void;
@@ -19,15 +16,7 @@ interface Props {
   onStop: () => void;
 }
 
-const INTENT_LABEL: Record<IntentMode, string> = {
-  qa: "问答",
-  agent: "工具",
-  writer: "长文",
-};
-
 export function Composer({
-  intent,
-  intentConfidence,
   permission,
   workspaces,
   workspaceId,
@@ -35,7 +24,6 @@ export function Composer({
   running,
   promptCharBudget,
   segments,
-  onCorrectIntent,
   onPermission,
   onWorkspace,
   onChange,
@@ -47,20 +35,6 @@ export function Composer({
   return (
     <div className="composer">
       <div className="composer-toolbar">
-        {intent ? (
-          <span
-            className="intent-badge"
-            title={`意图: ${INTENT_LABEL[intent]} (置信度 ${Math.round(intentConfidence * 100)}%)。点击纠正`}
-            onClick={() => {
-              const modes: IntentMode[] = ["qa", "agent", "writer"];
-              const next = modes[(modes.indexOf(intent) + 1) % modes.length];
-              onCorrectIntent(next);
-            }}
-          >
-            {INTENT_LABEL[intent]}
-            {intentConfidence < 1.0 ? ` ${Math.round(intentConfidence * 100)}%` : ""}
-          </span>
-        ) : null}
         {workspaces.length > 0 ? (
           <select
             className="select"

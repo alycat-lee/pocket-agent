@@ -1,6 +1,9 @@
+import { Path } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TrajectoryRecord } from "../api/types";
 import { formatMs } from "../lib/format";
+import { MODE_LABEL, SOURCE_LABEL, type IntentInfo } from "../lib/intent";
+import { orderRecordsForDisplay } from "../lib/trajectory";
 
 interface Props {
   records: TrajectoryRecord[];
@@ -19,6 +22,18 @@ const BADGE_LABEL: Record<string, string> = {
   tool_error: "工具错误",
 };
 
+function routeInfoOf(r: TrajectoryRecord): IntentInfo | null {
+  if (r.kind !== "route") return null;
+  return {
+    mode: String(r.payload.mode || "agent") as IntentInfo["mode"],
+    confidence: Number(r.payload.confidence ?? 0),
+    source: String(r.payload.source || "fallback") as IntentInfo["source"],
+    reason: String(r.payload.reason || ""),
+    turn: r.turn,
+    query: typeof r.payload.query === "string" ? r.payload.query : r.input,
+  };
+}
+
 export function TrajectoryView({
   records,
   hasMore,
@@ -32,19 +47,24 @@ export function TrajectoryView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const displayRecords = useMemo(
+    () => orderRecordsForDisplay(records),
+    [records],
+  );
 
   const selected =
-    records.find((r) => r.id === (selectedId || focusId)) || null;
+    displayRecords.find((r) => r.id === (selectedId || focusId)) || null;
 
   const overviewClass = useMemo(
     () =>
-      records.map((r) => {
+      displayRecords.map((r) => {
+        if (r.kind === "route") return "route";
         if (r.badges.includes("tool_error")) return "tool_error";
         if (r.badges.includes("intercepted")) return "intercepted";
         if (r.badges.includes("cache_hit")) return "cache_hit";
         return "";
       }),
-    [records],
+    [displayRecords],
   );
 
   // 锚定底部 & 跟随尾部
@@ -93,7 +113,7 @@ export function TrajectoryView({
           <div className="overview-seg" style={{ opacity: 0.3 }} />
         ) : (
           overviewClass.map((cls, i) => (
-            <div key={records[i].id} className={`overview-seg ${cls}`} />
+            <div key={displayRecords[i].id} className={`overview-seg ${cls}`} />
           ))
         )}
       </div>
@@ -111,9 +131,10 @@ export function TrajectoryView({
               </button>
             </div>
           ) : null}
-          {records.map((r, index) => {
-            const prevTurn = index > 0 ? records[index - 1]?.turn : null;
+          {displayRecords.map((r, index) => {
+            const prevTurn = index > 0 ? displayRecords[index - 1]?.turn : null;
             const showTurn = r.turn !== prevTurn;
+            const info = routeInfoOf(r);
             return (
               <div key={r.id}>
                 {showTurn ? (
@@ -121,18 +142,26 @@ export function TrajectoryView({
                 ) : null}
                 <button
                   type="button"
-                  className={`record ${selected?.id === r.id ? "selected" : ""}`}
+                  className={`record ${r.kind === "route" ? "route" : ""} ${selected?.id === r.id ? "selected" : ""}`}
                   onClick={() => setSelectedId(r.id)}
                 >
                   <span className="record-step">
-                    {r.stepIndex != null ? `S${r.stepIndex}` : "—"}
+                    {r.kind === "route" ? (
+                      <Path size={16} weight="bold" />
+                    ) : r.stepIndex != null ? (
+                      `S${r.stepIndex}`
+                    ) : (
+                      "—"
+                    )}
                   </span>
                   <span>
                     <div className="record-title">{r.title}</div>
                     <div className="record-meta">
-                      {r.inProgress
-                        ? "进行中 · 开始标记"
-                        : `耗时 ${formatMs(r.elapsedMs)} · TTFT ${formatMs(r.ttftMs)}`}
+                      {r.kind === "route" && info
+                        ? `${SOURCE_LABEL[info.source]} · 置信度 ${Math.round(info.confidence * 100)}%`
+                        : r.inProgress
+                          ? "进行中 · 开始标记"
+                          : `耗时 ${formatMs(r.elapsedMs)} · TTFT ${formatMs(r.ttftMs)}`}
                       {r.errorCode ? ` · ${r.errorCode}` : ""}
                     </div>
                   </span>
@@ -166,51 +195,81 @@ export function TrajectoryView({
           {!selected ? (
             <p className="status-meta">点击左侧记录查看详情</p>
           ) : (
-            <dl>
-              <div>
-                <dt>事件</dt>
-                <dd>{selected.event}</dd>
-              </div>
-              <div>
-                <dt>Tokens (est)</dt>
-                <dd>
-                  {selected.promptTokensEst == null
-                    ? "不可用"
-                    : String(selected.promptTokensEst)}
-                </dd>
-              </div>
-              <div>
-                <dt>耗时</dt>
-                <dd>
-                  {selected.inProgress
-                    ? "—"
-                    : formatMs(selected.elapsedMs)}
-                </dd>
-              </div>
-              <div>
-                <dt>TTFT</dt>
-                <dd>{formatMs(selected.ttftMs)}</dd>
-              </div>
-              <div>
-                <dt>输入</dt>
-                <dd>{selected.input || "—"}</dd>
-              </div>
-              <div>
-                <dt>输出</dt>
-                <dd>{selected.output || "—"}</dd>
-              </div>
-              <div>
-                <dt>参数</dt>
-                <dd>
-                  {selected.args == null
-                    ? "—"
-                    : JSON.stringify(selected.args, null, 2)}
-                </dd>
-              </div>
-            </dl>
+            <InspectorBody record={selected} />
           )}
         </aside>
       </div>
     </div>
+  );
+}
+
+function InspectorBody({ record }: { record: TrajectoryRecord }) {
+  const info = routeInfoOf(record);
+  return (
+    <dl>
+      <div>
+        <dt>事件</dt>
+        <dd>{record.event}</dd>
+      </div>
+      {info ? (
+        <>
+          <div>
+            <dt>意图</dt>
+            <dd>{MODE_LABEL[info.mode]}</dd>
+          </div>
+          <div>
+            <dt>来源</dt>
+            <dd>{SOURCE_LABEL[info.source]}</dd>
+          </div>
+          <div>
+            <dt>依据</dt>
+            <dd>{info.reason || "—"}</dd>
+          </div>
+          <div>
+            <dt>置信度</dt>
+            <dd>{Math.round(info.confidence * 100)}%</dd>
+          </div>
+          <div>
+            <dt>轮次</dt>
+            <dd>{info.turn}</dd>
+          </div>
+        </>
+      ) : (
+        <>
+          <div>
+            <dt>Tokens (est)</dt>
+            <dd>
+              {record.promptTokensEst == null
+                ? "不可用"
+                : String(record.promptTokensEst)}
+            </dd>
+          </div>
+          <div>
+            <dt>耗时</dt>
+            <dd>
+              {record.inProgress ? "—" : formatMs(record.elapsedMs)}
+            </dd>
+          </div>
+          <div>
+            <dt>TTFT</dt>
+            <dd>{formatMs(record.ttftMs)}</dd>
+          </div>
+        </>
+      )}
+      <div>
+        <dt>输入</dt>
+        <dd>{record.input || info?.query || "—"}</dd>
+      </div>
+      <div>
+        <dt>输出</dt>
+        <dd>{record.output || "—"}</dd>
+      </div>
+      <div>
+        <dt>参数</dt>
+        <dd>
+          {record.args == null ? "—" : JSON.stringify(record.args, null, 2)}
+        </dd>
+      </div>
+    </dl>
   );
 }

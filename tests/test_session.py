@@ -212,3 +212,61 @@ def test_no_auto_rename_without_events(mock_llm_factory: type) -> None:
     mgr = SessionManager(cfg, llm, runner)  # events=None
     mgr.chat("s1", "北京天气")
     assert mgr.get_state("s1").title == "新会话"
+
+
+def test_intent_detected_is_first_and_payload_complete(
+    mock_llm_factory: type,
+) -> None:
+    """intent.detected 是每轮第一条，且含 source/reason/turn。"""
+    cfg = AgentConfig(max_steps=3)
+    registry = ToolRegistry(cfg)
+    llm = mock_llm_factory(["晴", "问候"])
+    runner = AgentRunner(cfg, llm, registry)
+    captured: list[tuple[str, dict]] = []
+
+    class _Cap:
+        def emit(self, event: str, payload: dict) -> None:
+            captured.append((event, payload))
+
+    mgr = SessionManager(cfg, llm, runner, events=_Cap())
+    mgr.chat("s1", "你好")
+
+    assert captured
+    assert captured[0][0] == "intent.detected"
+    payload = captured[0][1]
+    for key in ("session_id", "mode", "confidence", "source", "reason", "turn"):
+        assert key in payload
+    assert payload["session_id"] == "s1"
+    assert payload["mode"] == "qa"
+    assert payload["source"] == "rule"
+    assert payload["reason"] == "短句闲聊"
+    assert payload["turn"] == 1
+
+
+def test_force_mode_manual_reuses_rewritten(mock_llm_factory: type) -> None:
+    """force_mode 纠正：source=manual，复用 query_rewritten，不重走 rewrite。"""
+    cfg = AgentConfig(max_steps=3)
+    registry = ToolRegistry(cfg)
+    llm = mock_llm_factory([1, "第一轮", "标题", "查询上海天气", "第二轮", "纠正后"])
+    runner = AgentRunner(cfg, llm, registry)
+    captured: list[tuple[str, dict]] = []
+
+    class _Cap:
+        def emit(self, event: str, payload: dict) -> None:
+            captured.append((event, payload))
+
+    mgr = SessionManager(cfg, llm, runner, events=_Cap())
+    mgr.chat("s1", "北京天气")
+    mgr.chat("s1", "那上海呢")
+    rewrite_after_second = mgr.rewrite_call_count
+    rewritten = mgr.last_rewritten
+
+    mgr.chat("s1", "那上海呢", force_mode="agent")
+    assert mgr.rewrite_call_count == rewrite_after_second
+    assert mgr.last_rewritten == rewritten
+    assert mgr.last_intent == "agent"
+    intents = [p for n, p in captured if n == "intent.detected"]
+    assert intents[-1]["source"] == "manual"
+    assert intents[-1]["reason"] == "用户纠正"
+    assert intents[-1]["mode"] == "agent"
+    assert len(mgr.get_state("s1").turns) == 2

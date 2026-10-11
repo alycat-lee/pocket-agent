@@ -205,6 +205,44 @@ class SessionManager:
         workspace_id：绑定工作区（None 则不变）。
         """
         state = self.get_state(session_id)
+        # 意图自动路由（仅在接入事件总线时触发——单元测试无 events 时不消耗队列）
+        rewritten: str | None = None
+        source = "fallback"
+        reason = "无事件总线"
+        if self._events is None:
+            mode: IntentMode = "agent"
+            confidence = 1.0
+        elif force_mode is not None:
+            mode = force_mode
+            confidence = 1.0
+            source = "manual"
+            reason = "用户纠正"
+            last = state.turns[-1] if state.turns else None
+            if last is not None and last.query_raw == user_input:
+                # 纠正重跑：复用当轮指代补全，不重新 rewrite
+                rewritten = last.query_rewritten
+                state.turns.pop()
+        else:
+            mode, confidence, source, reason = self._intent_router.classify(
+                user_input
+            )
+        self.last_intent = mode
+        turn_no = len(state.turns) + 1
+        if self._events is not None:
+            # 每轮事件流第一条：intent.detected（先于 workspace/permission/runner）
+            self._events.emit(
+                "intent.detected",
+                {
+                    "session_id": session_id,
+                    "mode": mode,
+                    "confidence": confidence,
+                    "source": source,
+                    "reason": reason,
+                    "turn": turn_no,
+                    "query": user_input,
+                },
+            )
+
         # 工作区绑定
         if workspace_id is not None and self._workspace is not None:
             self._workspace.bind_session(session_id, workspace_id)
@@ -220,35 +258,33 @@ class SessionManager:
                 "session.permission_changed",
                 {"session_id": session_id, "permission": permission},
             )
-        rewritten = self._rewrite_if_needed(state, user_input)
+
+        if rewritten is None:
+            rewritten = self._rewrite_if_needed(state, user_input)
         self.last_rewritten = rewritten
 
         run_task = self._compose_run_task(state, rewritten)
         self.last_run_task = run_task
 
-        # 意图自动路由（仅在接入事件总线时触发——单元测试无 events 时不消耗队列）
-        if self._events is None:
-            mode: IntentMode = "agent"
-            confidence = 1.0
-        elif force_mode is not None:
-            mode = force_mode
-            confidence = 1.0
-        else:
-            mode, confidence = self._intent_router.classify(user_input)
-        self.last_intent = mode
-        if self._events is not None:
-            self._events.emit(
-                "intent.detected",
-                {
-                    "session_id": session_id,
-                    "mode": mode,
-                    "confidence": confidence,
-                },
-            )
-
         if mode == "writer" and self._writer is not None:
             answer = self._writer.write(rewritten)
             self.last_result = None
+            if self._events is not None:
+                self._events.emit(
+                    "answer.done",
+                    {
+                        "answer": answer,
+                        "stop_reason": "writer",
+                        "total_steps": 0,
+                        "llm_ms": 0,
+                        "tool_ms": 0,
+                        "cache_hit_rate": 0.0,
+                        "real_calls": 0,
+                        "intercepts": 0,
+                        "prompt_tokens_max": 0,
+                        "elapsed_ms": 0,
+                    },
+                )
         else:
             turn_ledger = CallLedger()
             turn_ledger.merge_records(state.write_op_ledger)
@@ -268,7 +304,7 @@ class SessionManager:
             answer = str(result.answer)
 
         turn = TurnRecord(
-            turn=len(state.turns) + 1,
+            turn=turn_no,
             query_raw=user_input,
             query_rewritten=rewritten,
             answer=answer,

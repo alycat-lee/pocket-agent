@@ -1,4 +1,5 @@
-import type { TrajectoryRecord } from "../api/types";
+import type { IntentMode, IntentSource, TrajectoryRecord } from "../api/types";
+import { routeTitle } from "./intent";
 
 type RawEvent = {
   seq: number;
@@ -14,6 +15,7 @@ function kindOf(event: string, data: Record<string, unknown>): TrajectoryRecord[
   if (event === "step.intercepted") return "intercept";
   if (event === "step.compress" || event === "session.compress") return "compress";
   if (event === "approval.required") return "approval";
+  if (event === "intent.detected") return "route";
   if (event === "step.start" || event === "step.cache_hit") return "tool";
   return "other";
 }
@@ -46,6 +48,12 @@ function titleOf(
   }
   if (kind === "compress") return "上下文压缩";
   if (kind === "approval") return `审批 ${data.tool || ""}`.trim();
+  if (kind === "route") {
+    const mode = String(data.mode || "agent") as IntentMode;
+    const source = String(data.source || "fallback") as IntentSource;
+    const reason = String(data.reason || "");
+    return routeTitle({ mode, source, reason });
+  }
   if (event === "step.start") return `步骤 ${data.step_index ?? ""}`.trim();
   return event;
 }
@@ -113,7 +121,9 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
           ? data.prompt
           : typeof data.input === "string"
             ? data.input
-            : undefined,
+            : typeof data.query === "string"
+              ? data.query
+              : undefined,
       output:
         typeof data.result === "string"
           ? data.result
@@ -149,4 +159,28 @@ export function upsertLiveEvent(
     return copy;
   }
   return [...list, next];
+}
+
+/** 每轮把 route 记录排到该轮第一条，其余保持原序。 */
+export function orderRecordsForDisplay(
+  records: TrajectoryRecord[],
+): TrajectoryRecord[] {
+  const groups = new Map<number, TrajectoryRecord[]>();
+  const order: number[] = [];
+  for (const record of records) {
+    if (!groups.has(record.turn)) {
+      groups.set(record.turn, []);
+      order.push(record.turn);
+    }
+    groups.get(record.turn)?.push(record);
+  }
+  const out: TrajectoryRecord[] = [];
+  for (const turn of order) {
+    const group = groups.get(turn) ?? [];
+    out.push(
+      ...group.filter((r) => r.kind === "route"),
+      ...group.filter((r) => r.kind !== "route"),
+    );
+  }
+  return out;
 }

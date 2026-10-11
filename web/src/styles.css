@@ -30,6 +30,7 @@
   --header-h: 44px;
   --composer-min: 140px;
   --transition: 160ms ease;
+  --z-dropdown: 40;
 }
 
 *,
@@ -426,8 +427,15 @@ button:disabled {
   color: #fecaca;
 }
 
-.settlement-line {
+.settlement-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-md);
   margin-top: var(--space-sm);
+}
+
+.settlement-line {
   font-size: 12px;
   color: var(--color-muted-fg);
   text-decoration: underline dotted;
@@ -459,16 +467,69 @@ button:disabled {
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
-  background: color-mix(in srgb, var(--color-accent) 15%, var(--color-muted));
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
   border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
-  color: var(--color-accent);
+  color: var(--color-accent-muted);
   cursor: pointer;
   user-select: none;
-  transition: filter var(--transition);
+  transition: background var(--transition), border-color var(--transition);
 }
 
 .intent-badge:hover {
-  filter: brightness(1.15);
+  background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface));
+}
+
+.intent-badge.intent-qa {
+  color: #1d4ed8;
+  background: rgba(77, 107, 254, 0.1);
+  border-color: rgba(77, 107, 254, 0.28);
+}
+
+.intent-badge.intent-agent {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+.intent-badge.intent-writer {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.intent-menu {
+  position: fixed;
+  z-index: var(--z-dropdown);
+  min-width: 168px;
+  padding: var(--space-sm);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(31, 35, 41, 0.12);
+}
+
+.intent-menu-title {
+  font-size: 11px;
+  color: var(--color-muted-fg);
+  padding: var(--space-sm) var(--space-md) var(--space-xs);
+}
+
+.intent-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  color: var(--color-foreground);
+}
+
+.intent-menu button:hover:not(:disabled) {
+  background: var(--color-muted);
+}
+
+.intent-menu button.current,
+.intent-menu button:disabled {
+  color: var(--color-muted-fg);
 }
 
 .select {
@@ -612,6 +673,11 @@ button:disabled {
   background: var(--color-destructive);
 }
 
+.overview-seg.route {
+  background: var(--color-accent);
+  opacity: 0.85;
+}
+
 .traj-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
@@ -670,6 +736,14 @@ button:disabled {
 .record.selected {
   border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
   background: color-mix(in srgb, var(--color-accent) 10%, var(--color-muted));
+}
+
+.record.route .record-step {
+  color: var(--color-accent-muted);
+}
+
+.record.route .record-title {
+  color: var(--color-accent-muted);
 }
 
 .record-step {
