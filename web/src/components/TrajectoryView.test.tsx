@@ -180,4 +180,50 @@ describe("TrajectoryView route record", () => {
     expect(screen.getByText("先构思情节再落笔")).toBeInTheDocument();
     expect(document.querySelector(".thinking-block")).not.toBeNull();
   });
+
+  it("renders HH:MM:SS from a unix timestamp on the record row", () => {
+    render(
+      <TrajectoryView
+        records={[{ ...routeRecord(), ts: 1_710_000_000 }]}
+        hasMore={false}
+        loadingEarlier={false}
+        followTail
+        focusId={null}
+        onFollowChange={vi.fn()}
+        onLoadEarlier={vi.fn()}
+        onExport={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/\d{2}:\d{2}:\d{2}/)).toBeInTheDocument();
+  });
+
+  it("renders planner source without leaking undefined", () => {
+    const rec: TrajectoryRecord = {
+      ...routeRecord(),
+      title: "意图：工具调用 ← 任务卡",
+      payload: {
+        mode: "agent",
+        source: "planner",
+        reason: "任务卡",
+        confidence: 0.85,
+        turn: 1,
+      },
+    };
+    const { container } = render(
+      <TrajectoryView
+        records={[rec]}
+        hasMore={false}
+        loadingEarlier={false}
+        followTail
+        focusId={null}
+        onFollowChange={vi.fn()}
+        onLoadEarlier={vi.fn()}
+        onExport={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/任务卡/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /任务卡/ }));
+    expect(container.textContent).not.toContain("undefined");
+    expect(screen.getByText("规划器生成")).toBeInTheDocument();
+  });
 });

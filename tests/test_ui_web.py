@@ -185,7 +185,32 @@ def test_sse_chat_event_stream_format() -> None:
 
     sessions = asyncio.run(_get_json(app, "/sessions"))
     assert any(s["session_id"] == "s1" for s in sessions)
+    start_ev = next(p for n, p in events if n == "step.start")
+    assert isinstance(start_ev.get("ts"), (int, float))
+    assert start_ev.get("turn") == 1
+
+    detail = asyncio.run(_get_json(app, "/api/sessions/s1"))
+    assert detail["ok"] is True
+    assert detail["session_id"] == "s1"
+    assert "title" in detail
+    assert detail["turns"]
+    first_turn = detail["turns"][0]
+    for key in ("turn", "query_raw", "answer"):
+        assert key in first_turn
+    assert first_turn["query_raw"]
+    assert first_turn["answer"]
+
+    missing_status, missing = asyncio.run(_get_status(app, "/api/sessions/no-such"))
+    assert missing_status == 404
+    assert missing["ok"] is False
     ctx.unmount_all()
+
+
+async def _get_status(app: Any, path: str) -> tuple[int, Any]:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get(path)
+        return res.status_code, res.json()
 
 
 async def _stream_get(app: Any, path: str) -> tuple[int, str, str]:

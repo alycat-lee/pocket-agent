@@ -567,6 +567,40 @@ def build_app(
         ctx.require("sessions").delete_session(session_id, agent=agent)
         return JSONResponse({"ok": True, "session_id": session_id})
 
+    @app.get("/api/sessions/{session_id}")
+    def api_session_detail(
+        session_id: str,
+        agent: str | None = Query(None),
+    ) -> JSONResponse:
+        if not ctx.has("sessions"):
+            return JSONResponse({"ok": False, "error": "sessions not available"}, 400)
+        sessions = ctx.require("sessions")
+        rows = sessions.list_sessions(agent=agent)
+        match = next((row for row in rows if row.get("session_id") == session_id), None)
+        if match is None:
+            return JSONResponse({"ok": False, "error": "session not found"}, 404)
+        owner = agent or match.get("agent")
+        try:
+            state = sessions.get_state(session_id, agent=owner or None)
+        except KeyError:
+            return JSONResponse({"ok": False, "error": "session not found"}, 404)
+        return JSONResponse(
+            {
+                "ok": True,
+                "session_id": state.session_id,
+                "title": state.title,
+                "agent": state.agent,
+                "turns": [
+                    {
+                        "turn": t.turn,
+                        "query_raw": t.query_raw,
+                        "answer": t.answer,
+                    }
+                    for t in state.turns
+                ],
+            }
+        )
+
     def _agent_payload(profile: Any) -> dict[str, Any]:
         svc = ctx.require("agents")
         return {
@@ -1139,6 +1173,7 @@ def build_app(
 
         def _make_handler(event_name: str) -> Callable[[dict[str, Any]], None]:
             def _handler(payload: dict[str, Any]) -> None:
+                payload.setdefault("ts", time.time())
                 q.put({"event": event_name, "data": payload})
 
             return _handler

@@ -80,6 +80,7 @@ class AgentRunner:
         self.approval_gate: ApprovalGate | None = None
         self._stop = threading.Event()
         self._run_session_id: str = "default"
+        self._run_turn: int | None = None
 
     def request_stop(self) -> None:
         """请求中断：置位标志并立即 abort 在途 LLM 请求。"""
@@ -110,6 +111,8 @@ class AgentRunner:
         if self._events is not None:
             enriched = dict(payload)
             enriched.setdefault("session_id", self._run_session_id)
+            if self._run_turn is not None:
+                enriched.setdefault("turn", self._run_turn)
             self._events.emit(event, enriched)
 
     def _emit_thinking(self, *, step: int | None = None) -> None:
@@ -146,6 +149,7 @@ class AgentRunner:
         session_id: str | None = None,
         registry: ToolRegistry | None = None,
         permission: str = "workspace",
+        turn: int | None = None,
     ) -> RunResult:
         """主循环：见规格 §8。仅 LLMConnectionError 允许上抛。
 
@@ -154,6 +158,7 @@ class AgentRunner:
         session_id：事件落盘与轨迹视图关联的会话 id。
         registry：当轮工具注册表覆盖；为 None 时使用实例默认。qa 模式传空注册表。
         permission：readonly 禁用写工具、workspace 弹审批、full 免审批。
+        turn：会话权威轮次，写入本轮全部 runner 事件；None 不盖章。
         """
         active_ledger = ledger if ledger is not None else self._ledger
         active_registry = registry if registry is not None else self._registry
@@ -172,6 +177,7 @@ class AgentRunner:
         if callable(reset):
             reset()
         self._run_session_id = session_id or "default"
+        self._run_turn = turn
 
         steps: list[StepRecord] = []
         start_step = 1
@@ -547,19 +553,22 @@ class AgentRunner:
             },
         )
 
-        return RunResult(
-            answer=answer,
-            steps=steps,
-            stop_reason=stop_reason,
-            stats={
-                "total_steps": len(steps),
-                "real_calls": real_calls,
-                "cache_hits": cache_hits,
-                "intercepts": intercepts,
-                "prompt_tokens_max": prompt_tokens_max,
-                **settlement,
-            },
-        )
+        try:
+            return RunResult(
+                answer=answer,
+                steps=steps,
+                stop_reason=stop_reason,
+                stats={
+                    "total_steps": len(steps),
+                    "real_calls": real_calls,
+                    "cache_hits": cache_hits,
+                    "intercepts": intercepts,
+                    "prompt_tokens_max": prompt_tokens_max,
+                    **settlement,
+                },
+            )
+        finally:
+            self._run_turn = None
 
     def _dump_checkpoint(
         self,

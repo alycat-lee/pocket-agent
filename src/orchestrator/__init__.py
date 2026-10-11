@@ -223,6 +223,7 @@ class Orchestrator:
         self._compressor = ContextCompressor(config, llm)
         self._active: list[AgentRunner] = []
         self._remaining = self._step_budget
+        self._run_turn: int | None = None
 
     def apply_config(self, config: AgentConfig) -> None:
         self._config = config
@@ -246,26 +247,34 @@ class Orchestrator:
         session_id: str = "default",
         permission: str = "workspace",
         strategy: MergeStrategy | None = None,
+        turn: int | None = None,
     ) -> OrchestrationResult:
-        if depth >= MAX_NESTING:
-            raise OrchestrationDepthError("worker 不得再生 worker")
-        chosen = strategy or choose_strategy(
-            card, build_graph(card.plan, strategy=strategy)
-        )
-        if not self.should_orchestrate(card, depth=depth) and chosen != "vote":
-            return self._fast_path(task, session_id=session_id, permission=permission)
-        graph = build_graph(card.plan, strategy=chosen)
-        if chosen == "vote":
-            graph = build_graph(card.plan or [task], strategy="vote")
-        return self._orchestrate(
-            card,
-            task,
-            graph,
-            chosen,
-            depth=depth,
-            session_id=session_id,
-            permission=permission,
-        )
+        prev_turn = self._run_turn
+        self._run_turn = turn
+        try:
+            if depth >= MAX_NESTING:
+                raise OrchestrationDepthError("worker 不得再生 worker")
+            chosen = strategy or choose_strategy(
+                card, build_graph(card.plan, strategy=strategy)
+            )
+            if not self.should_orchestrate(card, depth=depth) and chosen != "vote":
+                return self._fast_path(
+                    task, session_id=session_id, permission=permission
+                )
+            graph = build_graph(card.plan, strategy=chosen)
+            if chosen == "vote":
+                graph = build_graph(card.plan or [task], strategy="vote")
+            return self._orchestrate(
+                card,
+                task,
+                graph,
+                chosen,
+                depth=depth,
+                session_id=session_id,
+                permission=permission,
+            )
+        finally:
+            self._run_turn = prev_turn
 
     def _fast_path(
         self,
@@ -274,7 +283,12 @@ class Orchestrator:
         session_id: str,
         permission: str,
     ) -> OrchestrationResult:
-        result = self._base.run(task, session_id=session_id, permission=permission)
+        result = self._base.run(
+            task,
+            session_id=session_id,
+            permission=permission,
+            turn=self._run_turn,
+        )
         return OrchestrationResult(
             answer=str(result.answer),
             steps=list(result.steps),
@@ -590,6 +604,7 @@ class Orchestrator:
                 ledger=ledger,
                 session_id=session_id,
                 permission=permission,
+                turn=self._run_turn,
             )
         finally:
             if runner in self._active:
@@ -754,7 +769,10 @@ class Orchestrator:
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
         if self._events is not None:
-            self._events.emit(event, payload)
+            enriched = dict(payload)
+            if self._run_turn is not None:
+                enriched.setdefault("turn", self._run_turn)
+            self._events.emit(event, enriched)
 
 
 def _skipped(result: WorkerResult | None) -> bool:

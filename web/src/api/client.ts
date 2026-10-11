@@ -1,4 +1,10 @@
-import type { AgentInfo, EventsPage, PluginInfo, SessionInfo } from "./types";
+import type {
+  AgentInfo,
+  EventsPage,
+  PluginInfo,
+  SessionDetail,
+  SessionInfo,
+} from "./types";
 import type { SchemaField } from "../lib/schemaForm";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -63,6 +69,14 @@ export function deleteAgent(
 export function fetchSessions(agent?: string): Promise<SessionInfo[]> {
   const q = agent ? `?agent=${encodeURIComponent(agent)}` : "";
   return json(`/sessions${q}`);
+}
+
+export function fetchSessionDetail(
+  sessionId: string,
+  agent?: string,
+): Promise<SessionDetail> {
+  const q = agent ? `?agent=${encodeURIComponent(agent)}` : "";
+  return json(`/api/sessions/${encodeURIComponent(sessionId)}${q}`);
 }
 
 export function fetchConfigSchema(): Promise<SchemaField[]> {

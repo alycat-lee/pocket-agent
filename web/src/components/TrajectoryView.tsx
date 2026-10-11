@@ -34,6 +34,18 @@ const BADGE_LABEL: Record<string, string> = {
   rejected: "验收未通过",
 };
 
+function formatClock(ts: number | null): string | null {
+  if (ts == null || !Number.isFinite(ts)) return null;
+  const date = new Date(ts * 1000);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleTimeString("en-GB", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function routeInfoOf(r: TrajectoryRecord): IntentInfo | null {
   if (r.kind !== "route") return null;
   return {
@@ -177,6 +189,7 @@ export function TrajectoryView({
             const canExpand =
               (r.kind === "worker" || r.kind === "merge") && childCount > 0;
             const isOpen = Boolean(workerId && expanded.has(workerId));
+            const clock = formatClock(r.ts);
             return (
               <div key={r.id}>
                 {showTurn ? (
@@ -226,7 +239,10 @@ export function TrajectoryView({
                     )}
                   </span>
                   <span>
-                    <div className="record-title">{r.title}</div>
+                    <div className="record-title-row">
+                      <div className="record-title">{r.title}</div>
+                      {clock ? <span className="rec-ts">{clock}</span> : null}
+                    </div>
                     <div className="record-meta">
                       {r.kind === "task"
                         ? `计划 ${Array.isArray(r.payload.plan) ? r.payload.plan.length : 0} 步`
@@ -237,7 +253,7 @@ export function TrajectoryView({
                               ? `${isOpen ? "收起" : "展开"} ${childCount} 步`
                               : String(r.payload.strategy || "子任务")
                         : r.kind === "route" && info
-                        ? `${SOURCE_LABEL[info.source]} · 置信度 ${Math.round(info.confidence * 100)}%`
+                        ? `${SOURCE_LABEL[info.source] ?? String(info.source ?? "")} · 置信度 ${Math.round(info.confidence * 100)}%`
                         : r.inProgress
                           ? "进行中 · 开始标记"
                           : `耗时 ${formatMs(r.elapsedMs)} · TTFT ${formatMs(r.ttftMs)}`}
@@ -307,11 +323,11 @@ function InspectorBody({ record }: { record: TrajectoryRecord }) {
         <>
           <div>
             <dt>意图</dt>
-            <dd>{MODE_LABEL[info.mode]}</dd>
+            <dd>{MODE_LABEL[info.mode] ?? String(info.mode ?? "")}</dd>
           </div>
           <div>
             <dt>来源</dt>
-            <dd>{SOURCE_LABEL[info.source]}</dd>
+            <dd>{SOURCE_LABEL[info.source] ?? String(info.source ?? "")}</dd>
           </div>
           <div>
             <dt>依据</dt>

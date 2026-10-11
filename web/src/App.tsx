@@ -9,6 +9,7 @@ import {
   fetchEvents,
   fetchHealthLlm,
   fetchProviders,
+  fetchSessionDetail,
   fetchSessions,
   fetchWorkspaces,
   openChatEventSource,
@@ -32,6 +33,7 @@ import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { GuidePage } from "./components/GuidePage";
 import { PluginsPage } from "./components/PluginsPage";
+import { SessionAgentControl } from "./components/SessionAgentControl";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar, type PageId } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -226,11 +228,39 @@ export default function App() {
     pendingIntentRef.current = null;
     setPermission(getPermission(sessionId));
     setMessages([]);
+    turnCounter.current = 0;
     setRecords([]);
     setFocusId(null);
     setFollowTail(true);
+    let cancelled = false;
+    void fetchSessionDetail(sessionId, agentName)
+      .then((detail) => {
+        if (cancelled) return;
+        const turns = detail.turns || [];
+        const rebuilt: ChatMessage[] = [];
+        for (const turn of turns) {
+          rebuilt.push({
+            id: newId(),
+            role: "user",
+            content: turn.query_raw,
+            turnId: `turn-${turn.turn}`,
+          });
+          rebuilt.push({
+            id: newId(),
+            role: "assistant",
+            content: turn.answer,
+            turnId: `turn-${turn.turn}`,
+          });
+        }
+        setMessages(rebuilt);
+        turnCounter.current = turns.length;
+      })
+      .catch(() => undefined);
     void loadTrajectory(sessionId).catch(() => undefined);
-  }, [sessionId, loadTrajectory]);
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, agentName, loadTrajectory]);
 
   useEffect(() => {
     if (!status.settlementUntil) return;
@@ -395,7 +425,7 @@ export default function App() {
         pendingIntentRef.current = {
           mode: String(data.mode || "agent") as IntentMode,
           confidence: Number(data.confidence ?? 1),
-          source: (["rule", "llm", "fallback", "manual"].includes(
+          source: (["rule", "llm", "fallback", "manual", "planner"].includes(
             String(data.source),
           )
             ? String(data.source)
@@ -598,10 +628,20 @@ export default function App() {
   const newSession = () => {
     const id = `s-${Date.now().toString(36)}`;
     setSoftError(null);
+    turnCounter.current = 0;
     setSessions((prev) => [{ session_id: id, title: "新会话" }, ...prev]);
     setSessionId(id);
     setPage("session");
   };
+
+  const selectAgent = (name: string) => {
+    setActiveAgent(name);
+    setAgentName(name);
+    setSessionId("default");
+  };
+
+  const sessionTitle =
+    sessions.find((item) => item.session_id === sessionId)?.title || sessionId;
 
   return (
     <div className="app-shell">
@@ -612,11 +652,7 @@ export default function App() {
         activeAgent={agentName}
         page={page}
         onSelectSession={setSessionId}
-        onSelectAgent={(name) => {
-          setActiveAgent(name);
-          setAgentName(name);
-          setSessionId("default");
-        }}
+        onSelectAgent={selectAgent}
         onNewSession={newSession}
         onDeleteSession={(id) => {
           void (async () => {
@@ -679,7 +715,12 @@ export default function App() {
         {page === "session" ? (
           <>
             <header className="session-header">
-              <div className="session-title">{sessionId}</div>
+              <div className="session-title">{sessionTitle}</div>
+              <SessionAgentControl
+                agents={agents}
+                agentName={agentName}
+                onSelectAgent={selectAgent}
+              />
               {activeModel?.model ? (
                 <span
                   className="model-badge"

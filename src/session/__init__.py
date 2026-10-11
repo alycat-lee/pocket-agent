@@ -123,6 +123,7 @@ class SessionManager:
         self.last_evidence: str = ""
         self.rewrite_call_count: int = 0
         self.summary_call_count: int = 0
+        self._active_turn: int | None = None
 
     @property
     def persist_enabled(self) -> bool:
@@ -327,6 +328,7 @@ class SessionManager:
         self.last_task_card = card
         self.last_evidence = ""
         turn_no = len(state.turns) + 1
+        self._active_turn = turn_no
         if self._events is not None:
             self._events.emit(
                 "task.planned",
@@ -489,6 +491,7 @@ class SessionManager:
             ledger=turn_ledger,
             session_id=session_id,
             permission=permission,
+            turn=self._active_turn,
         )
         self.last_result = result
         self._remember_tool_evidence(result.steps)
@@ -510,6 +513,7 @@ class SessionManager:
                 self._agent_task(card, run_task),
                 session_id=session_id,
                 permission=permission,
+                turn=self._active_turn,
             )
             self.last_result = result
             return str(result.answer)
@@ -518,6 +522,7 @@ class SessionManager:
             self._agent_task(card, run_task),
             session_id=session_id,
             permission=permission,
+            turn=self._active_turn,
         )
         self._remember_tool_evidence(outcome.steps)
         stop = (
@@ -543,7 +548,11 @@ class SessionManager:
                 if text and self._config.reasoning_enabled and self._events is not None:
                     self._events.emit(
                         "step.thinking",
-                        {"text": text, "session_id": session_id},
+                        {
+                            "text": text,
+                            "session_id": session_id,
+                            "turn": self._active_turn,
+                        },
                     )
 
             writer.on_thinking = _emit_think
@@ -555,6 +564,7 @@ class SessionManager:
                         {
                             "session_id": session_id,
                             "index": max(0, index - 1),
+                            "turn": self._active_turn,
                         },
                     )
 
@@ -679,32 +689,35 @@ class SessionManager:
 
     def _emit_rejected(self, session_id: str, reasons: list[str]) -> None:
         if self._events is not None:
-            self._events.emit(
-                "answer.rejected",
-                {"session_id": session_id, "reasons": reasons},
-            )
+            payload: dict[str, Any] = {
+                "session_id": session_id,
+                "reasons": reasons,
+            }
+            if self._active_turn is not None:
+                payload.setdefault("turn", self._active_turn)
+            self._events.emit("answer.rejected", payload)
 
     def _emit_answer_done(self, answer: str, *, stop_reason: str) -> None:
         if self._events is None:
             return
         meta = getattr(self, "_run_meta", None)
         extra = dict(meta) if isinstance(meta, dict) else {}
-        self._events.emit(
-            "answer.done",
-            {
-                "answer": answer,
-                "stop_reason": stop_reason,
-                "total_steps": 0,
-                "llm_ms": 0,
-                "tool_ms": 0,
-                "cache_hit_rate": 0.0,
-                "real_calls": 0,
-                "intercepts": 0,
-                "prompt_tokens_max": 0,
-                "elapsed_ms": 0,
-                **extra,
-            },
-        )
+        payload: dict[str, Any] = {
+            "answer": answer,
+            "stop_reason": stop_reason,
+            "total_steps": 0,
+            "llm_ms": 0,
+            "tool_ms": 0,
+            "cache_hit_rate": 0.0,
+            "real_calls": 0,
+            "intercepts": 0,
+            "prompt_tokens_max": 0,
+            "elapsed_ms": 0,
+            **extra,
+        }
+        if self._active_turn is not None:
+            payload.setdefault("turn", self._active_turn)
+        self._events.emit("answer.done", payload)
 
     def _mark_plan_progress(self, session_id: str, steps: int) -> None:
         card = self.last_task_card

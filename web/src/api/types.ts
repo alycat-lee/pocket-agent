@@ -2,7 +2,7 @@ export type SessionView = "chat" | "trajectory";
 
 export type ChatMode = "qa" | "tools" | "writer";
 export type IntentMode = "qa" | "agent" | "writer";
-export type IntentSource = "rule" | "llm" | "fallback" | "manual";
+export type IntentSource = "rule" | "llm" | "fallback" | "manual" | "planner";
 export type PermissionMode = "readonly" | "workspace" | "full";
 
 export interface IntentInfo {
@@ -20,6 +20,20 @@ export interface SessionInfo {
   turn_count?: number;
   updated_at?: string;
   agent?: string;
+}
+
+export interface SessionTurn {
+  turn: number;
+  query_raw: string;
+  answer: string;
+}
+
+export interface SessionDetail {
+  ok: boolean;
+  session_id: string;
+  title: string;
+  agent: string;
+  turns: SessionTurn[];
 }
 
 export interface AgentInfo {

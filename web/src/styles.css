@@ -63,6 +63,11 @@ select {
   color: inherit;
 }
 
+textarea {
+  resize: none;
+  overflow-y: auto;
+}
+
 button {
   cursor: pointer;
   border: none;
@@ -138,7 +143,6 @@ button:disabled {
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: var(--color-surface);
-  resize: vertical;
 }
 
 .agent-details {
@@ -434,6 +438,27 @@ button:disabled {
   max-width: 72%;
 }
 
+.record-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rec-ts {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--color-muted-fg);
+  flex-shrink: 0;
+}
+
+.agent-badge {
+  max-width: 160px;
+  border: none;
+  appearance: auto;
+}
+
 .model-badge {
   max-width: 220px;
   overflow: hidden;
@@ -603,7 +628,6 @@ button:disabled {
 }
 
 .composer-box textarea {
-  resize: vertical;
   min-height: 64px;
   max-height: 180px;
   width: 100%;

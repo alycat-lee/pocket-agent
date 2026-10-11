@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pocket_agent.config import AgentConfig
 from pocket_agent.runner import AgentRunner, StopReason
 from pocket_agent.tools import ToolRegistry, tool
+
+
+class _Bus:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def emit(self, event: str, payload: dict[str, Any]) -> None:
+        self.events.append((event, dict(payload)))
 
 
 def _weather_registry(config: AgentConfig) -> ToolRegistry:
@@ -51,6 +61,31 @@ def test_normal_script_three_steps_no_duplicate_real_calls(mock_llm_factory: typ
         "calculator",
     ]
     assert all(not s.from_cache for s in result.steps)
+
+
+def test_step_events_carry_authoritative_turn(mock_llm_factory: type) -> None:
+    config = AgentConfig(max_steps=10)
+    llm = mock_llm_factory(
+        [
+            0,
+            {"city": "北京"},
+            0,
+            {"city": "上海"},
+            -1,
+            "两地对比完毕",
+        ]
+    )
+    bus = _Bus()
+    AgentRunner(config, llm, _weather_registry(config), events=bus).run(
+        "查询北京和上海天气",
+        turn=1,
+    )
+    step_payloads = [payload for name, payload in bus.events if name.startswith("step.")]
+    assert step_payloads
+    for payload in step_payloads:
+        assert payload.get("turn") == 1
+    answer = next(payload for name, payload in bus.events if name == "answer.done")
+    assert answer.get("turn") == 1
 
 
 def test_repeat_script_ledger_intercept_then_consecutive_stop(

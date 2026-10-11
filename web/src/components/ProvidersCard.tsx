@@ -21,6 +21,18 @@ interface Provider {
   sampling: Record<string, unknown> | null;
 }
 
+export function uniqueProviderName(name: string, existing: string[]): string {
+  const taken = new Set(existing);
+  if (!taken.has(name)) return name;
+  let index = 2;
+  let next = `${name}-${index}`;
+  while (taken.has(next)) {
+    index += 1;
+    next = `${name}-${index}`;
+  }
+  return next;
+}
+
 interface TestResult {
   ok: boolean;
   connect_ms: number;
@@ -93,7 +105,18 @@ export function ProvidersCard() {
         {providers.map((p) => (
           <div key={p.id} className="provider-item">
             <div className="provider-item-header">
-              <strong>{p.name}</strong>
+              <input
+                type="text"
+                aria-label={`provider name ${p.id}`}
+                value={p.name}
+                onChange={(e) => {
+                  setProviders((prev) =>
+                    prev.map((x) =>
+                      x.id === p.id ? { ...x, name: e.target.value } : x,
+                    ),
+                  );
+                }}
+              />
               <span className="status-meta"> {p.type}</span>
               {p.id === defaultId ? (
                 <span className="badge cache_hit">默认</span>
@@ -171,14 +194,32 @@ export function ProvidersCard() {
                         timeout: 10,
                       });
                       setTestResults((prev) => ({ ...prev, [p.id]: res }));
-                      if (res.ok && !p.model.trim() && res.model_list[0]) {
+                      const shouldFill =
+                        res.ok &&
+                        Boolean(res.model_list[0]) &&
+                        (!p.model.trim() || !res.model_list.includes(p.model));
+                      if (shouldFill) {
                         const picked = res.model_list[0];
                         setProviders((prev) =>
                           prev.map((x) =>
                             x.id === p.id ? { ...x, model: picked } : x,
                           ),
                         );
-                        setStatus(`已自动选择模型 ${picked}，可修改`);
+                        try {
+                          await updateProvider(p.id, {
+                            name: p.name,
+                            base_url: p.base_url,
+                            model: picked,
+                            api_key: p.api_key.includes("***")
+                              ? undefined
+                              : p.api_key || undefined,
+                          });
+                          setStatus(`已回填并保存模型 ${picked}`);
+                        } catch {
+                          setStatus(
+                            `已回填模型 ${picked}，保存失败请手动保存`,
+                          );
+                        }
                       }
                     } catch (e) {
                       setTestResults((prev) => ({
@@ -351,9 +392,13 @@ export function ProvidersCard() {
             onClick={() => {
               void (async () => {
                 if (!draftName || !draftUrl) return;
+                const name = uniqueProviderName(
+                  draftName,
+                  providers.map((item) => item.name),
+                );
                 try {
                   await createProvider({
-                    name: draftName,
+                    name,
                     type: draftType,
                     base_url: draftUrl,
                     model: draftModel,
@@ -361,7 +406,7 @@ export function ProvidersCard() {
                     thinking: draftThinking,
                     trust_env: draftTrustEnv,
                   });
-                  setStatus(`已添加 ${draftName}`);
+                  setStatus(`已添加 ${name}`);
                   setDraftName("");
                   setDraftKey("");
                   await reload();

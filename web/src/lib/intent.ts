@@ -13,6 +13,7 @@ export const SOURCE_LABEL: Record<IntentSource, string> = {
   llm: "LLM 分类",
   fallback: "回退默认",
   manual: "手动纠正",
+  planner: "规划器生成",
 };
 
 export function sourcePhrase(source: IntentSource, reason: string): string {
