@@ -15,6 +15,7 @@ from pocket_agent.llm_client import (
     take_thinking,
 )
 from pocket_agent.prompts import OUTLINE, OUTLINE_SCHEMA, SECTION_WRITE
+from pocket_agent.task import parse_total_chars as _parse_total_chars
 
 _SENT_SPLIT = re.compile(r"(?<=[。！？\n])")
 _FACT_NUM_SENT = re.compile(r"\d")
@@ -30,7 +31,6 @@ _CONSISTENCY_CHAR_LIMIT = 300
 _SHORT_SECTION_RATIO = 0.60
 _MAX_SECTIONS = 100
 _DEFAULT_TOTAL_CHARS = 3000
-_TOTAL_CHARS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(万)?\s*字")
 # 单段允许略超目标；全文硬顶
 _SECTION_MAX_RATIO = 1.05
 _ARTICLE_MAX_RATIO = 1.08
@@ -121,9 +121,15 @@ class LongWriter:
         self.last_card: ConsistencyCard = ConsistencyCard()
         self.used_outline_fallback: bool = False
 
-    def write(self, topic: str, total_chars: int, material: str = "") -> str:
+    def write(
+        self,
+        topic: str,
+        total_chars: int,
+        material: str = "",
+        plan: list[str] | None = None,
+    ) -> str:
         """四段式流水线：大纲 → 一致性卡 → 逐段撰写 → 拼接去重。"""
-        outline = self._build_outline(topic, total_chars, material)
+        outline = self._build_outline(topic, total_chars, material, plan=plan)
         self.last_outline = outline
         card = self._build_consistency_card(material, outline)
         self.last_card = card
@@ -346,9 +352,22 @@ class LongWriter:
         topic: str,
         total_chars: int,
         material: str,
+        plan: list[str] | None = None,
     ) -> list[SectionSpec]:
         self.used_outline_fallback = False
         desired_n = _desired_section_count(total_chars, self._config.section_char_target)
+        if plan:
+            parsed: list[SectionSpec] = []
+            for i, step in enumerate(plan, start=1):
+                title = str(step).strip() or f"第{i}部分"
+                parsed.append(SectionSpec(title=title[:40], points=[], target_chars=0))
+            if parsed:
+                parsed = _ensure_section_count(parsed, desired_n)
+                n = len(parsed)
+                base = max(1, total_chars // n)
+                for section in parsed:
+                    section.target_chars = base
+                return parsed
         material_text = material.strip() if material.strip() else "（无）"
         prompt = OUTLINE.format(
             topic=topic,
@@ -530,14 +549,9 @@ def _resync_sections_to_article(sections: list[str], article: str) -> list[str]:
 
 
 def parse_total_chars(text: str, default: int = _DEFAULT_TOTAL_CHARS) -> int:
-    """解析「N万字 / N字」为 total_chars；未指定则用 default。"""
-    match = _TOTAL_CHARS_RE.search(text or "")
-    if match is None:
-        return max(1, default)
-    n = float(match.group(1))
-    if match.group(2):
-        n *= 10000.0
-    return max(1, int(n))
+    """兼容入口：字数解析已上移到任务卡 / Planner。"""
+    parsed = _parse_total_chars(text, default=0)
+    return parsed if parsed > 0 else max(1, default)
 
 
 def section_max_tokens(target_chars: int) -> int:

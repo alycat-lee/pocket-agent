@@ -53,6 +53,11 @@ class AgentConfig:
     # 模型路由（Phase 14/17）
     route_cloud: bool = False  # True：复杂生成走云端
 
+    # 规划与验收（Phase 27）
+    planner_enabled: bool = True  # False：退回 IntentRouter 三分类
+    verifier_enabled: bool = True
+    answer_max_retries: int = 1
+
     @classmethod
     def known_keys(cls) -> set[str]:
         return {f.name for f in fields(cls)}

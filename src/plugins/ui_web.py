@@ -56,6 +56,9 @@ _BUS_EVENTS = (
     "session.permission_changed",
     "session.workspace_changed",
     "step.thinking",
+    "task.planned",
+    "task.step_done",
+    "answer.rejected",
 )
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 

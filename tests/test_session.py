@@ -234,15 +234,16 @@ def test_intent_detected_is_first_and_payload_complete(
     mgr.chat("s1", "你好")
 
     assert captured
-    assert captured[0][0] == "intent.detected"
-    payload = captured[0][1]
+    assert captured[0][0] == "task.planned"
+    assert captured[0][1]["type"] == "qa"
+    intent = next(p for n, p in captured if n == "intent.detected")
     for key in ("session_id", "mode", "confidence", "source", "reason", "turn"):
-        assert key in payload
-    assert payload["session_id"] == "s1"
-    assert payload["mode"] == "qa"
-    assert payload["source"] == "rule"
-    assert payload["reason"] == "短句闲聊"
-    assert payload["turn"] == 1
+        assert key in intent
+    assert intent["session_id"] == "s1"
+    assert intent["mode"] == "qa"
+    assert intent["source"] == "rule"
+    assert intent["reason"] == "短句闲聊"
+    assert intent["turn"] == 1
 
 
 def test_force_mode_manual_reuses_rewritten(mock_llm_factory: type) -> None:
@@ -278,9 +279,9 @@ def test_compose_excludes_unrelated_history_for_writer_and_qa(
     mock_llm_factory: type,
 ) -> None:
     """跨轮无关历史不得进入 writer/qa 的任务 prompt。"""
-    cfg = AgentConfig(max_steps=3)
+    cfg = AgentConfig(max_steps=3, verifier_enabled=False)
     registry = ToolRegistry(cfg)
-    llm = mock_llm_factory([1, "上海多云 18℃", "天气标题", "闲聊回答"])
+    llm = mock_llm_factory([1, "上海多云 18℃", "天气标题", 0, 0, "闲聊回答"])
     runner = AgentRunner(cfg, llm, registry)
 
     class _Writer:

@@ -1,4 +1,4 @@
-import { Brain, Path } from "@phosphor-icons/react";
+import { Brain, CheckSquare, ClipboardText, Path, Square } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TrajectoryRecord } from "../api/types";
 import { formatMs } from "../lib/format";
@@ -20,6 +20,7 @@ const BADGE_LABEL: Record<string, string> = {
   cache_hit: "cache_hit",
   intercepted: "已拦截",
   tool_error: "工具错误",
+  rejected: "验收未通过",
 };
 
 function routeInfoOf(r: TrajectoryRecord): IntentInfo | null {
@@ -59,7 +60,9 @@ export function TrajectoryView({
     () =>
       displayRecords.map((r) => {
         if (r.kind === "route") return "route";
+        if (r.kind === "task") return "task";
         if (r.kind === "thinking") return "thinking";
+        if (r.badges.includes("rejected")) return "rejected";
         if (r.badges.includes("tool_error")) return "tool_error";
         if (r.badges.includes("intercepted")) return "intercepted";
         if (r.badges.includes("cache_hit")) return "cache_hit";
@@ -143,12 +146,14 @@ export function TrajectoryView({
                 ) : null}
                 <button
                   type="button"
-                  className={`record ${r.kind === "route" ? "route" : ""} ${r.kind === "thinking" ? "thinking" : ""} ${selected?.id === r.id ? "selected" : ""}`}
+                  className={`record ${r.kind === "route" ? "route" : ""} ${r.kind === "task" ? "task" : ""} ${r.kind === "thinking" ? "thinking" : ""} ${selected?.id === r.id ? "selected" : ""}`}
                   onClick={() => setSelectedId(r.id)}
                 >
                   <span className="record-step">
                     {r.kind === "route" ? (
                       <Path size={16} weight="bold" />
+                    ) : r.kind === "task" ? (
+                      <ClipboardText size={16} weight="bold" />
                     ) : r.kind === "thinking" ? (
                       <Brain size={16} weight="duotone" />
                     ) : r.stepIndex != null ? (
@@ -160,7 +165,9 @@ export function TrajectoryView({
                   <span>
                     <div className="record-title">{r.title}</div>
                     <div className="record-meta">
-                      {r.kind === "route" && info
+                      {r.kind === "task"
+                        ? `计划 ${Array.isArray(r.payload.plan) ? r.payload.plan.length : 0} 步`
+                        : r.kind === "route" && info
                         ? `${SOURCE_LABEL[info.source]} · 置信度 ${Math.round(info.confidence * 100)}%`
                         : r.inProgress
                           ? "进行中 · 开始标记"
@@ -212,6 +219,9 @@ function InspectorBody({ record }: { record: TrajectoryRecord }) {
     record.kind === "thinking"
       ? String(record.output || record.payload.text || "")
       : "";
+  if (record.kind === "task") {
+    return <TaskCardInspector record={record} />;
+  }
   return (
     <dl>
       <div>
@@ -283,6 +293,60 @@ function InspectorBody({ record }: { record: TrajectoryRecord }) {
         <dt>参数</dt>
         <dd>
           {record.args == null ? "—" : JSON.stringify(record.args, null, 2)}
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
+function TaskCardInspector({ record }: { record: TrajectoryRecord }) {
+  const plan = Array.isArray(record.payload.plan)
+    ? record.payload.plan.map((item) => String(item))
+    : [];
+  const rawDone = record.payload.plan_done;
+  const done = Array.isArray(rawDone) ? rawDone.map(Boolean) : plan.map(() => false);
+  const constraints = record.payload.constraints;
+  return (
+    <dl>
+      <div>
+        <dt>事件</dt>
+        <dd>{record.event}</dd>
+      </div>
+      <div>
+        <dt>类型</dt>
+        <dd>{String(record.payload.type || "—")}</dd>
+      </div>
+      <div>
+        <dt>目标</dt>
+        <dd>{String(record.payload.goal || "—")}</dd>
+      </div>
+      <div>
+        <dt>约束</dt>
+        <dd>
+          {constraints && typeof constraints === "object"
+            ? JSON.stringify(constraints, null, 2)
+            : "—"}
+        </dd>
+      </div>
+      <div>
+        <dt>计划</dt>
+        <dd className="plan-list">
+          {plan.length === 0 ? (
+            "—"
+          ) : (
+            <ol>
+              {plan.map((step, i) => (
+                <li key={`${i}-${step}`} className={done[i] ? "done" : ""}>
+                  {done[i] ? (
+                    <CheckSquare size={14} weight="fill" />
+                  ) : (
+                    <Square size={14} />
+                  )}
+                  <span>{step}</span>
+                </li>
+              ))}
+            </ol>
+          )}
         </dd>
       </div>
     </dl>

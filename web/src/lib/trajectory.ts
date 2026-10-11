@@ -10,12 +10,13 @@ type RawEvent = {
 
 function kindOf(event: string, data: Record<string, unknown>): TrajectoryRecord["kind"] {
   if (event === "user.message" || data.role === "user") return "user";
-  if (event === "answer.done") return "assistant";
+  if (event === "answer.done" || event === "answer.rejected") return "assistant";
   if (event === "step.tool_call") return "tool";
   if (event === "step.intercepted") return "intercept";
   if (event === "step.compress" || event === "session.compress") return "compress";
   if (event === "approval.required") return "approval";
   if (event === "intent.detected") return "route";
+  if (event === "task.planned") return "task";
   if (event === "step.thinking") return "thinking";
   if (event === "step.start" || event === "step.cache_hit") return "tool";
   return "other";
@@ -27,6 +28,7 @@ function titleOf(
   kind: TrajectoryRecord["kind"],
 ): string {
   if (kind === "user") return String(data.message || data.query || "用户消息");
+  if (event === "answer.rejected") return "验收未通过";
   if (kind === "assistant") return "助手回答";
   if (event === "error" || event === "step.error") {
     const msg = String(data.message || data.error || "运行错误");
@@ -50,6 +52,10 @@ function titleOf(
   if (kind === "compress") return "上下文压缩";
   if (kind === "approval") return `审批 ${data.tool || ""}`.trim();
   if (kind === "thinking") return "思维链";
+  if (kind === "task") {
+    const goal = String(data.goal || "").trim();
+    return goal ? `任务卡：${goal}` : "任务卡";
+  }
   if (kind === "route") {
     const mode = String(data.mode || "agent") as IntentMode;
     const source = String(data.source || "fallback") as IntentSource;
@@ -79,6 +85,9 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
     }
     if (ev.event === "step.intercepted") {
       badges.push("intercepted");
+    }
+    if (ev.event === "answer.rejected") {
+      badges.push("rejected");
     }
     const err =
       typeof data.error === "string"
@@ -151,6 +160,24 @@ export function upsertLiveEvent(
   data: Record<string, unknown>,
   seqHint?: number,
 ): TrajectoryRecord[] {
+  if (event === "task.step_done") {
+    const index = Number(data.index ?? data.step_index ?? -1);
+    const copy = list.slice();
+    for (let i = copy.length - 1; i >= 0; i -= 1) {
+      if (copy[i].kind !== "task") continue;
+      const raw = copy[i].payload.plan_done;
+      const planDone = Array.isArray(raw) ? raw.map(Boolean) : [];
+      if (index >= 0) {
+        while (planDone.length <= index) planDone.push(false);
+        planDone[index] = true;
+      }
+      copy[i] = {
+        ...copy[i],
+        payload: { ...copy[i].payload, plan_done: planDone },
+      };
+      return copy;
+    }
+  }
   const seq =
     typeof data.seq === "number"
       ? Number(data.seq)
@@ -184,8 +211,9 @@ export function orderRecordsForDisplay(
   for (const turn of order) {
     const group = groups.get(turn) ?? [];
     out.push(
+      ...group.filter((r) => r.kind === "task"),
       ...group.filter((r) => r.kind === "route"),
-      ...group.filter((r) => r.kind !== "route"),
+      ...group.filter((r) => r.kind !== "task" && r.kind !== "route"),
     );
   }
   return out;

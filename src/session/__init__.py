@@ -12,16 +12,16 @@ from pocket_agent.intent_router import IntentMode, IntentRouter
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError
 from pocket_agent.prompts import (
+    FINAL_ANSWER,
     REWRITE_QUERY,
     ROLLING_SUMMARY,
     SESSION_TITLE,
 )
 from pocket_agent.runner import AgentRunner, EventEmitter, StepRecord
-from pocket_agent.tools import ToolRegistry
+from pocket_agent.task import Planner, TaskCard, default_card
+from pocket_agent.verifier import attach_degrade, verify
 from pocket_agent.workspace import WorkspaceManager
-from pocket_agent.writer import parse_total_chars
 
-_WRITER_CARRY = ("根据", "基于", "接着")
 _TURN_ANSWER_DIGEST = 120
 
 _SID_SAFE = re.compile(r"[^\w.\-]+")
@@ -81,6 +81,7 @@ class SessionManager:
         self._runner = runner
         self._events = events
         self._intent_router = intent_router or IntentRouter(llm)
+        self._planner = Planner(llm)
         self._writer = writer
         self._workspace = workspace
         self._sessions_dir = Path(sessions_dir) if sessions_dir else None
@@ -92,6 +93,8 @@ class SessionManager:
         self.last_run_task: str = ""
         self.last_result = None
         self.last_intent: IntentMode | None = None
+        self.last_task_card: TaskCard | None = None
+        self.last_verify_reasons: list[str] = []
         self.rewrite_call_count: int = 0
         self.summary_call_count: int = 0
 
@@ -217,13 +220,13 @@ class SessionManager:
         workspace_id：绑定工作区（None 则不变）。
         """
         state = self.get_state(session_id)
-        # 意图自动路由（仅在接入事件总线时触发——单元测试无 events 时不消耗队列）
         rewritten: str | None = None
         source = "fallback"
         reason = "无事件总线"
         if self._events is None:
             mode: IntentMode = "agent"
             confidence = 1.0
+            card = default_card("agent", user_input, user_input=user_input)
         elif force_mode is not None:
             mode = force_mode
             confidence = 1.0
@@ -231,17 +234,27 @@ class SessionManager:
             reason = "用户纠正"
             last = state.turns[-1] if state.turns else None
             if last is not None and last.query_raw == user_input:
-                # 纠正重跑：复用当轮指代补全，不重新 rewrite
                 rewritten = last.query_rewritten
                 state.turns.pop()
+            card = default_card(mode, rewritten or user_input, user_input=user_input)
         else:
-            mode, confidence, source, reason = self._intent_router.classify(
-                user_input
+            card, mode, confidence, source, reason = self._resolve_card(
+                user_input, state.rolling_summary
             )
         self.last_intent = mode
+        self.last_task_card = card
         turn_no = len(state.turns) + 1
         if self._events is not None:
-            # 每轮事件流第一条：intent.detected（先于 workspace/permission/runner）
+            self._events.emit(
+                "task.planned",
+                {
+                    "session_id": session_id,
+                    "turn": turn_no,
+                    "query": user_input,
+                    **card.to_dict(),
+                    "plan_done": [False] * len(card.plan),
+                },
+            )
             self._events.emit(
                 "intent.detected",
                 {
@@ -272,69 +285,21 @@ class SessionManager:
             )
 
         if rewritten is None:
-            if mode == "writer":
-                # 创作任务保持原文，避免跨轮历史改写污染
-                rewritten = user_input
-            elif mode == "qa":
+            if card.needs_history and card.type == "agent":
+                rewritten = self._rewrite_if_needed(state, user_input)
+            elif card.needs_history and card.type == "qa":
                 rewritten = self._rewrite_if_needed(
                     state, user_input, summary_only=True
                 )
             else:
-                rewritten = self._rewrite_if_needed(state, user_input)
+                rewritten = user_input
         self.last_rewritten = rewritten
 
-        run_task = self._compose_run_task(state, rewritten, mode=mode)
+        run_task = self._compose_run_task(state, rewritten, card=card)
         self.last_run_task = run_task
 
-        if mode == "writer" and self._writer is not None:
-            if self._events is not None and hasattr(self._writer, "on_thinking"):
-                def _emit_think(text: str) -> None:
-                    if text and self._config.reasoning_enabled and self._events is not None:
-                        self._events.emit(
-                            "step.thinking",
-                            {"text": text, "session_id": session_id},
-                        )
-
-                self._writer.on_thinking = _emit_think
-            total_chars = parse_total_chars(
-                rewritten,
-                default=max(1, self._config.section_char_target * 6),
-            )
-            answer = self._writer.write(rewritten, total_chars=total_chars)
-            self.last_result = None
-            if self._events is not None:
-                self._events.emit(
-                    "answer.done",
-                    {
-                        "answer": answer,
-                        "stop_reason": "writer",
-                        "total_steps": 0,
-                        "llm_ms": 0,
-                        "tool_ms": 0,
-                        "cache_hit_rate": 0.0,
-                        "real_calls": 0,
-                        "intercepts": 0,
-                        "prompt_tokens_max": 0,
-                        "elapsed_ms": 0,
-                    },
-                )
-        else:
-            turn_ledger = CallLedger()
-            turn_ledger.merge_records(state.write_op_ledger)
-            # qa 模式不给工具：空注册表 → recall 返回空 → 直接 final_answer
-            run_registry: ToolRegistry | None = None
-            if mode == "qa":
-                run_registry = ToolRegistry(self._config)
-            result = self._runner.run(
-                run_task,
-                ledger=turn_ledger,
-                session_id=session_id,
-                registry=run_registry,
-                permission=permission,
-            )
-            self.last_result = result
-            self._sync_write_ops(state, result.steps)
-            answer = str(result.answer)
+        answer = self._dispatch(card, run_task, session_id, permission, state)
+        answer = self._verify_answer(answer, card, run_task, session_id)
 
         turn = TurnRecord(
             turn=turn_no,
@@ -348,6 +313,196 @@ class SessionManager:
         self._maybe_roll_summary(state)
         self._save_session(state)
         return answer
+
+    def _resolve_card(
+        self,
+        user_input: str,
+        rolling_summary: str,
+    ) -> tuple[TaskCard, IntentMode, float, str, str]:
+        if self._config.planner_enabled:
+            try:
+                card = self._planner.plan(user_input, rolling_summary)
+                return card, card.type, 0.85, "planner", "任务卡"
+            except LLMFormatError:
+                pass
+            except Exception:  # noqa: BLE001, S110 — Planner 失败走规则兜底
+                pass
+            ruled = self._intent_router.try_rule(user_input)
+            if ruled is not None:
+                mode, confidence, source, reason = ruled
+                return (
+                    default_card(mode, user_input, user_input=user_input),
+                    mode,
+                    confidence,
+                    source,
+                    reason,
+                )
+            return (
+                default_card("agent", user_input, user_input=user_input),
+                "agent",
+                0.5,
+                "fallback",
+                "回退默认",
+            )
+        mode, confidence, source, reason = self._intent_router.classify(user_input)
+        return (
+            default_card(mode, user_input, user_input=user_input),
+            mode,
+            confidence,
+            source,
+            reason,
+        )
+
+    def _dispatch(
+        self,
+        card: TaskCard,
+        run_task: str,
+        session_id: str,
+        permission: str,
+        state: SessionState,
+    ) -> str:
+        if card.type == "writer" and self._writer is not None:
+            return self._run_writer(card, run_task, session_id)
+        if card.type == "qa":
+            try:
+                answer = str(self._llm.generate(run_task)).strip()
+            except LLMFormatError as exc:
+                answer = f"[生成回答失败] {exc}"
+            self.last_result = None
+            self._emit_answer_done(answer, stop_reason="qa")
+            return answer
+        turn_ledger = CallLedger()
+        turn_ledger.merge_records(state.write_op_ledger)
+        result = self._runner.run(
+            self._agent_task(card, run_task),
+            ledger=turn_ledger,
+            session_id=session_id,
+            permission=permission,
+        )
+        self.last_result = result
+        self._sync_write_ops(state, result.steps)
+        self._mark_plan_progress(session_id, len(result.steps))
+        return str(result.answer)
+
+    def _run_writer(self, card: TaskCard, topic: str, session_id: str) -> str:
+        writer = self._writer
+        if writer is None:
+            return topic
+        if self._events is not None and hasattr(writer, "on_thinking"):
+            def _emit_think(text: str) -> None:
+                if text and self._config.reasoning_enabled and self._events is not None:
+                    self._events.emit(
+                        "step.thinking",
+                        {"text": text, "session_id": session_id},
+                    )
+
+            writer.on_thinking = _emit_think
+        if self._events is not None and hasattr(writer, "on_section"):
+            def _on_section(index: int, _section: object, _body: str) -> None:
+                if self._events is not None:
+                    self._events.emit(
+                        "task.step_done",
+                        {
+                            "session_id": session_id,
+                            "index": max(0, index - 1),
+                        },
+                    )
+
+            writer.on_section = _on_section
+        raw = card.constraints.get("total_chars")
+        total_chars = (
+            int(raw)
+            if isinstance(raw, (int, float)) and int(raw) > 0
+            else max(1, self._config.section_char_target * 6)
+        )
+        goal = card.goal or topic
+        answer = writer.write(
+            goal,
+            total_chars=total_chars,
+            plan=list(card.plan) or None,
+        )
+        self.last_result = None
+        self._emit_answer_done(answer, stop_reason="writer")
+        return answer
+
+    def _agent_task(self, card: TaskCard, run_task: str) -> str:
+        extras = [
+            f"{k}={v}"
+            for k, v in card.constraints.items()
+            if v is not None and str(v).strip()
+        ]
+        if not extras:
+            return run_task
+        return f"{run_task}\n约束：{'；'.join(extras)}"
+
+    def _verify_answer(
+        self,
+        answer: str,
+        card: TaskCard,
+        run_task: str,
+        session_id: str,
+    ) -> str:
+        self.last_verify_reasons = []
+        if not self._config.verifier_enabled:
+            return answer
+        reasons = verify(answer, card)
+        retries = max(0, int(self._config.answer_max_retries))
+        attempt = 0
+        while reasons and attempt < retries:
+            self.last_verify_reasons = list(reasons)
+            self._emit_rejected(session_id, reasons)
+            prompt = FINAL_ANSWER.format(task=run_task, history_text="（无）")
+            prompt = (
+                f"{prompt}\n\n验收未通过：{'；'.join(reasons)}\n"
+                "请修正后重新输出回答。"
+            )
+            try:
+                answer = str(self._llm.generate(prompt)).strip() or answer
+            except LLMFormatError:
+                break
+            reasons = verify(answer, card)
+            attempt += 1
+        if reasons:
+            self.last_verify_reasons = list(reasons)
+            self._emit_rejected(session_id, reasons)
+            return attach_degrade(answer, reasons)
+        return answer
+
+    def _emit_rejected(self, session_id: str, reasons: list[str]) -> None:
+        if self._events is not None:
+            self._events.emit(
+                "answer.rejected",
+                {"session_id": session_id, "reasons": reasons},
+            )
+
+    def _emit_answer_done(self, answer: str, *, stop_reason: str) -> None:
+        if self._events is None:
+            return
+        self._events.emit(
+            "answer.done",
+            {
+                "answer": answer,
+                "stop_reason": stop_reason,
+                "total_steps": 0,
+                "llm_ms": 0,
+                "tool_ms": 0,
+                "cache_hit_rate": 0.0,
+                "real_calls": 0,
+                "intercepts": 0,
+                "prompt_tokens_max": 0,
+                "elapsed_ms": 0,
+            },
+        )
+
+    def _mark_plan_progress(self, session_id: str, steps: int) -> None:
+        card = self.last_task_card
+        if self._events is None or card is None or not card.plan:
+            return
+        for index in range(min(steps, len(card.plan))):
+            self._events.emit(
+                "task.step_done",
+                {"session_id": session_id, "index": index},
+            )
 
     def _maybe_rename(self, state: SessionState, user_input: str) -> None:
         """首轮问答完成后自动生成会话标题；失败回退为用户输入前 12 字截断。
@@ -409,18 +564,20 @@ class SessionManager:
         self,
         state: SessionState,
         rewritten: str,
+        card: TaskCard | None = None,
         mode: IntentMode = "agent",
     ) -> str:
-        """按模式分流注入：qa 仅摘要，writer 默认关闭，agent 有预算。"""
-        if mode == "qa":
+        """needs_history 才注入；类型只决定注入形态。"""
+        active = card or default_card(mode, rewritten)
+        if not active.needs_history:
+            return rewritten
+        if active.type == "qa":
             summary = state.rolling_summary.strip()
             if not summary:
                 return rewritten
             return (
                 f"以下是本会话已知信息：\n会话摘要：{summary}\n\n请回答：{rewritten}"
             )
-        if mode == "writer" and not any(k in rewritten for k in _WRITER_CARRY):
-            return rewritten
         return self._compose_budgeted(state, rewritten)
 
     def _compose_budgeted(self, state: SessionState, rewritten: str) -> str:

@@ -470,6 +470,9 @@ export default function App() {
       "intent.detected",
       "session.renamed",
       "step.thinking",
+      "task.planned",
+      "task.step_done",
+      "answer.rejected",
       "error",
     ];
     for (const name of names) {

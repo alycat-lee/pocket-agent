@@ -9,6 +9,7 @@ import httpx
 import pytest
 from pocket_agent.config import load_settings
 from pocket_agent.events import EventStore
+from pocket_agent.llm_client import LLMFormatError
 from pocket_agent.plugins.agent_loop import AgentLoopPlugin
 from pocket_agent.plugins.session_plugin import SessionPlugin
 from pocket_agent.plugins.tools_core import ToolsCorePlugin
@@ -37,7 +38,8 @@ class _FakeLlm:
 
     def generate_json(self, prompt: str, schema: dict) -> dict:
         value = self._next()
-        assert isinstance(value, dict)
+        if not isinstance(value, dict):
+            raise LLMFormatError("not a task card")
         return value
 
 
@@ -197,7 +199,7 @@ def test_events_api_after_chat(tmp_path: Path) -> None:
     ctx = Context()
     _stack(
         ctx,
-        [0, {"city": "北京"}, -1, "晴"],
+        [1, 0, {"city": "北京"}, -1, "晴"],
     )
     attach_event_persistence(ctx, store)
     app = build_app(

@@ -64,6 +64,40 @@ describe("TrajectoryView route record", () => {
     expect(screen.getByText("规则命中")).toBeInTheDocument();
   });
 
+  it("renders task card plan with checkboxes in inspector", () => {
+    const task: TrajectoryRecord = {
+      ...routeRecord(),
+      id: "task1",
+      kind: "task",
+      event: "task.planned",
+      title: "任务卡：写一篇两万字小说",
+      payload: {
+        type: "writer",
+        goal: "写一篇两万字小说",
+        constraints: { total_chars: 20000 },
+        plan: ["开篇", "发展"],
+        plan_done: [true, false],
+      },
+    };
+    render(
+      <TrajectoryView
+        records={[task]}
+        hasMore={false}
+        loadingEarlier={false}
+        followTail
+        focusId={null}
+        onFollowChange={vi.fn()}
+        onLoadEarlier={vi.fn()}
+        onExport={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /任务卡：写一篇两万字小说/ }));
+    expect(screen.getByText("写一篇两万字小说")).toBeInTheDocument();
+    expect(screen.getByText("开篇")).toBeInTheDocument();
+    expect(screen.getByText("发展")).toBeInTheDocument();
+    expect(document.querySelector(".plan-list li.done")).not.toBeNull();
+  });
+
   it("shows thinking block in inspector, distinct from answer body", () => {
     const thinking: TrajectoryRecord = {
       ...routeRecord(),

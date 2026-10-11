@@ -230,6 +230,27 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         description="复杂生成走云端（已迁移至 providers routing）",
         deprecated=True,
     ),
+    # 规划与验收
+    _item(
+        "planner_enabled",
+        type="boolean",
+        group="规划验收",
+        description="是否启用 Planner 任务卡（关闭则退回三分类）",
+    ),
+    _item(
+        "verifier_enabled",
+        type="boolean",
+        group="规划验收",
+        description="交付前是否做纯代码验收",
+    ),
+    _item(
+        "answer_max_retries",
+        type="integer",
+        group="规划验收",
+        description="验收失败后的重试次数",
+        minimum=0,
+        maximum=5,
+    ),
 ]
 
 

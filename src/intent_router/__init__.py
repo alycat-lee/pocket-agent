@@ -57,10 +57,11 @@ class IntentRouter:
     def __init__(self, llm: LLMClientProtocol) -> None:
         self._llm = llm
 
-    def classify(self, user_input: str) -> ClassifyResult:
+    def try_rule(self, user_input: str) -> ClassifyResult | None:
+        """仅规则路径；未命中返回 None（不调 LLM）。"""
         text = (user_input or "").strip()
         if not text:
-            return "agent", 0.5, "fallback", "空输入"
+            return None
         writer_match = _WRITER_RE.search(text)
         if writer_match is not None:
             return "writer", 1.0, "rule", writer_match.group(0)
@@ -75,9 +76,17 @@ class IntentRouter:
             enc = _QA_ENCYCLOPEDIA.search(text)
             if enc is not None:
                 return "qa", 0.9, "rule", enc.group(0)
-        # 纯闲聊短句且无工具相关词 → qa
         if len(text) < 20 and not has_tool:
             return "qa", 0.9, "rule", "短句闲聊"
+        return None
+
+    def classify(self, user_input: str) -> ClassifyResult:
+        text = (user_input or "").strip()
+        if not text:
+            return "agent", 0.5, "fallback", "空输入"
+        ruled = self.try_rule(text)
+        if ruled is not None:
+            return ruled
         # LLM 兜底三分类
         try:
             idx = self._llm.generate_int(

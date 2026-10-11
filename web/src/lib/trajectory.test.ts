@@ -45,6 +45,37 @@ describe("projectEvents route", () => {
     expect(rows[0]?.input).toBe("写一篇关于春天的散文");
   });
 
+  it("maps task.planned to task kind with goal title", () => {
+    const rows = projectEvents([
+      {
+        seq: 1,
+        event: "task.planned",
+        data: {
+          type: "writer",
+          goal: "写一篇两万字小说",
+          constraints: { total_chars: 20000 },
+          plan: ["开篇", "发展"],
+          plan_done: [false, false],
+          turn: 1,
+        },
+      },
+    ]);
+    expect(rows[0]?.kind).toBe("task");
+    expect(rows[0]?.title).toBe("任务卡：写一篇两万字小说");
+  });
+
+  it("maps answer.rejected to rejected badge", () => {
+    const rows = projectEvents([
+      {
+        seq: 3,
+        event: "answer.rejected",
+        data: { reasons: ["思维链泄漏"] },
+      },
+    ]);
+    expect(rows[0]?.badges).toContain("rejected");
+    expect(rows[0]?.title).toBe("验收未通过");
+  });
+
   it("maps step.thinking to thinking kind and text output", () => {
     const rows = projectEvents([
       {
@@ -60,12 +91,13 @@ describe("projectEvents route", () => {
 });
 
 describe("orderRecordsForDisplay", () => {
-  it("pins route as the first record of each turn", () => {
+  it("pins task card then route as the first records of each turn", () => {
     const ordered = orderRecordsForDisplay([
       rec({ id: "u", kind: "user", title: "用户", turn: 1 }),
       rec({ id: "r", kind: "route", title: "意图", turn: 1, event: "intent.detected" }),
+      rec({ id: "t", kind: "task", title: "任务卡", turn: 1, event: "task.planned" }),
       rec({ id: "a", kind: "assistant", title: "回答", turn: 1 }),
     ]);
-    expect(ordered.map((r) => r.id)).toEqual(["r", "u", "a"]);
+    expect(ordered.map((r) => r.id)).toEqual(["t", "r", "u", "a"]);
   });
 });

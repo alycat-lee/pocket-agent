@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 import httpx
 import pytest
 from pocket_agent.config import AgentConfig
+from pocket_agent.llm_client import LLMFormatError
 from pocket_agent.plugins.agent_loop import AgentLoopPlugin
 from pocket_agent.plugins.session_plugin import SessionPlugin
 from pocket_agent.plugins.tools_core import ToolsCorePlugin
@@ -46,7 +47,8 @@ class _FakeLlm:
 
     def generate_json(self, prompt: str, schema: dict) -> dict:
         value = self._next()
-        assert isinstance(value, dict)
+        if not isinstance(value, dict):
+            raise LLMFormatError("not a task card")
         return value
 
 
@@ -144,8 +146,9 @@ def test_sse_chat_event_stream_format() -> None:
 
     events = _parse_sse(body)
     names = [name for name, _ in events]
-    assert names[0] == "intent.detected"
-    intent_ev = events[0][1]
+    assert names[0] == "task.planned"
+    assert "intent.detected" in names
+    intent_ev = next(p for n, p in events if n == "intent.detected")
     for key in ("mode", "confidence", "source", "reason", "turn"):
         assert key in intent_ev
     assert "step.start" in names
@@ -209,9 +212,10 @@ def test_sse_get_eventsource_with_overrides() -> None:
     assert "text/event-stream" in ctype
     events = _parse_sse(body)
     names = [n for n, _ in events]
-    assert names[0] == "intent.detected"
-    assert events[0][1]["mode"] == "qa"
-    assert events[0][1]["source"] == "rule"
+    assert names[0] == "task.planned"
+    intent_ev = next(p for n, p in events if n == "intent.detected")
+    assert intent_ev["mode"] == "qa"
+    assert intent_ev["source"] == "rule"
     assert "answer.done" in names
     ctx.unmount_all()
 

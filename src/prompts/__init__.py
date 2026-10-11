@@ -101,3 +101,18 @@ SESSION_TITLE: str = """为以下对话生成一个不超过 12 个字的会话�
 INTENT_ROUTE: str = """判断用户意图类型。0=直接问答，不需要工具；
 1=需要调用工具完成任务；2=需要撰写长文。
 用户输入：{user_input} 只输出数字。"""
+
+PLANNER: str = """分析用户任务，输出任务卡 JSON。
+
+要求：
+1. type：直接问答=qa，需要工具=agent，创作长文=writer
+2. goal：一句话概括目标
+3. constraints：提取所有硬性要求（字数、格式、语言等），
+   字数统一换算为数字（"2万字" → "total_chars": 20000）
+4. plan：3~7 个执行步骤，每步一句话
+5. needs_history：任务是否依赖之前的对话内容
+
+会话摘要：{rolling_summary}
+用户任务：{user_input}
+
+只输出 JSON。"""

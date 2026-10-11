@@ -58,6 +58,7 @@ export interface TrajectoryRecord {
     | "approval"
     | "route"
     | "thinking"
+    | "task"
     | "other";
   title: string;
   ts: number | null;
@@ -65,7 +66,7 @@ export interface TrajectoryRecord {
   ttftMs: number | null;
   promptTokensEst: number | null;
   currentTool: string | null;
-  badges: Array<"cache_hit" | "intercepted" | "tool_error">;
+  badges: Array<"cache_hit" | "intercepted" | "tool_error" | "rejected">;
   errorCode: string | null;
   inProgress: boolean;
   payload: Record<string, unknown>;

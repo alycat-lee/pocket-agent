@@ -755,6 +755,43 @@ button:disabled {
   background: color-mix(in srgb, var(--color-muted-fg) 45%, transparent);
 }
 
+.overview-seg.task {
+  background: var(--color-accent-muted);
+}
+
+.overview-seg.rejected {
+  background: #ea580c;
+}
+
+.record.task .record-title {
+  color: var(--color-accent-muted);
+}
+
+.badge.rejected {
+  color: #c2410c;
+  background: rgba(234, 88, 12, 0.12);
+  border-color: rgba(234, 88, 12, 0.35);
+}
+
+.inspector dd.plan-list ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.inspector dd.plan-list li {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.inspector dd.plan-list li.done {
+  color: var(--color-muted-fg);
+  text-decoration: line-through;
+}
+
 .record-step {
   font-family: var(--font-mono);
   font-size: 11px;
