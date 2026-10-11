@@ -4,6 +4,7 @@ import {
   bindSessionWorkspace,
   deleteSession,
   exportSession,
+  fetchAgents,
   fetchConfig,
   fetchEvents,
   fetchHealthLlm,
@@ -14,6 +15,7 @@ import {
   stopRun,
 } from "./api/client";
 import type {
+  AgentInfo,
   ApprovalRequest,
   ChatMessage,
   IntentInfo,
@@ -36,9 +38,11 @@ import { StatusBar } from "./components/StatusBar";
 import { TrajectoryView } from "./components/TrajectoryView";
 import {
   buildOverrides,
+  getActiveAgent,
   getPermission,
   getSessionView,
   getStatusExpanded,
+  setActiveAgent,
   setPermission as persistPermission,
   setSessionView,
   setStatusExpanded,
@@ -69,6 +73,8 @@ export default function App() {
     { session_id: "default", title: "default" },
   ]);
   const [sessionId, setSessionId] = useState("default");
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [agentName, setAgentName] = useState(() => getActiveAgent());
   const [view, setView] = useState<SessionView>(() => getSessionView("default"));
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [records, setRecords] = useState<TrajectoryRecord[]>([]);
@@ -109,8 +115,17 @@ export default function App() {
 
   const reloadSessions = useCallback(async () => {
     try {
-      const rows = await fetchSessions();
-      if (rows.length) setSessions(rows);
+      const rows = await fetchSessions(agentName);
+      setSessions(rows.length ? rows : [{ session_id: "default", title: "新会话", agent: agentName }]);
+    } catch {
+      /* ignore */
+    }
+  }, [agentName]);
+
+  const reloadAgents = useCallback(async () => {
+    try {
+      const data = await fetchAgents();
+      setAgents(data.agents);
     } catch {
       /* ignore */
     }
@@ -157,6 +172,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    void reloadAgents();
     void reloadSessions();
     void checkHealth();
     fetchConfig()
@@ -181,7 +197,15 @@ export default function App() {
         }
       })
       .catch(() => undefined);
-  }, [reloadSessions, checkHealth, applyConfigToUi]);
+  }, [reloadSessions, reloadAgents, checkHealth, applyConfigToUi]);
+
+  useEffect(() => {
+    if (page !== "session") {
+      return;
+    }
+    void reloadAgents();
+    void reloadSessions();
+  }, [page, reloadAgents, reloadSessions]);
 
   useEffect(() => {
     // 切会话：切断上一会话 SSE，避免 EventSource 自动重连再跑一轮
@@ -497,6 +521,7 @@ export default function App() {
       overrides,
       workspaceId: workspaceId,
       permission,
+      agent: agentName,
     });
     esRef.current = es;
 
@@ -583,13 +608,20 @@ export default function App() {
       <Sidebar
         sessions={sessions}
         activeSession={sessionId}
+        agents={agents}
+        activeAgent={agentName}
         page={page}
         onSelectSession={setSessionId}
+        onSelectAgent={(name) => {
+          setActiveAgent(name);
+          setAgentName(name);
+          setSessionId("default");
+        }}
         onNewSession={newSession}
         onDeleteSession={(id) => {
           void (async () => {
             try {
-              await deleteSession(id);
+              await deleteSession(id, agentName);
               setSessions((prev) => prev.filter((s) => s.session_id !== id));
               if (sessionId === id) {
                 setSessionId("default");

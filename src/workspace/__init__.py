@@ -30,6 +30,7 @@ class WorkspaceManager:
     settings_path: Path
     _workspaces: dict[str, Workspace] = field(default_factory=dict)
     _session_bindings: dict[str, str] = field(default_factory=dict)
+    _readonly_roots: list[Path] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._load()
@@ -72,6 +73,21 @@ class WorkspaceManager:
     def get(self, workspace_id: str) -> Workspace | None:
         return self._workspaces.get(workspace_id)
 
+    def ensure(self, workspace_id: str, name: str, root: str) -> Workspace:
+        """注册或刷新工作区（不强制写入 settings）。"""
+        abs_root = str(Path(root).resolve())
+        Path(abs_root).mkdir(parents=True, exist_ok=True)
+        ws = Workspace(id=workspace_id, name=name, root=abs_root)
+        self._workspaces[workspace_id] = ws
+        return ws
+
+    def add_readonly_root(self, root: str) -> None:
+        path = Path(root)
+        path.mkdir(parents=True, exist_ok=True)
+        resolved = path.resolve()
+        if resolved not in self._readonly_roots:
+            self._readonly_roots.append(resolved)
+
     def create(self, name: str, root: str) -> Workspace:
         wid = uuid.uuid4().hex[:8]
         abs_root = str(Path(root).resolve())
@@ -104,8 +120,14 @@ class WorkspaceManager:
         ws = self.get_session_workspace(session_id)
         return str((Path(ws.root) / path).resolve())
 
-    def validate_path(self, session_id: str, abs_path: str) -> bool:
-        """校验绝对路径前缀在会话工作区内。"""
+    def validate_path(
+        self,
+        session_id: str,
+        abs_path: str,
+        *,
+        write: bool = False,
+    ) -> bool:
+        """校验绝对路径前缀在会话工作区内；shared 只读根允许读。"""
         ws = self.get_session_workspace(session_id)
         try:
             root = Path(ws.root).resolve()
@@ -116,4 +138,13 @@ class WorkspaceManager:
             target.relative_to(root)
             return True
         except ValueError:
+            pass
+        if write:
             return False
+        for extra in self._readonly_roots:
+            try:
+                target.relative_to(extra)
+                return True
+            except ValueError:
+                continue
+        return False

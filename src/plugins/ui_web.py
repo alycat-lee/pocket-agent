@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 import httpx
+from pocket_agent.agents import AgentNameError
 from pocket_agent.config import (
     AgentConfig,
     extract_base_from_pocket,
@@ -256,6 +257,7 @@ class ChatIn(BaseModel):
     overrides: dict[str, Any] = Field(default_factory=dict)
     workspace_id: str | None = None
     permission: str = "workspace"
+    agent: str = "default"
 
 
 class ResumeIn(BaseModel):
@@ -312,6 +314,23 @@ class KnowledgeSearchIn(BaseModel):
 class RoutingIn(BaseModel):
     choose_fill: str
     generate: str
+
+
+class AgentIn(BaseModel):
+    name: str = ""
+    description: str = ""
+    provider_id: str | None = None
+    tools: list[str] | None = None
+    permission: str = "workspace"
+    prompt: str = ""
+
+
+class AgentUpdateIn(BaseModel):
+    description: str | None = None
+    provider_id: str | None = None
+    tools: list[str] | None = None
+    permission: str | None = None
+    prompt: str | None = None
 
 
 class ApprovalBroker:
@@ -422,6 +441,8 @@ def build_app(
             ctx.require("agent").apply_config(config)
         if ctx.has("orchestrator"):
             ctx.require("orchestrator").apply_config(config)
+        if ctx.has("agents"):
+            ctx.require("agents").set_root(config.agents_root)
 
     def _providers_settings() -> dict[str, Any]:
         return load_settings(settings_file)
@@ -531,17 +552,103 @@ def build_app(
         )
 
     @app.get("/sessions")
-    def sessions() -> list[dict[str, Any]]:
+    def sessions(agent: str | None = Query(None)) -> list[dict[str, Any]]:
         if not ctx.has("sessions"):
             return []
-        return list(ctx.require("sessions").list_sessions())
+        return list(ctx.require("sessions").list_sessions(agent=agent))
 
     @app.delete("/api/sessions/{session_id}")
-    def api_session_delete(session_id: str) -> JSONResponse:
+    def api_session_delete(
+        session_id: str,
+        agent: str | None = Query(None),
+    ) -> JSONResponse:
         if not ctx.has("sessions"):
             return JSONResponse({"ok": False, "error": "sessions not available"}, 400)
-        ctx.require("sessions").delete_session(session_id)
+        ctx.require("sessions").delete_session(session_id, agent=agent)
         return JSONResponse({"ok": True, "session_id": session_id})
+
+    def _agent_payload(profile: Any) -> dict[str, Any]:
+        svc = ctx.require("agents")
+        return {
+            **profile.to_dict(),
+            "prompt": svc.read_prompt(profile.name),
+            "root": str(svc.agent_dir(profile.name)),
+        }
+
+    @app.get("/api/agents")
+    def api_agents_list() -> dict[str, Any]:
+        if not ctx.has("agents"):
+            return {"agents": [], "root": ""}
+        svc = ctx.require("agents")
+        return {
+            "root": str(svc.root()),
+            "agents": [_agent_payload(item) for item in svc.list()],
+        }
+
+    @app.post("/api/agents")
+    def api_agents_create(body: AgentIn) -> JSONResponse:
+        if not ctx.has("agents"):
+            return JSONResponse({"ok": False, "error": "未加载 agents 插件"}, 503)
+        svc = ctx.require("agents")
+        try:
+            profile = svc.create(
+                body.name,
+                description=body.description,
+                provider_id=body.provider_id,
+                tools=body.tools,
+                permission=body.permission or "workspace",
+                prompt=body.prompt,
+            )
+        except AgentNameError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, 400)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, 409)
+        return JSONResponse({"ok": True, "agent": _agent_payload(profile)})
+
+    @app.get("/api/agents/{name}")
+    def api_agents_get(name: str) -> JSONResponse:
+        if not ctx.has("agents"):
+            return JSONResponse({"ok": False, "error": "未加载 agents 插件"}, 503)
+        try:
+            profile = ctx.require("agents").get(name)
+        except (KeyError, AgentNameError):
+            return JSONResponse({"ok": False, "error": "agent 不存在"}, 404)
+        return JSONResponse({"ok": True, "agent": _agent_payload(profile)})
+
+    @app.put("/api/agents/{name}")
+    def api_agents_update(name: str, body: AgentUpdateIn) -> JSONResponse:
+        if not ctx.has("agents"):
+            return JSONResponse({"ok": False, "error": "未加载 agents 插件"}, 503)
+        svc = ctx.require("agents")
+        try:
+            profile = svc.update(
+                name,
+                description=body.description,
+                provider_id=body.provider_id,
+                tools=body.tools,
+                permission=body.permission,
+                prompt=body.prompt,
+            )
+        except (KeyError, AgentNameError):
+            return JSONResponse({"ok": False, "error": "agent 不存在"}, 404)
+        return JSONResponse({"ok": True, "agent": _agent_payload(profile)})
+
+    @app.delete("/api/agents/{name}")
+    def api_agents_delete(
+        name: str,
+        keep_files: bool = Query(True),
+    ) -> JSONResponse:
+        if not ctx.has("agents"):
+            return JSONResponse({"ok": False, "error": "未加载 agents 插件"}, 503)
+        try:
+            ctx.require("agents").delete(name, keep_files=keep_files)
+        except AgentNameError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, 400)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, 400)
+        except KeyError:
+            return JSONResponse({"ok": False, "error": "agent 不存在"}, 404)
+        return JSONResponse({"ok": True, "name": name, "keep_files": keep_files})
 
     @app.post("/approve")
     def approve(body: ApproveIn) -> JSONResponse:
@@ -1071,6 +1178,7 @@ def build_app(
         overrides: dict[str, Any] | None,
         permission: str = "workspace",
         workspace_id: str | None = None,
+        agent_name: str = "default",
     ) -> None:
         agent = ctx.require("agent")
         rid = run_id or str(uuid.uuid4())
@@ -1104,6 +1212,7 @@ def build_app(
                     force_mode=force_mode,
                     permission=permission,
                     workspace_id=workspace_id,
+                    agent=agent_name,
                 )
             else:
                 agent.run(message, run_id=run_id, session_id=session_id)
@@ -1137,6 +1246,7 @@ def build_app(
                 overrides=overrides,
                 permission=str(body.permission or "workspace"),
                 workspace_id=body.workspace_id,
+                agent_name=str(body.agent or "default"),
             )
 
         return StreamingResponse(
@@ -1157,6 +1267,7 @@ def build_app(
         overrides: str | None = Query(None),
         workspace_id: str | None = Query(None),
         permission: str = Query("workspace"),
+        agent: str = Query("default"),
     ) -> StreamingResponse:
         """EventSource 友好的 GET SSE。"""
         text = message.strip()
@@ -1185,6 +1296,7 @@ def build_app(
                 overrides=parsed or None,
                 permission=permission,
                 workspace_id=workspace_id,
+                agent_name=agent,
             )
 
         return StreamingResponse(
@@ -1281,6 +1393,10 @@ class UiWebPlugin:
                 settings=load_settings(settings_path),
             )
         )
+
+        sessions = ctx.require("sessions")
+        if not getattr(sessions, "persist_enabled", False):
+            raise PluginError("web 模式必须配置会话持久化目录")
 
         # 事件持久化：总线全部步骤事件同步落盘
         persist_disposers = attach_event_persistence(ctx, event_store)

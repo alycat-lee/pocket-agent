@@ -54,6 +54,13 @@ def _base_plugins_yml(port: int, *, profile: str) -> dict:
             {"name": "llm-llamacpp", "config": {"base_url": "http://127.0.0.1:9/v1"}},
             {"name": "llm-deepseek", "disabled": True},
             {"name": "tools-core"},
+            {
+                "name": "agents",
+                "config": {
+                    "agents_root": ".agents_profile",
+                    "legacy_sessions": ".no_legacy_sessions_profile",
+                },
+            },
             {"name": "checkpoint", "config": {"root": ".checkpoints_profile"}},
             {"name": "agent-loop", "config": {"max_steps": 3}},
             {"name": "session"},
@@ -116,6 +123,8 @@ def test_ui_web_plugin_provides_http_service() -> None:
             return None
 
     class _Sessions:
+        persist_enabled = True
+
         def list_sessions(self) -> list:
             return []
 

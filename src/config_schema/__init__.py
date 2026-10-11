@@ -251,6 +251,12 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         minimum=0,
         maximum=5,
     ),
+    _item(
+        "agents_root",
+        type="string",
+        group="Agent",
+        description="Agent 根目录路径。修改后只影响新创建的 agent，不会搬迁已有目录。",
+    ),
 ]
 
 

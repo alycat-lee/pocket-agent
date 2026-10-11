@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from pocket_agent.agents import DEFAULT_AGENT, AgentService
 from pocket_agent.config import AgentConfig
 from pocket_agent.intent_router import IntentMode, IntentRouter, has_tool_hint
 from pocket_agent.knowledge import (
@@ -73,6 +74,7 @@ class SessionState:
     rolling_summary: str = ""  # 更早轮次的滚动摘要
     write_op_ledger: CallLedger = field(default_factory=CallLedger)
     title: str = "新会话"
+    agent: str = DEFAULT_AGENT
     _last_permission: str = "workspace"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -92,6 +94,7 @@ class SessionManager:
         sessions_dir: Path | str | None = None,
         orchestrator: Orchestrator | None = None,
         knowledge: KnowledgeBase | None = None,
+        agents: AgentService | None = None,
     ) -> None:
         self._config = config
         self._llm = llm
@@ -103,9 +106,12 @@ class SessionManager:
         self._workspace = workspace
         self._orchestrator = orchestrator
         self._knowledge = knowledge
+        self._agents = agents
         self._sessions_dir = Path(sessions_dir) if sessions_dir else None
+        self._active_agent = DEFAULT_AGENT
+        self._last_system = ""
         self._sessions: dict[str, SessionState] = {}
-        if self._sessions_dir is not None:
+        if self.persist_enabled:
             self._load_all()
         # 测试可观测字段
         self.last_rewritten: str = ""
@@ -118,16 +124,30 @@ class SessionManager:
         self.rewrite_call_count: int = 0
         self.summary_call_count: int = 0
 
-    def get_state(self, session_id: str) -> SessionState:
-        if session_id not in self._sessions:
-            self._sessions[session_id] = SessionState(session_id=session_id)
-        return self._sessions[session_id]
+    @property
+    def persist_enabled(self) -> bool:
+        return self._agents is not None or self._sessions_dir is not None
 
-    def list_sessions(self) -> list[dict]:
+    def _store_key(self, session_id: str, agent: str | None = None) -> str:
+        if self._agents is None:
+            return session_id
+        return f"{agent or self._active_agent}\x1f{session_id}"
+
+    def get_state(self, session_id: str, *, agent: str | None = None) -> SessionState:
+        key = self._store_key(session_id, agent)
+        if key not in self._sessions:
+            self._sessions[key] = SessionState(
+                session_id=session_id,
+                agent=agent or self._active_agent,
+            )
+        return self._sessions[key]
+
+    def list_sessions(self, agent: str | None = None) -> list[dict]:
         """供 Web UI 列举会话，按 updated_at 降序。"""
         rows = [
             {
                 "session_id": state.session_id,
+                "agent": state.agent,
                 "title": state.title,
                 "turns": len(state.turns),
                 "rolling_summary": state.rolling_summary,
@@ -140,28 +160,48 @@ class SessionManager:
                 "updated_at": state.updated_at,
             }
             for state in self._sessions.values()
+            if agent is None or state.agent == agent
         ]
         rows.sort(key=lambda r: r["updated_at"], reverse=True)
         return rows
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, *, agent: str | None = None) -> bool:
         """删除会话（内存 + 落盘文件）。"""
-        self._sessions.pop(session_id, None)
-        if self._sessions_dir is not None:
-            path = self._sessions_dir / f"{_safe_sid(session_id)}.json"
+        key = self._store_key(session_id, agent)
+        state = self._sessions.pop(key, None)
+        path = self._session_path(session_id, (state.agent if state else None) or agent)
+        if path is not None:
             try:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
         return True
 
-    def _save_session(self, state: SessionState) -> None:
-        """原子写入会话到 .sessions/{session_id}.json。"""
+    def _session_dir(self, agent: str | None) -> Path | None:
+        if self._agents is not None:
+            try:
+                return self._agents.sessions_dir(agent or self._active_agent)
+            except ValueError:
+                return self._agents.sessions_dir(DEFAULT_AGENT)
         if self._sessions_dir is None:
+            return None
+        return self._sessions_dir
+
+    def _session_path(self, session_id: str, agent: str | None = None) -> Path | None:
+        folder = self._session_dir(agent)
+        if folder is None:
+            return None
+        return folder / f"{_safe_sid(session_id)}.json"
+
+    def _save_session(self, state: SessionState) -> None:
+        """原子写入会话到 agent 目录或兼容的 sessions_dir。"""
+        folder = self._session_dir(state.agent)
+        if folder is None:
             return
-        self._sessions_dir.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(parents=True, exist_ok=True)
         data = {
             "session_id": state.session_id,
+            "agent": state.agent,
             "title": state.title,
             "turns": [
                 {
@@ -176,7 +216,7 @@ class SessionManager:
             "created_at": state.created_at,
             "updated_at": state.updated_at,
         }
-        path = self._sessions_dir / f"{_safe_sid(state.session_id)}.json"
+        path = folder / f"{_safe_sid(state.session_id)}.json"
         tmp = path.with_suffix(".json.tmp")
         try:
             tmp.write_text(
@@ -191,10 +231,19 @@ class SessionManager:
                 pass
 
     def _load_all(self) -> None:
-        """启动时扫描 .sessions/ 加载历史会话；损坏文件跳过。"""
-        if not self._sessions_dir.is_dir():
+        """启动时扫描各 agent sessions/ 或兼容目录；损坏文件跳过。"""
+        if self._agents is not None:
+            for profile in self._agents.list():
+                self._load_dir(self._agents.sessions_dir(profile.name), profile.name)
+            self._load_dir(self._agents.shared_dir() / "sessions", "shared")
             return
-        for path in self._sessions_dir.glob("*.json"):
+        if self._sessions_dir is not None:
+            self._load_dir(self._sessions_dir, DEFAULT_AGENT)
+
+    def _load_dir(self, folder: Path, agent: str) -> None:
+        if not folder.is_dir():
+            return
+        for path in folder.glob("*.json"):
             if path.name.endswith(".tmp"):
                 continue
             try:
@@ -204,6 +253,7 @@ class SessionManager:
             if not isinstance(data, dict) or "session_id" not in data:
                 continue
             sid = str(data["session_id"])
+            owner = str(data.get("agent") or agent)
             turns = [
                 TurnRecord(
                     turn=int(t.get("turn", 0)),
@@ -216,13 +266,14 @@ class SessionManager:
             ]
             state = SessionState(
                 session_id=sid,
+                agent=owner,
                 turns=turns,
                 rolling_summary=str(data.get("rolling_summary", "")),
                 title=str(data.get("title", "新会话")),
                 created_at=float(data.get("created_at", time.time())),
                 updated_at=float(data.get("updated_at", time.time())),
             )
-            self._sessions[sid] = state
+            self._sessions[self._store_key(sid, owner)] = state
 
     def chat(
         self,
@@ -232,14 +283,25 @@ class SessionManager:
         force_mode: IntentMode | None = None,
         permission: str = "workspace",
         workspace_id: str | None = None,
+        agent: str = DEFAULT_AGENT,
     ) -> str:
         """多轮对话入口。见文档 07 §1。
 
         force_mode：用户纠正意图时传入，跳过自动分类。
         permission：readonly / workspace / full，映射审批策略。
         workspace_id：绑定工作区（None 则不变）。
+        agent：当前 Agent 名称，决定会话目录与人格。
         """
-        state = self.get_state(session_id)
+        self._active_agent = agent or DEFAULT_AGENT
+        self._last_system = self._system_preamble(user_input)
+        state = self.get_state(session_id, agent=self._active_agent)
+        state.agent = self._active_agent
+        if self._agents is not None and permission == "workspace":
+            try:
+                permission = self._agents.get(self._active_agent).permission
+            except KeyError:
+                pass
+        self._bind_agent_workspace(session_id, workspace_id)
         rewritten: str | None = None
         source = "fallback"
         reason = "无事件总线"
@@ -343,7 +405,11 @@ class SessionManager:
         if self._config.planner_enabled:
             try:
                 card = self._ground_card(
-                    self._planner.plan(user_input, rolling_summary),
+                    self._planner.plan(
+                        user_input,
+                        rolling_summary,
+                        system=self._last_system,
+                    ),
                     user_input,
                 )
                 return card, card.type, 0.85, "planner", "任务卡"
@@ -528,6 +594,7 @@ class SessionManager:
                 self._emit_answer_done(answer, stop_reason="qa")
                 return answer
             prompt = FINAL_ANSWER_QA.format(task=run_task, evidence=evidence)
+        prompt = self._wrap_system(prompt)
         try:
             answer = str(self._llm.generate(prompt)).strip()
         except LLMAbortedError:
@@ -587,7 +654,7 @@ class SessionManager:
             self.last_verify_reasons = list(reasons)
             self._emit_rejected(session_id, reasons)
             prompt = FINAL_ANSWER.format(task=run_task, history_text=evidence or "（无）")
-            prompt = (
+            prompt = self._wrap_system(
                 f"{prompt}\n\n验收未通过：{'；'.join(reasons)}\n"
                 "请修正后重新输出回答。"
             )
@@ -712,18 +779,23 @@ class SessionManager:
         card: TaskCard | None = None,
         mode: IntentMode = "agent",
     ) -> str:
-        """needs_history 才注入；类型只决定注入形态。"""
+        """needs_history 才注入会话；实体槽位与技能永远在前。"""
         active = card or default_card(mode, rewritten)
         if not active.needs_history:
-            return rewritten
-        if active.type == "qa":
+            body = rewritten
+        elif active.type == "qa":
             summary = state.rolling_summary.strip()
-            if not summary:
-                return rewritten
-            return (
+            body = (
                 f"以下是本会话已知信息：\n会话摘要：{summary}\n\n请回答：{rewritten}"
+                if summary
+                else rewritten
             )
-        return self._compose_budgeted(state, rewritten)
+        else:
+            body = self._compose_budgeted(state, rewritten)
+        prefix = self._context_prefix()
+        if not prefix:
+            return body
+        return f"{prefix}\n\n{body}"
 
     def _compose_budgeted(self, state: SessionState, rewritten: str) -> str:
         """agent / writer 承接：滚动摘要 + 轮次摘要，不含工具步骤细节。"""
@@ -792,6 +864,46 @@ class SessionManager:
             if len(summary) > limit:
                 summary = summary[:limit]
             state.rolling_summary = summary
+
+    def _system_preamble(self, task_text: str) -> str:
+        if self._agents is None:
+            return ""
+        try:
+            return self._agents.system_preamble(self._active_agent, task_text)
+        except (KeyError, ValueError):
+            return ""
+
+    def _wrap_system(self, prompt: str) -> str:
+        if not self._last_system:
+            return prompt
+        return f"{self._last_system}\n\n{prompt}"
+
+    def _context_prefix(self) -> str:
+        """实体槽位永不进入滚动摘要，每轮单独注入。"""
+        if self._agents is None:
+            return ""
+        try:
+            return self._agents.format_entities(self._active_agent)
+        except (KeyError, ValueError):
+            return ""
+
+    def _bind_agent_workspace(self, session_id: str, workspace_id: str | None) -> None:
+        if self._workspace is None:
+            return
+        if workspace_id is not None:
+            return
+        if self._agents is None:
+            return
+        try:
+            root = self._agents.workspace_dir(self._active_agent)
+            shared_files = self._agents.shared_dir() / "files"
+        except (KeyError, ValueError):
+            return
+        wid = f"agent:{self._active_agent}"
+        self._workspace.ensure(wid, self._active_agent, str(root))
+        if hasattr(self._workspace, "add_readonly_root"):
+            self._workspace.add_readonly_root(str(shared_files))
+        self._workspace.bind_session(session_id, wid)
 
 
 def _is_empty_retrieval(text: str) -> bool:

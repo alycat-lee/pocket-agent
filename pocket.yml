@@ -4,6 +4,9 @@
 profile: headless
 plugins:
   - name: prompts
+  - name: agents
+    config:
+      agents_root: "agents"
   - name: llm-llamacpp
     config:
       base_url: "http://localhost:8000/v1"

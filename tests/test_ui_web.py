@@ -5,6 +5,7 @@ import json
 import socket
 import threading
 import time
+from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx
@@ -382,10 +383,11 @@ def test_approval_approve_allows_write_tool() -> None:
     ctx.unmount_all()
 
 
-def test_unmount_releases_http_port() -> None:
+def test_unmount_releases_http_port(tmp_path: Path) -> None:
     port = _free_port()
     ctx = Context()
     _mount_stack(ctx, [-1, "hi"])
+    ctx.require("sessions")._sessions_dir = tmp_path / ".sessions"
     ctx.mount(UiWebPlugin(), {"host": "127.0.0.1", "port": port})
     assert ctx.has("http")
     assert _port_open("127.0.0.1", port)

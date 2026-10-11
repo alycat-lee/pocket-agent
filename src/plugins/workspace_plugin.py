@@ -39,7 +39,7 @@ class WorkspacePlugin:
         def write_file(path: str, content: str) -> str:
             sid = get_session_id()
             abs = manager.resolve_path(sid, path)
-            if not manager.validate_path(sid, abs):
+            if not manager.validate_path(sid, abs, write=True):
                 return "[工具错误] 路径超出工作区范围"
             fp = Path(abs)
             try:

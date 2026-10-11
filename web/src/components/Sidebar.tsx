@@ -1,13 +1,16 @@
 import { GearSix, Plus, PuzzlePiece, Trash } from "@phosphor-icons/react";
-import type { SessionInfo } from "../api/types";
+import type { AgentInfo, SessionInfo } from "../api/types";
 
 export type PageId = "session" | "settings" | "plugins";
 
 interface Props {
   sessions: SessionInfo[];
   activeSession: string;
+  agents: AgentInfo[];
+  activeAgent: string;
   page: PageId;
   onSelectSession: (id: string) => void;
+  onSelectAgent: (name: string) => void;
   onNewSession: () => void;
   onDeleteSession: (id: string) => void;
   onPage: (p: PageId) => void;
@@ -16,8 +19,11 @@ interface Props {
 export function Sidebar({
   sessions,
   activeSession,
+  agents,
+  activeAgent,
   page,
   onSelectSession,
+  onSelectAgent,
   onNewSession,
   onDeleteSession,
   onPage,
@@ -27,6 +33,24 @@ export function Sidebar({
       <div className="sidebar-brand">
         <span className="mark" aria-hidden />
         pocket-agent
+      </div>
+      <div className="sidebar-agent">
+        <label className="sidebar-label" htmlFor="agent-select">
+          Agent
+        </label>
+        <select
+          id="agent-select"
+          value={activeAgent}
+          onChange={(ev) => onSelectAgent(ev.target.value)}
+        >
+          {(agents.length ? agents : [{ name: "default", description: "" }]).map(
+            (item) => (
+              <option key={item.name} value={item.name}>
+                {item.name}
+              </option>
+            ),
+          )}
+        </select>
       </div>
       <div className="sidebar-section">
         <div className="sidebar-label">会话</div>

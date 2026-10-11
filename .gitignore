@@ -26,4 +26,7 @@ article.md
 
 x.txt
 .sessions/
+.sessions.migrated/
+/agents/
+.agents_profile/
 .knowledge/

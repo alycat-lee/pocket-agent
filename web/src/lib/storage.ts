@@ -4,6 +4,7 @@ const VIEW_KEY = "pa.sessionView.";
 const STATUS_EXPANDED = "pa.statusExpanded";
 const MODE_KEY = "pa.mode.";
 const PERM_KEY = "pa.perm.";
+const AGENT_KEY = "pa.agent";
 
 export function getSessionView(sessionId: string): SessionView {
   const v = localStorage.getItem(VIEW_KEY + sessionId);
@@ -40,6 +41,14 @@ export function getPermission(sessionId: string): PermissionMode {
 
 export function setPermission(sessionId: string, mode: PermissionMode): void {
   localStorage.setItem(PERM_KEY + sessionId, mode);
+}
+
+export function getActiveAgent(): string {
+  return localStorage.getItem(AGENT_KEY) || "default";
+}
+
+export function setActiveAgent(name: string): void {
+  localStorage.setItem(AGENT_KEY, name);
 }
 
 /** 权限 → 单次 overrides */

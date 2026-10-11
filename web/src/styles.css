@@ -118,6 +118,33 @@ button:disabled {
   box-shadow: 0 0 0 1px #14532d inset;
 }
 
+.sidebar-agent {
+  padding: var(--space-md) var(--space-xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 45%, transparent);
+}
+
+.sidebar-agent select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.agent-prompt {
+  width: 100%;
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  resize: vertical;
+}
+
+.agent-details {
+  margin-top: var(--space-lg);
+}
+
 .sidebar-section {
   padding: var(--space-md);
   flex: 1;

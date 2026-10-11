@@ -58,6 +58,9 @@ class AgentConfig:
     verifier_enabled: bool = True
     answer_max_retries: int = 1
 
+    # Agent 目录（Phase 34）
+    agents_root: str = "agents"  # 改路径不搬迁已有 agents
+
     @classmethod
     def known_keys(cls) -> set[str]:
         return {f.name for f in fields(cls)}

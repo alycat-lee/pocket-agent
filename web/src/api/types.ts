@@ -19,6 +19,17 @@ export interface SessionInfo {
   title?: string;
   turn_count?: number;
   updated_at?: string;
+  agent?: string;
+}
+
+export interface AgentInfo {
+  name: string;
+  description: string;
+  provider_id: string | null;
+  tools: string[] | null;
+  permission: string;
+  prompt: string;
+  root: string;
 }
 
 export interface Settlement {

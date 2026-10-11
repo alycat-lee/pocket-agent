@@ -1,4 +1,4 @@
-import type { EventsPage, PluginInfo, SessionInfo } from "./types";
+import type { AgentInfo, EventsPage, PluginInfo, SessionInfo } from "./types";
 import type { SchemaField } from "../lib/schemaForm";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -22,8 +22,47 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function fetchSessions(): Promise<SessionInfo[]> {
-  return json("/sessions");
+export function fetchAgents(): Promise<{ root: string; agents: AgentInfo[] }> {
+  return json("/api/agents");
+}
+
+export function createAgent(body: {
+  name: string;
+  description?: string;
+  permission?: string;
+  prompt?: string;
+}): Promise<{ ok: boolean; agent: AgentInfo }> {
+  return json("/api/agents", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateAgent(
+  name: string,
+  body: Partial<{
+    description: string;
+    permission: string;
+    prompt: string;
+    provider_id: string | null;
+  }>,
+): Promise<{ ok: boolean; agent: AgentInfo }> {
+  return json(`/api/agents/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteAgent(
+  name: string,
+  keepFiles = true,
+): Promise<{ ok: boolean; name: string }> {
+  const q = keepFiles ? "" : "?keep_files=false";
+  return json(`/api/agents/${encodeURIComponent(name)}${q}`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchSessions(agent?: string): Promise<SessionInfo[]> {
+  const q = agent ? `?agent=${encodeURIComponent(agent)}` : "";
+  return json(`/sessions${q}`);
 }
 
 export function fetchConfigSchema(): Promise<SchemaField[]> {
@@ -318,8 +357,10 @@ export function updateRouting(body: {
 
 export function deleteSession(
   sessionId: string,
+  agent?: string,
 ): Promise<{ ok: boolean; session_id: string }> {
-  return json(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+  const q = agent ? `?agent=${encodeURIComponent(agent)}` : "";
+  return json(`/api/sessions/${encodeURIComponent(sessionId)}${q}`, {
     method: "DELETE",
   });
 }
@@ -356,12 +397,14 @@ export function openChatEventSource(opts: {
   overrides?: Record<string, unknown>;
   workspaceId?: string | null;
   permission?: string;
+  agent?: string;
 }): EventSource {
   const q = new URLSearchParams({
     message: opts.message,
     session_id: opts.sessionId,
     run_id: opts.runId,
     permission: opts.permission || "workspace",
+    agent: opts.agent || "default",
   });
   if (opts.workspaceId) q.set("workspace_id", opts.workspaceId);
   if (opts.overrides && Object.keys(opts.overrides).length > 0) {

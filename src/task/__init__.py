@@ -160,11 +160,19 @@ class Planner:
     def classify(self, user_input: str, rolling_summary: str = "") -> TaskCard:
         return self.plan(user_input, rolling_summary)
 
-    def plan(self, user_input: str, rolling_summary: str = "") -> TaskCard:
+    def plan(
+        self,
+        user_input: str,
+        rolling_summary: str = "",
+        *,
+        system: str = "",
+    ) -> TaskCard:
         prompt = PLANNER.format(
             rolling_summary=(rolling_summary or "").strip() or "（无）",
             user_input=user_input,
         )
+        if system.strip():
+            prompt = f"{system.strip()}\n\n{prompt}"
         data = self._llm.generate_json(prompt, TASK_CARD_SCHEMA)
         if not isinstance(data, dict):
             raise LLMFormatError("planner output is not object")

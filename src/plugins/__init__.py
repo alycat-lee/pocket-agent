@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pocket_agent.plugins.agent_loop import AgentLoopPlugin
+from pocket_agent.plugins.agents_plugin import AgentsPlugin
 from pocket_agent.plugins.bridge_mcp import BridgeMcpPlugin
 from pocket_agent.plugins.checkpoint_plugin import CheckpointPlugin
 from pocket_agent.plugins.knowledge_plugin import KnowledgePlugin
@@ -20,6 +21,7 @@ def builtin_plugins() -> dict[str, Plugin]:
     plugins: list[Plugin] = [
         PromptsPlugin(),
         LlmLlamaCppPlugin(),
+        AgentsPlugin(),
         ToolsCorePlugin(),
         KnowledgePlugin(),
         BridgeMcpPlugin(),
