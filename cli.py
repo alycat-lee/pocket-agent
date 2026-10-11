@@ -61,9 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     serve_parser.add_argument(
         "--profile",
-        choices=("headless", "web"),
+        choices=("headless", "web", "tui"),
         default=None,
-        help="覆盖 pocket.yml 的 profile（web 才加载 ui-web）",
+        help="覆盖 pocket.yml 的 profile（web 加载浏览器 UI，tui 进入终端界面）",
     )
     serve_parser.add_argument(
         "--verbose",
@@ -159,6 +159,9 @@ def run_serve(
     )
     ctx = assemble(builtin_plugins(), data)
     try:
+        if ctx.has("tui"):
+            ctx.require("tui").run()
+            return 0
         if ctx.has("http"):
             http = ctx.require("http")
             print(

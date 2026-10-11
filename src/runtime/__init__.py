@@ -9,8 +9,13 @@ import yaml
 
 Disposer = Callable[[], None]
 
-# headless profile 默认跳过的 UI 插件名
-_HEADLESS_SKIP = frozenset({"ui-web"})
+# profile → 跳过的 UI 插件。headless 不挂任何界面；web / tui 互斥。
+_PROFILE_SKIP: dict[str, frozenset[str]] = {
+    "headless": frozenset({"ui-web", "ui-tui"}),
+    "web": frozenset({"ui-tui"}),
+    "tui": frozenset({"ui-web"}),
+}
+_HEADLESS_SKIP = _PROFILE_SKIP["headless"]
 
 
 class PluginError(Exception):
@@ -298,7 +303,8 @@ def assemble(
             name = entry.get("name")
             if not name or not isinstance(name, str):
                 raise PluginError(f"plugin entry missing name: {entry!r}")
-            if profile == "headless" and name in _HEADLESS_SKIP:
+            skip = _PROFILE_SKIP.get(profile, _HEADLESS_SKIP)
+            if name in skip:
                 continue
             if name not in plugins:
                 raise PluginError(f"unknown plugin: {name}")

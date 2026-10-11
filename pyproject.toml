@@ -28,6 +28,9 @@ dev = [
 knowledge = [
     "sentence-transformers",
 ]
+tui = [
+    "prompt_toolkit>=3.0",
+]
 
 [tool.setuptools]
 package-dir = {"pocket_agent" = "src"}

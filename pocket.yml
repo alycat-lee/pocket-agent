@@ -1,4 +1,5 @@
-# headless：跳过 ui-web；web：加载 UI（浏览器 http://127.0.0.1:3000）
+# headless：跳过 ui-web / ui-tui；web：加载浏览器 UI（http://127.0.0.1:3000）
+# tui：python cli.py serve --profile tui 进入终端界面
 # 启动 Web：python cli.py serve --profile web
 # 或将下方改为 profile: web 后执行：python cli.py serve
 profile: headless
@@ -39,3 +40,4 @@ plugins:
     config:
       host: "127.0.0.1"
       port: 3000
+  - name: ui-tui

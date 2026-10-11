@@ -234,6 +234,46 @@ def test_provides_not_fulfilled_rolls_back() -> None:
     assert ctx.mount_order == []
 
 
+def test_assemble_web_skips_ui_tui(tmp_path: Path) -> None:
+    core = _RecordingPlugin("tools-core", provides=["tools"], provide_keys=["tools"])
+    tui = _RecordingPlugin("ui-tui", requires=["tools"], provides=["tui"], provide_keys=["tui"])
+    yml = tmp_path / "pocket.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "profile": "web",
+                "plugins": [{"name": "tools-core"}, {"name": "ui-tui"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx = assemble({"tools-core": core, "ui-tui": tui}, yml)
+    assert core.applied is True
+    assert tui.applied is False
+    assert "ui-tui" not in ctx.mount_order
+
+
+def test_assemble_tui_skips_ui_web(tmp_path: Path) -> None:
+    core = _RecordingPlugin("tools-core", provides=["tools"], provide_keys=["tools"])
+    ui = _RecordingPlugin(
+        "ui-web", requires=["tools"], provides=["http"], provide_keys=["http"]
+    )
+    yml = tmp_path / "pocket.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "profile": "tui",
+                "plugins": [{"name": "tools-core"}, {"name": "ui-web"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx = assemble({"tools-core": core, "ui-web": ui}, yml)
+    assert core.applied is True
+    assert ui.applied is False
+    assert "ui-web" not in ctx.mount_order
+
+
 def test_assemble_headless_skips_ui_web(tmp_path: Path) -> None:
     core = _RecordingPlugin("tools-core", provides=["tools"], provide_keys=["tools"])
     ui = _RecordingPlugin(
