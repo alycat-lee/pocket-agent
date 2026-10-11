@@ -75,6 +75,17 @@ _BUS_EVENTS = (
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 
 
+def join_worker_thread(thread: threading.Thread, timeout: float = 30.0) -> None:
+    """Join a worker unless cleanup is already running on that worker.
+
+    StreamingResponse 生成器被 GC / close 时，可能在工作线程上执行 finally；
+    此时 join 自身会抛 RuntimeError: cannot join current thread。
+    """
+    if thread is threading.current_thread():
+        return
+    thread.join(timeout=timeout)
+
+
 def probe_llm_full(
     base_url: str,
     *,
@@ -1203,7 +1214,7 @@ def build_app(
         finally:
             for dispose in disposers:
                 dispose()
-            thread.join(timeout=30)
+            join_worker_thread(thread, timeout=30)
             _release_lock()
 
     def _run_chat(

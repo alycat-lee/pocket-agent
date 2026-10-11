@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
 import socket
 import threading
 import time
@@ -19,6 +20,7 @@ from pocket_agent.plugins.ui_web import (
     ApprovalBroker,
     UiWebPlugin,
     build_app,
+    join_worker_thread,
     probe_llm_full,
     probe_provider,
 )
@@ -484,3 +486,77 @@ def test_providers_test_local_forces_trust_env_false(
     assert result["ok"] is False
     # 不应因代理劫持而返回代理错误
     assert "evil-proxy" not in result["error"]
+
+
+def test_join_worker_thread_skips_self() -> None:
+    errors: list[BaseException] = []
+
+    def _on_worker() -> None:
+        try:
+            join_worker_thread(threading.current_thread(), timeout=0.1)
+        except BaseException as exc:  # noqa: BLE001 — 回归：禁止 join 自身
+            errors.append(exc)
+
+    thread = threading.Thread(target=_on_worker)
+    thread.start()
+    thread.join(timeout=2)
+    assert errors == []
+    assert not thread.is_alive()
+
+
+def test_join_worker_thread_waits_for_other() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def _worker() -> None:
+        started.set()
+        release.wait(timeout=2)
+
+    thread = threading.Thread(target=_worker)
+    thread.start()
+    assert started.wait(timeout=2)
+    join_worker_thread(thread, timeout=0.05)
+    assert thread.is_alive()
+    release.set()
+    join_worker_thread(thread, timeout=2)
+    assert not thread.is_alive()
+
+
+def test_sse_finally_join_from_worker_does_not_raise() -> None:
+    """复现：生成器在工作线程上 close 时，finally 不得 join 自身。"""
+    errors: list[BaseException] = []
+    holder: list[Any] = []
+    q: queue.Queue[bytes | None] = queue.Queue()
+    worker_done = threading.Event()
+
+    def _stream() -> Any:
+        def _worker() -> None:
+            try:
+                q.put(b"chunk")
+                time.sleep(0.05)
+                try:
+                    holder[0].close()
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+            finally:
+                worker_done.set()
+
+        worker = threading.Thread(target=_worker)
+        worker.start()
+        try:
+            while True:
+                item = q.get(timeout=2)
+                if item is None:
+                    break
+                yield item
+        finally:
+            try:
+                join_worker_thread(worker, timeout=2)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+    gen = _stream()
+    holder.append(gen)
+    assert next(gen) == b"chunk"
+    assert worker_done.wait(timeout=2)
+    assert errors == []
