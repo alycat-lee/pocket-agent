@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from pocket_agent.llm_client import LLMClientProtocol
+from pocket_agent.plugins.prompts_plugin import PromptsPlugin
+from pocket_agent.prompt_registry import current_registry
+from pocket_agent.runtime import Context
 
 from benchmark.report import LAST_RUN_NAME, empty_scores, render_radar, render_table, write_report
 from benchmark.runners.bare import BareRunner
@@ -44,8 +47,10 @@ def run_benchmark(
     output: Path,
     tasks_dir: Path | None = None,
     judge: bool = False,
+    prompt_variant: str = "auto",
 ) -> int:
     tasks = load_tasks(dims, tasks_dir=tasks_dir or TASKS_DIR)
+    _bind_prompt_variant(prompt_variant)
     runners = _make_runners(tracks, base_url)
     skipped: dict[str, str] = {}
     if "cloud" in tracks and not cloud_available():
@@ -107,7 +112,10 @@ def run_benchmark(
                 scores[track][dim] = None
 
     last_path = REPO_ROOT / "benchmark" / LAST_RUN_NAME
-    notes = [f"明细 JSON：{out_dir / 'details.json'}"]
+    notes = [
+        f"明细 JSON：{out_dir / 'details.json'}",
+        f"prompt_variant={prompt_variant}",
+    ]
     if skipped:
         notes.append("cloud 跳过时维度记 skip，不参与对比分母")
     write_report(
@@ -129,6 +137,19 @@ def run_benchmark(
     print(render_radar(scores, dims))
     print(f"\nreport: {output}")
     return 0
+
+
+def _bind_prompt_variant(prompt_variant: str) -> None:
+    """为 pocket 跑道挂上内置提示词，并按 --prompt-variant 锁定 A/B。"""
+    ctx = Context()
+    ctx.mount(PromptsPlugin())
+    registry = current_registry()
+    if registry is None:
+        return
+    if prompt_variant in {"local", "cloud"}:
+        registry.set_variant(prompt_variant)  # type: ignore[arg-type]
+    else:
+        registry.select_for_provider("llamacpp")
 
 
 def _make_runners(tracks: list[str], base_url: str) -> dict[str, Any]:

@@ -201,3 +201,36 @@ def test_parse_dims_rejects_unknown() -> None:
     assert parse_dims("d1,d2") == ["d1", "d2"]
     with pytest.raises(ValueError):
         parse_dims("d99")
+
+
+def test_eval_help_lists_prompt_variant() -> None:
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "eval.py"), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "--prompt-variant" in result.stdout
+    assert "auto" in result.stdout
+
+
+def test_bind_prompt_variant_auto_local_cloud() -> None:
+    from benchmark.run import _bind_prompt_variant
+    from pocket_agent.prompt_registry import current_registry
+    from pocket_agent.prompts import CHOOSE_TOOL
+
+    _bind_prompt_variant("cloud")
+    assert current_registry() is not None
+    assert current_registry().active_variant() == "cloud"
+    cloud = CHOOSE_TOOL.format(task="t", state="s", history_text="（无）", options="0. x")
+    assert "下一步应该使用哪个工具" in cloud
+
+    _bind_prompt_variant("local")
+    assert current_registry().active_variant() == "local"
+    local = CHOOSE_TOOL.format(task="t", state="s", history_text="（无）", options="0. x")
+    assert "选编号" in local
+
+    _bind_prompt_variant("auto")
+    assert current_registry().active_variant() == "local"

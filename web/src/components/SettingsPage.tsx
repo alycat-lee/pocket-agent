@@ -10,6 +10,7 @@ import {
   groupControls,
   type FormControl,
 } from "../lib/schemaForm";
+import { PromptsCard } from "./PromptsCard";
 import { ProvidersCard } from "./ProvidersCard";
 import { SchemaForm } from "./SchemaForm";
 
@@ -81,6 +82,13 @@ export function SettingsPage({ onConfigSaved }: Props) {
         >
           模型
         </button>
+        <button
+          type="button"
+          className={`nav-item ${active === "提示词" ? "active" : ""}`}
+          onClick={() => setActive("提示词")}
+        >
+          提示词
+        </button>
         {groups
           .filter((g) => g.group !== "模型")
           .map((g) => (
@@ -99,6 +107,8 @@ export function SettingsPage({ onConfigSaved }: Props) {
           {error ? <div className="toast-error">{error}</div> : null}
           {active === "模型" ? (
             <ProvidersCard />
+          ) : active === "提示词" ? (
+            <PromptsCard />
           ) : (
             <>
               {groups.length === 0 && !error ? (
@@ -115,6 +125,7 @@ export function SettingsPage({ onConfigSaved }: Props) {
             </>
           )}
         </div>
+        {active === "提示词" ? null : (
         <div className="form-actions">
           {status ? <div className="form-status">{status}</div> : null}
           <button
@@ -173,6 +184,7 @@ export function SettingsPage({ onConfigSaved }: Props) {
             {busy === "reset" ? "恢复中…" : "恢复默认"}
           </button>
         </div>
+        )}
       </div>
     </div>
   );

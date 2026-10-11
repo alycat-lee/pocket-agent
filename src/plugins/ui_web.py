@@ -23,6 +23,7 @@ from pocket_agent.config import (
 from pocket_agent.config_schema import get_config_schema
 from pocket_agent.events import EventStore
 from pocket_agent.llm_client import resolve_trust_env
+from pocket_agent.prompts import builtin_entries
 from pocket_agent.runtime import Context, PluginError, PluginInUse
 from pydantic import BaseModel, Field
 
@@ -435,6 +436,13 @@ def build_app(
             "model": config.model,
         }
 
+    def _sync_prompt_variant(config: AgentConfig | None = None) -> None:
+        if not ctx.has("prompt_registry"):
+            return
+        live = config if config is not None else _resolved_config()
+        meta = _run_provider_meta(live)
+        ctx.require("prompt_registry").select_for_provider(meta["provider_type"])
+
     def _bind_routed_llm(config: AgentConfig) -> list[tuple[Any, Any]]:
         if not routing_from_settings:
             return []
@@ -524,6 +532,17 @@ def build_app(
         )
 
     # ── 配置 API ──────────────────────────────────────────
+
+    @app.get("/api/prompts")
+    def api_prompts() -> dict[str, Any]:
+        _sync_prompt_variant()
+        if ctx.has("prompt_registry"):
+            registry = ctx.require("prompt_registry")
+            return {
+                "variant": registry.active_variant(),
+                "prompts": registry.snapshot(),
+            }
+        return {"variant": "cloud", "prompts": builtin_entries()}
 
     @app.get("/api/config/schema")
     def api_config_schema() -> list[dict[str, Any]]:
@@ -629,6 +648,7 @@ def build_app(
         if not cfg.routing.generate:
             cfg.routing.generate = pid
         _save_providers_cfg(cfg)
+        _sync_prompt_variant()
         from pocket_agent.providers import redact_providers
 
         return JSONResponse({"ok": True, "providers": redact_providers(cfg)["providers"]})
@@ -656,6 +676,7 @@ def build_app(
         if body.trust_env is not None:
             pc.trust_env = body.trust_env
         _save_providers_cfg(cfg)
+        _sync_prompt_variant()
         from pocket_agent.providers import redact_providers
 
         return JSONResponse({"ok": True, "providers": redact_providers(cfg)["providers"]})
@@ -673,6 +694,7 @@ def build_app(
         if cfg.routing.generate == pid:
             cfg.routing.generate = cfg.default_provider_id
         _save_providers_cfg(cfg)
+        _sync_prompt_variant()
         from pocket_agent.providers import redact_providers
 
         return JSONResponse({"ok": True, "providers": redact_providers(cfg)["providers"]})
@@ -684,6 +706,7 @@ def build_app(
             return JSONResponse({"ok": False, "error": "provider not found"}, 404)
         cfg.default_provider_id = pid
         _save_providers_cfg(cfg)
+        _sync_prompt_variant()
         return JSONResponse({"ok": True, "default_provider_id": pid})
 
     @app.put("/api/routing")
@@ -695,6 +718,7 @@ def build_app(
         cfg.routing.choose_fill = body.choose_fill
         cfg.routing.generate = body.generate
         _save_providers_cfg(cfg)
+        _sync_prompt_variant()
         return JSONResponse(
             {"ok": True, "routing": {"choose_fill": body.choose_fill, "generate": body.generate}}
         )
@@ -935,6 +959,7 @@ def build_app(
         )
         agent.apply_config(live)
         bound = _bind_routed_llm(live)
+        _sync_prompt_variant(live)
         meta = _run_provider_meta(live)
         agent._run_meta = meta
         if ctx.has("sessions"):

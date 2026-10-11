@@ -237,6 +237,39 @@ def test_events_api_after_chat(tmp_path: Path) -> None:
     ctx.unmount_all()
 
 
+def test_api_prompts_lists_builtin_without_registry(tmp_path: Path) -> None:
+    ctx = Context()
+    _stack(ctx, [-1, "x"])
+    app = build_app(ctx, broker=ApprovalBroker(1), settings_path=tmp_path / "s.json")
+    res = asyncio.run(_request(app, "GET", "/api/prompts"))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["variant"] == "cloud"
+    ids = {p["id"] for p in body["prompts"]}
+    assert {"choose_tool", "system_base", "planner"} <= ids
+    choose = next(p for p in body["prompts"] if p["id"] == "choose_tool")
+    assert choose["version"]
+    assert "下一步应该使用哪个工具" in choose["template"]
+    ctx.unmount_all()
+
+
+def test_api_prompts_selects_local_for_llamacpp(tmp_path: Path) -> None:
+    from pocket_agent.plugins.prompts_plugin import PromptsPlugin
+
+    ctx = Context()
+    ctx.mount(PromptsPlugin())
+    _stack(ctx, [-1, "x"])
+    app = build_app(ctx, broker=ApprovalBroker(1), settings_path=tmp_path / "s.json")
+    res = asyncio.run(_request(app, "GET", "/api/prompts"))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["variant"] == "local"
+    choose = next(p for p in body["prompts"] if p["id"] == "choose_tool")
+    assert choose["version"] == "1.0.0"
+    assert "选编号" in choose["template"]
+    ctx.unmount_all()
+
+
 def test_plugins_list(tmp_path: Path) -> None:
     ctx = Context()
     _stack(ctx, [-1, "x"])

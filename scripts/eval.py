@@ -352,6 +352,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="对 rubric 主观项启用云端 judge（需 DEEPSEEK_API_KEY）",
     )
+    parser.add_argument(
+        "--prompt-variant",
+        choices=("auto", "local", "cloud"),
+        default="auto",
+        help="基准 A/B：强制 pocket 跑道提示词变体（auto=按 provider preset）",
+    )
     args = parser.parse_args(argv)
 
     if args.benchmark:
@@ -515,6 +521,7 @@ def _run_benchmark(args: argparse.Namespace) -> int:
         base_url=str(args.base_url),
         output=output,
         judge=bool(args.judge),
+        prompt_variant=str(args.prompt_variant),
     )
 
 

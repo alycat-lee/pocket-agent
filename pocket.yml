@@ -3,6 +3,7 @@
 # 或将下方改为 profile: web 后执行：python cli.py serve
 profile: headless
 plugins:
+  - name: prompts
   - name: llm-llamacpp
     config:
       base_url: "http://localhost:8000/v1"

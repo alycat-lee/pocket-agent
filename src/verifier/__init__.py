@@ -6,6 +6,8 @@ import re
 from difflib import SequenceMatcher
 
 import pocket_agent.prompts as prompt_mod
+from pocket_agent.prompt_registry import current_registry
+from pocket_agent.prompts import builtin_entries
 from pocket_agent.task import TaskCard
 
 DEGRADE_PREFIX = "该回答未通过验收："
@@ -29,12 +31,19 @@ _LEAK_CANDIDATES = (
 
 
 def prompt_leak_phrases() -> tuple[str, ...]:
-    """从 prompts.py 模板自动筛出内部指令词。"""
-    blob = "\n".join(
-        str(value)
-        for name, value in vars(prompt_mod).items()
-        if name.isupper() and isinstance(value, str)
-    )
+    """从全部提示词变体筛出内部指令词。"""
+    texts: list[str] = []
+    registry = current_registry()
+    if registry is not None:
+        for record in registry.list():
+            texts.extend(record.variants.values())
+    else:
+        for entry in builtin_entries():
+            texts.extend(str(v) for v in dict(entry["variants"]).values())
+    for name, value in vars(prompt_mod).items():
+        if name.isupper() and isinstance(value, str):
+            texts.append(str.__str__(value))
+    blob = "\n".join(texts)
     return tuple(phrase for phrase in _LEAK_CANDIDATES if phrase in blob)
 
 

@@ -51,6 +51,20 @@ export function fetchPlugins(): Promise<PluginInfo[]> {
   return json("/api/plugins");
 }
 
+export interface PromptEntry {
+  id: string;
+  template: string;
+  variants: Record<string, string>;
+  version: string;
+}
+
+export function fetchPrompts(): Promise<{
+  variant: string;
+  prompts: PromptEntry[];
+}> {
+  return json("/api/prompts");
+}
+
 export function enablePlugin(
   name: string,
 ): Promise<{ ok: boolean; error?: string; status?: string }> {

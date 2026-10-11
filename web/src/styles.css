@@ -1327,6 +1327,42 @@ button:disabled {
   background: transparent;
 }
 
+.prompts-card h3 {
+  margin: 0 0 var(--space-md);
+  font-size: 14px;
+}
+
+.prompt-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  margin-top: var(--space-lg);
+}
+
+.prompt-item {
+  padding: var(--space-xl);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.prompt-item-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.prompt-template {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-foreground);
+}
+
 .scroll-to-bottom {
   position: absolute;
   bottom: var(--space-xl);

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pocket_agent.prompt_registry import bind_registry
 
 
 class MockLLM:
@@ -70,6 +71,14 @@ def pytest_collection_modifyitems(
         for item in items:
             if "stress" in item.keywords:
                 item.add_marker(skip_stress)
+
+
+@pytest.fixture(autouse=True)
+def _reset_prompt_registry() -> None:
+    """避免上个用例留下的全局 registry 污染既有 format 断言。"""
+    bind_registry(None)
+    yield
+    bind_registry(None)
 
 
 @pytest.fixture
