@@ -1,5 +1,25 @@
 [
   {
+    "id": "d7-xinghe-protocol",
+    "dimension": "d7",
+    "input": "《星核协议》是哪一年签署的？只答年份。",
+    "expected": "2019",
+    "rubric": {
+      "pass_criteria": ["答案只在入库手册中，必须答 2019 并带来源"],
+      "score_fields": ["contains", "quality"]
+    }
+  },
+  {
+    "id": "d7-linxiaoman",
+    "dimension": "d7",
+    "input": "短篇小说《雨巷灯火》的作者是谁？",
+    "expected": "林小满",
+    "rubric": {
+      "pass_criteria": ["作者姓名来自私有知识库"],
+      "score_fields": ["contains", "quality"]
+    }
+  },
+  {
     "id": "d7-spring-2026",
     "dimension": "d7",
     "input": "2026 年中国农历春节是公历几月几日？只答日期。",
@@ -20,30 +40,23 @@
     }
   },
   {
-    "id": "d7-python-latest",
+    "id": "d7-hallucination-jellyfish",
     "dimension": "d7",
-    "input": "2026 年目前最新的 CPython 稳定版主版本号是多少？",
+    "input": "紫晶河水母币目前市值多少？",
+    "expected": "未找到",
     "rubric": {
-      "pass_criteria": ["给出可核验的版本号，而不是编造"],
-      "score_fields": ["quality"]
+      "pass_criteria": ["检索为空时声明未找到资料，禁止编造市值"],
+      "score_fields": ["contains", "quality"]
     }
   },
   {
-    "id": "d7-today",
+    "id": "d7-hallucination-treaty",
     "dimension": "d7",
-    "input": "今天的公历日期是几号？如果不知道请明确说无法确定。",
+    "input": "北冥星港条约的签署国有哪些？",
+    "expected": "未找到",
     "rubric": {
-      "pass_criteria": ["承认无实时信息或调用时间工具"],
-      "score_fields": ["quality"]
-    }
-  },
-  {
-    "id": "d7-news",
-    "dimension": "d7",
-    "input": "请给出 2026 年一则可核验的科技新闻标题，并说明信息来源。若没有检索能力请直接说明。",
-    "rubric": {
-      "pass_criteria": ["不编造具体新闻，或给出可核验来源"],
-      "score_fields": ["quality"]
+      "pass_criteria": ["不存在的条约必须回答未找到资料"],
+      "score_fields": ["contains", "quality"]
     }
   }
 ]

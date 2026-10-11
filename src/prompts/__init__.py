@@ -1,4 +1,6 @@
 # 运行时提示词模板：cloud 变体与 pocket-agent-docs/04 逐字一致。
+# 冲突：文档 19 要求 Planner 增补 needs_knowledge，并新增 qa 诚实兜底变体；
+# 以规格签名与文档 19 原文为准，planner / final_answer_qa 不再与 04 逐字相同。
 # local 变体是文档 18 要求的超短指令（≤150 字），由 prompt_registry 按 provider 选用。
 
 from __future__ import annotations
@@ -48,6 +50,17 @@ _CLOUD_FINAL_ANSWER: str = """任务：{task}
 {history_text}
 
 基于以上信息回答任务。如果信息不足以完整回答，说明缺失的部分。
+直接输出回答，不要复述过程。"""
+
+# 文档 19 §4：检索空结果必须诚实声明，禁止编造。
+_CLOUD_FINAL_ANSWER_QA: str = """根据检索资料回答问题。
+若资料为「未找到相关资料」或不足以回答，必须回答「未找到相关资料」，禁止编造。
+
+问题：{task}
+
+检索资料：
+{evidence}
+
 直接输出回答，不要复述过程。"""
 
 _CLOUD_REWRITE_QUERY: str = """根据对话历史，把用户的最新输入改写成一个完整、独立的问题。
@@ -100,6 +113,7 @@ _CLOUD_PLANNER: str = """分析用户任务，输出任务卡 JSON。
    字数统一换算为数字（"2万字" → "total_chars": 20000）
 4. plan：3~7 个执行步骤，每步一句话
 5. needs_history：任务是否依赖之前的对话内容
+6. needs_knowledge：是否必须先检索知识库/百科/网页才能如实回答
 
 会话摘要：{rolling_summary}
 用户任务：{user_input}
@@ -130,6 +144,11 @@ _LOCAL_FINAL_ANSWER: str = """任务：{task}
 信息：{history_text}
 据此回答；不足则说明缺什么。直接输出，不要复述过程。"""
 
+_LOCAL_FINAL_ANSWER_QA: str = """按资料回答。资料不足或「未找到相关资料」时必须答「未找到相关资料」，禁止编造。
+问题：{task}
+资料：{evidence}
+直接输出回答。"""
+
 _LOCAL_REWRITE_QUERY: str = """根据历史把最新输入改成完整独立问题。不要回答。
 历史：{history_text}
 输入：{user_input}"""
@@ -156,7 +175,7 @@ _LOCAL_SESSION_TITLE: str = """为对话生成不超过 12 字标题，只输出
 _LOCAL_INTENT_ROUTE: str = """判断意图。0=直接问答；1=要工具；2=写长文。
 输入：{user_input} 只输出数字。"""
 
-_LOCAL_PLANNER: str = """输出任务卡 JSON。type=qa/agent/writer；goal；constraints（字数换数字）；plan 3~7步；needs_history。
+_LOCAL_PLANNER: str = """输出任务卡 JSON。type=qa/agent/writer；goal；constraints（字数换数字）；plan 3~7步；needs_history；needs_knowledge。
 摘要：{rolling_summary}
 任务：{user_input}
 只输出 JSON。"""
@@ -232,6 +251,7 @@ SESSION_TITLE = PromptRef("session_title", _CLOUD_SESSION_TITLE)
 INTENT_ROUTE = PromptRef("intent_route", _CLOUD_INTENT_ROUTE)
 PLANNER = PromptRef("planner", _CLOUD_PLANNER)
 SYNTHESIZE = PromptRef("synthesize", _CLOUD_SYNTHESIZE)
+FINAL_ANSWER_QA = PromptRef("final_answer_qa", _CLOUD_FINAL_ANSWER_QA)
 
 OUTLINE_SCHEMA: dict = {
     "type": "object",
@@ -265,6 +285,7 @@ _ENTRIES: tuple[tuple[str, str, str], ...] = (
     ("intent_route", _CLOUD_INTENT_ROUTE, _LOCAL_INTENT_ROUTE),
     ("planner", _CLOUD_PLANNER, _LOCAL_PLANNER),
     ("synthesize", _CLOUD_SYNTHESIZE, _LOCAL_SYNTHESIZE),
+    ("final_answer_qa", _CLOUD_FINAL_ANSWER_QA, _LOCAL_FINAL_ANSWER_QA),
 )
 
 

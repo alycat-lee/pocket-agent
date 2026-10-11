@@ -6,6 +6,7 @@ import re
 from difflib import SequenceMatcher
 
 import pocket_agent.prompts as prompt_mod
+from pocket_agent.knowledge import EMPTY_RESULT, HONEST_PHRASES
 from pocket_agent.prompt_registry import current_registry
 from pocket_agent.prompts import builtin_entries
 from pocket_agent.task import TaskCard
@@ -14,6 +15,27 @@ DEGRADE_PREFIX = "该回答未通过验收："
 
 _THINK_TAG = re.compile(r"</?think\b", re.IGNORECASE)
 _THINK_HEADS = ("嗯，", "我现在需要", "首先，我得")
+_DATE_RE = re.compile(r"\d{4}年(?:\d{1,2}月)?(?:\d{1,2}日)?|\d{1,2}月\d{1,2}日")
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+_PROPER_RE = re.compile(
+    r"《[^》]+》"
+    r"|[A-Za-z][A-Za-z0-9_\-]{1,31}"
+    r"|[\u4e00-\u9fff]{2,12}(?:协议|条约|公司|组织|计划|项目|手册|港口|币)"
+)
+_CLAIM_STOP = {
+    "根据",
+    "资料",
+    "检索",
+    "回答",
+    "问题",
+    "相关",
+    "找到",
+    "未找到",
+    "这个",
+    "一个",
+    "我们",
+}
+
 _LEAK_CANDIDATES = (
     "可用工具",
     "当前进度",
@@ -47,7 +69,7 @@ def prompt_leak_phrases() -> tuple[str, ...]:
     return tuple(phrase for phrase in _LEAK_CANDIDATES if phrase in blob)
 
 
-def verify(answer: str, task_card: TaskCard) -> list[str]:
+def verify(answer: str, task_card: TaskCard, *, evidence: str = "") -> list[str]:
     """返回问题列表；空列表表示通过。"""
     text = answer or ""
     problems: list[str] = []
@@ -67,7 +89,48 @@ def verify(answer: str, task_card: TaskCard) -> list[str]:
         problems.append("回答过短")
     if _parrot_plan(text, task_card.plan):
         problems.append("复读计划")
+    if task_card.needs_knowledge:
+        problems.extend(_citation_problems(text, evidence))
     return problems
+
+
+def extract_claims(text: str) -> list[str]:
+    """抽取数字、日期、专名，供引用校验。"""
+    body = text or ""
+    claims: list[str] = []
+    for match in _DATE_RE.finditer(body):
+        claims.append(match.group(0))
+    for match in _NUM_RE.finditer(body):
+        token = match.group(0)
+        if any(token in item for item in claims):
+            continue
+        claims.append(token)
+    for match in _PROPER_RE.finditer(body):
+        token = match.group(0).strip("《》")
+        if token and token not in _CLAIM_STOP:
+            claims.append(token)
+    unique: list[str] = []
+    for item in claims:
+        if item not in unique:
+            unique.append(item)
+    return unique
+
+
+def _citation_problems(answer: str, evidence: str) -> list[str]:
+    ev = evidence or ""
+    empty = (not ev.strip()) or EMPTY_RESULT in ev
+    honest = any(phrase in (answer or "") for phrase in HONEST_PHRASES)
+    if empty:
+        if honest:
+            return []
+        return ["请仅基于检索资料回答"]
+    claims = extract_claims(answer)
+    if not claims:
+        return []
+    missing = [claim for claim in claims if claim not in ev]
+    if len(missing) / len(claims) > 0.30:
+        return ["请仅基于检索资料回答"]
+    return []
 
 
 def attach_degrade(answer: str, reasons: list[str]) -> str:

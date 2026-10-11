@@ -65,6 +65,88 @@ export function fetchPrompts(): Promise<{
   return json("/api/prompts");
 }
 
+export interface KnowledgeDocument {
+  id: string;
+  name: string;
+  source: string;
+  chunks: number;
+  created_at: number;
+}
+
+export interface KnowledgeHit {
+  text: string;
+  source: string;
+  score: number;
+  doc_id: string;
+}
+
+export function fetchKnowledgeStatus(): Promise<{
+  available: boolean;
+  reason: string;
+  embedder: string;
+  doc_count: number;
+}> {
+  return json("/api/knowledge/status");
+}
+
+export function fetchKnowledgeDocuments(): Promise<{
+  available: boolean;
+  reason: string;
+  documents: KnowledgeDocument[];
+}> {
+  return json("/api/knowledge/documents");
+}
+
+export function uploadKnowledgeText(body: {
+  name: string;
+  text: string;
+}): Promise<{ ok: boolean; id: string; name: string; chunks: number }> {
+  return json("/api/knowledge/documents", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function uploadKnowledgeFile(
+  file: File,
+): Promise<{ ok: boolean; id: string; name: string; chunks: number }> {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".pdf")) {
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return json("/api/knowledge/documents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: file.name,
+        content_b64: btoa(binary),
+      }),
+    });
+  }
+  const text = await file.text();
+  return uploadKnowledgeText({ name: file.name, text });
+}
+
+export function deleteKnowledgeDocument(
+  id: string,
+): Promise<{ ok: boolean; id: string }> {
+  return json(`/api/knowledge/documents/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export function searchKnowledge(query: string): Promise<{
+  query: string;
+  text: string;
+  hits: KnowledgeHit[];
+}> {
+  return json("/api/knowledge/search", {
+    method: "POST",
+    body: JSON.stringify({ query }),
+  });
+}
+
 export function enablePlugin(
   name: string,
 ): Promise<{ ok: boolean; error?: string; status?: string }> {

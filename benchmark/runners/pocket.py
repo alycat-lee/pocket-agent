@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from pocket_agent.config import AgentConfig
+from pocket_agent.knowledge import HashEmbedder, KnowledgeBase
 
 _TESTS = Path(__file__).resolve().parents[2] / "tests"
 if str(_TESTS) not in sys.path:
@@ -15,12 +16,18 @@ if str(_TESTS) not in sys.path:
 from pocket_agent.llm_client import LlamaCppClient, LLMConnectionError, LLMFormatError
 from pocket_agent.runner import AgentRunner
 from pocket_agent.session import SessionManager
+from pocket_agent.plugins.knowledge_plugin import register_knowledge_tools
 from pocket_agent.tools import ToolRegistry
 from pocket_agent.writer import LongWriter
 
 from benchmark.runners import TrackResult, plan_only_fields
 from benchmark.schema import task_turns
 from fixtures.fixture_tools import register_fixture_tools
+
+_HANDBOOK = (
+    "内部手册：《星核协议》于2019年在北湾签署，缔约方为东洲联邦与西陆联盟。"
+    "短篇小说《雨巷灯火》的作者是林小满。"
+)
 
 
 class _Bus:
@@ -41,6 +48,10 @@ class PocketRunner:
         self._llm = LlamaCppClient(self._config)
         registry = ToolRegistry(self._config)
         register_fixture_tools(registry)
+        kb_path = Path(__file__).resolve().parents[2] / ".knowledge" / "bench.sqlite"
+        self._kb = KnowledgeBase(kb_path, HashEmbedder())
+        self._kb.ingest("内部手册.md", _HANDBOOK, source="内部手册.md", doc_id="handbook")
+        register_knowledge_tools(registry, self._kb)
         self._agent = AgentRunner(self._config, self._llm, registry)
         self._writer = LongWriter(self._config, self._llm)
 
@@ -54,6 +65,7 @@ class PocketRunner:
             self._agent,
             events=bus,
             writer=self._writer,
+            knowledge=self._kb,
         )
         session_id = f"bench-{tid}"
         answers: list[str] = []

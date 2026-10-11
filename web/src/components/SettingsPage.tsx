@@ -10,6 +10,7 @@ import {
   groupControls,
   type FormControl,
 } from "../lib/schemaForm";
+import { KnowledgeCard } from "./KnowledgeCard";
 import { PromptsCard } from "./PromptsCard";
 import { ProvidersCard } from "./ProvidersCard";
 import { SchemaForm } from "./SchemaForm";
@@ -89,6 +90,13 @@ export function SettingsPage({ onConfigSaved }: Props) {
         >
           提示词
         </button>
+        <button
+          type="button"
+          className={`nav-item ${active === "知识库" ? "active" : ""}`}
+          onClick={() => setActive("知识库")}
+        >
+          知识库
+        </button>
         {groups
           .filter((g) => g.group !== "模型")
           .map((g) => (
@@ -109,6 +117,8 @@ export function SettingsPage({ onConfigSaved }: Props) {
             <ProvidersCard />
           ) : active === "提示词" ? (
             <PromptsCard />
+          ) : active === "知识库" ? (
+            <KnowledgeCard />
           ) : (
             <>
               {groups.length === 0 && !error ? (
@@ -125,7 +135,7 @@ export function SettingsPage({ onConfigSaved }: Props) {
             </>
           )}
         </div>
-        {active === "提示词" ? null : (
+        {active === "提示词" || active === "知识库" ? null : (
         <div className="form-actions">
           {status ? <div className="form-status">{status}</div> : null}
           <button

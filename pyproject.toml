@@ -25,6 +25,9 @@ dev = [
     "fastapi",
     "uvicorn",
 ]
+knowledge = [
+    "sentence-transformers",
+]
 
 [tool.setuptools]
 package-dir = {"pocket_agent" = "src"}
@@ -42,6 +45,7 @@ packages = [
     "pocket_agent.prompt_registry",
     "pocket_agent.orchestrator",
     "pocket_agent.guard",
+    "pocket_agent.knowledge",
     "pocket_agent.runner",
     "pocket_agent.session",
     "pocket_agent.checkpoint",

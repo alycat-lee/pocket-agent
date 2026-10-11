@@ -8,6 +8,13 @@ plugins:
     config:
       base_url: "http://localhost:8000/v1"
   - name: tools-core
+  - name: knowledge-base
+    config:
+      # hash：无 extras 也可入库检索；local：bge-small-zh（需 pocket-agent[knowledge]）
+      embedder: hash
+      db_path: ".knowledge/kb.sqlite"
+      searxng_url: ""
+      serper_key: ""
   # MCP 桥接：启用后把外部 MCP tools 注册为 mcp_*（需本机有对应 server）
   # 示例（mock）：
   #   mcp_servers:

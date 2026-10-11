@@ -1380,6 +1380,58 @@ button:disabled {
   color: var(--color-foreground);
 }
 
+.knowledge-card h4 {
+  margin: var(--space-xl) 0 var(--space-md);
+  font-size: 13px;
+}
+
+.kb-upload,
+.kb-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin: var(--space-md) 0;
+}
+
+.kb-file-label input {
+  display: none;
+}
+
+.kb-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-foreground);
+}
+
+.kb-doc-list,
+.kb-hit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.kb-doc-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.kb-hit-text {
+  margin-top: var(--space-md);
+}
+
 .scroll-to-bottom {
   position: absolute;
   bottom: var(--space-xl);

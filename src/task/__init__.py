@@ -19,12 +19,32 @@ TASK_CARD_SCHEMA: dict[str, Any] = {
         "constraints": {"type": "object"},
         "plan": {"type": "array", "items": {"type": "string"}},
         "needs_history": {"type": "boolean"},
+        "needs_knowledge": {"type": "boolean"},
     },
     "required": ["type", "goal", "constraints", "plan", "needs_history"],
 }
 
 _TOTAL_CHARS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(万)?\s*字")
 _MODES: tuple[TaskType, ...] = ("qa", "agent", "writer")
+_KNOWLEDGE_HINTS = (
+    "是什么",
+    "谁写",
+    "谁是",
+    "哪一年",
+    "哪年",
+    "何时",
+    "根据文档",
+    "知识库",
+    "市值",
+    "签署",
+    "作者",
+    "最新",
+    "今年",
+    "百科",
+    "资料",
+    "几月几日",
+    "哪个国家",
+)
 DEFAULT_WRITER_PLAN: list[str] = [
     "确定题材与人物",
     "展开开篇场景",
@@ -41,9 +61,16 @@ class TaskCard:
     constraints: dict[str, Any] = field(default_factory=dict)
     plan: list[str] = field(default_factory=list)
     needs_history: bool = False
+    needs_knowledge: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def infer_needs_knowledge(text: str) -> bool:
+    """规则推断是否需要先检索；旧任务卡缺字段时的兜底。"""
+    body = text or ""
+    return any(token in body for token in _KNOWLEDGE_HINTS)
 
 
 def parse_total_chars(text: str, default: int = 0) -> int:
@@ -69,6 +96,7 @@ def default_card(mode: TaskType, goal: str, *, user_input: str = "") -> TaskCard
         constraints=constraints,
         plan=list(DEFAULT_WRITER_PLAN) if mode == "writer" else [],
         needs_history=mode == "agent",
+        needs_knowledge=infer_needs_knowledge(user_input or goal),
     )
 
 
@@ -89,12 +117,17 @@ def card_from_dict(data: dict[str, Any], *, user_input: str = "") -> TaskCard:
     if isinstance(raw_plan, list):
         plan = [str(p).strip() for p in raw_plan if str(p).strip()]
     needs = bool(data.get("needs_history", False))
+    if "needs_knowledge" in data:
+        needs_k = bool(data.get("needs_knowledge"))
+    else:
+        needs_k = infer_needs_knowledge(user_input or goal)
     return TaskCard(
         type=raw_type,  # type: ignore[arg-type]
         goal=goal,
         constraints=constraints,
         plan=plan,
         needs_history=needs,
+        needs_knowledge=needs_k,
     )
 
 

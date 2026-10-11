@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import queue
@@ -296,6 +297,18 @@ class ProviderUpdateIn(BaseModel):
     trust_env: bool | None = None
 
 
+class KnowledgeIngestIn(BaseModel):
+    name: str = "note.txt"
+    text: str = ""
+    content: str = ""
+    content_b64: str = ""
+
+
+class KnowledgeSearchIn(BaseModel):
+    query: str = ""
+    top_k: int | None = None
+
+
 class RoutingIn(BaseModel):
     choose_fill: str
     generate: str
@@ -553,6 +566,101 @@ def build_app(
                 "prompts": registry.snapshot(),
             }
         return {"variant": "cloud", "prompts": builtin_entries()}
+
+    def _knowledge_or_error() -> tuple[Any, JSONResponse | None]:
+        if ctx.has("knowledge"):
+            return ctx.require("knowledge"), None
+        return None, JSONResponse(
+            {"ok": False, "error": "未加载 knowledge-base 插件"},
+            503,
+        )
+
+    @app.get("/api/knowledge/status")
+    def api_kb_status() -> dict[str, Any]:
+        kb, err = _knowledge_or_error()
+        if err is not None:
+            return {
+                "available": False,
+                "reason": "未加载 knowledge-base 插件",
+                "embedder": "",
+                "doc_count": 0,
+            }
+        return kb.status()
+
+    @app.get("/api/knowledge/documents")
+    def api_kb_list() -> dict[str, Any]:
+        kb, err = _knowledge_or_error()
+        if err is not None:
+            return {
+                "available": False,
+                "reason": "未加载 knowledge-base 插件",
+                "documents": [],
+            }
+        docs = [
+            {
+                "id": item.id,
+                "name": item.name,
+                "source": item.source,
+                "chunks": item.chunks,
+                "created_at": item.created_at,
+            }
+            for item in kb.list_documents()
+        ]
+        return {
+            "available": kb.available,
+            "reason": kb.reason,
+            "documents": docs,
+        }
+
+    @app.post("/api/knowledge/documents")
+    def api_kb_upload(body: KnowledgeIngestIn) -> JSONResponse:
+        kb, err = _knowledge_or_error()
+        if err is not None:
+            return err
+        if not kb.available:
+            return JSONResponse({"ok": False, "error": kb.reason or "知识库未启用"}, 503)
+        name = body.name or "note.txt"
+        try:
+            if body.content_b64:
+                data = base64.b64decode(body.content_b64)
+                info = kb.ingest_bytes(name, data, source=name)
+            else:
+                info = kb.ingest(name, body.text or body.content, source=name)
+        except Exception as exc:  # noqa: BLE001 — API 返回错误文本
+            return JSONResponse({"ok": False, "error": str(exc)}, 400)
+        return JSONResponse({"ok": True, **info})
+
+    @app.delete("/api/knowledge/documents/{doc_id}")
+    def api_kb_delete(doc_id: str) -> JSONResponse:
+        kb, err = _knowledge_or_error()
+        if err is not None:
+            return err
+        ok = kb.delete(doc_id)
+        return JSONResponse({"ok": ok, "id": doc_id}, 200 if ok else 404)
+
+    @app.post("/api/knowledge/search")
+    def api_kb_search(body: KnowledgeSearchIn) -> JSONResponse:
+        kb, err = _knowledge_or_error()
+        if err is not None:
+            return err
+        query = str(body.query or "")
+        top_k = body.top_k
+        hits = kb.search(query, top_k=top_k)
+        return JSONResponse(
+            {
+                "query": query,
+                "text": kb.search_text(query, top_k=top_k),
+                "hits": [
+                    {
+                        "text": item.text,
+                        "source": item.source,
+                        "score": item.score,
+                        "doc_id": item.doc_id,
+                    }
+                    for item in hits
+                ],
+            }
+        )
 
     @app.get("/api/config/schema")
     def api_config_schema() -> list[dict[str, Any]]:

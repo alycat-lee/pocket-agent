@@ -9,17 +9,31 @@ from typing import Any, Protocol
 
 from pocket_agent.config import AgentConfig
 from pocket_agent.intent_router import IntentMode, IntentRouter, has_tool_hint
+from pocket_agent.knowledge import (
+    EMPTY_RESULT,
+    HONEST_PHRASES,
+    KnowledgeBase,
+    attach_sources,
+    extract_sources,
+)
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import LLMAbortedError, LLMClientProtocol, LLMFormatError
 from pocket_agent.orchestrator import Orchestrator
 from pocket_agent.prompts import (
     FINAL_ANSWER,
+    FINAL_ANSWER_QA,
     REWRITE_QUERY,
     ROLLING_SUMMARY,
     SESSION_TITLE,
 )
 from pocket_agent.runner import AgentRunner, EventEmitter, RunResult, StepRecord, StopReason
-from pocket_agent.task import DEFAULT_WRITER_PLAN, Planner, TaskCard, default_card
+from pocket_agent.task import (
+    DEFAULT_WRITER_PLAN,
+    Planner,
+    TaskCard,
+    default_card,
+    infer_needs_knowledge,
+)
 from pocket_agent.verifier import attach_degrade, verify
 from pocket_agent.workspace import WorkspaceManager
 
@@ -77,6 +91,7 @@ class SessionManager:
         workspace: WorkspaceManager | None = None,
         sessions_dir: Path | str | None = None,
         orchestrator: Orchestrator | None = None,
+        knowledge: KnowledgeBase | None = None,
     ) -> None:
         self._config = config
         self._llm = llm
@@ -87,6 +102,7 @@ class SessionManager:
         self._writer = writer
         self._workspace = workspace
         self._orchestrator = orchestrator
+        self._knowledge = knowledge
         self._sessions_dir = Path(sessions_dir) if sessions_dir else None
         self._sessions: dict[str, SessionState] = {}
         if self._sessions_dir is not None:
@@ -98,6 +114,7 @@ class SessionManager:
         self.last_intent: IntentMode | None = None
         self.last_task_card: TaskCard | None = None
         self.last_verify_reasons: list[str] = []
+        self.last_evidence: str = ""
         self.rewrite_call_count: int = 0
         self.summary_call_count: int = 0
 
@@ -246,6 +263,7 @@ class SessionManager:
             )
         self.last_intent = mode
         self.last_task_card = card
+        self.last_evidence = ""
         turn_no = len(state.turns) + 1
         if self._events is not None:
             self._events.emit(
@@ -370,7 +388,8 @@ class SessionManager:
         plan = list(card.plan)
         if new_type == "writer" and not plan:
             plan = list(DEFAULT_WRITER_PLAN)
-        if new_type == card.type and plan == list(card.plan):
+        needs_k = card.needs_knowledge or infer_needs_knowledge(user_input)
+        if new_type == card.type and plan == list(card.plan) and needs_k == card.needs_knowledge:
             return card
         return TaskCard(
             type=new_type,
@@ -378,6 +397,7 @@ class SessionManager:
             constraints=card.constraints,
             plan=plan,
             needs_history=card.needs_history or new_type == "agent",
+            needs_knowledge=needs_k,
         )
 
     def _dispatch(
@@ -389,18 +409,7 @@ class SessionManager:
         state: SessionState,
     ) -> str:
         if card.type == "qa":
-            try:
-                answer = str(self._llm.generate(run_task)).strip()
-            except LLMAbortedError:
-                answer = "（已停止）"
-                self.last_result = None
-                self._emit_answer_done(answer, stop_reason="stopped")
-                return answer
-            except LLMFormatError as exc:
-                answer = f"[生成回答失败] {exc}"
-            self.last_result = None
-            self._emit_answer_done(answer, stop_reason="qa")
-            return answer
+            return self._run_qa(card, run_task)
         if self._orchestrator is not None and self._orchestrator.should_orchestrate(card):
             return self._run_orchestrated(
                 card, run_task, session_id, permission, state
@@ -416,6 +425,7 @@ class SessionManager:
             permission=permission,
         )
         self.last_result = result
+        self._remember_tool_evidence(result.steps)
         self._sync_write_ops(state, result.steps)
         self._mark_plan_progress(session_id, len(result.steps))
         return str(result.answer)
@@ -443,6 +453,7 @@ class SessionManager:
             session_id=session_id,
             permission=permission,
         )
+        self._remember_tool_evidence(outcome.steps)
         stop = (
             StopReason.STOPPED
             if outcome.stop_reason in {"aborted", "stopped"}
@@ -489,10 +500,14 @@ class SessionManager:
             else max(1, self._config.section_char_target * 6)
         )
         goal = card.goal or topic
+        material = ""
+        if card.needs_knowledge:
+            material = self._retrieve(goal)
         try:
             answer = writer.write(
                 goal,
                 total_chars=total_chars,
+                material=material,
                 plan=list(card.plan) or None,
             )
         except LLMAbortedError:
@@ -502,6 +517,45 @@ class SessionManager:
         reason = "stopped" if getattr(writer, "stopped", False) else "writer"
         self._emit_answer_done(answer, stop_reason=reason)
         return answer
+
+    def _run_qa(self, card: TaskCard, run_task: str) -> str:
+        prompt = run_task
+        if card.needs_knowledge:
+            evidence = self._retrieve(run_task)
+            if _is_empty_retrieval(evidence):
+                answer = EMPTY_RESULT
+                self.last_result = None
+                self._emit_answer_done(answer, stop_reason="qa")
+                return answer
+            prompt = FINAL_ANSWER_QA.format(task=run_task, evidence=evidence)
+        try:
+            answer = str(self._llm.generate(prompt)).strip()
+        except LLMAbortedError:
+            answer = "（已停止）"
+            self.last_result = None
+            self._emit_answer_done(answer, stop_reason="stopped")
+            return answer
+        except LLMFormatError as exc:
+            answer = f"[生成回答失败] {exc}"
+        self.last_result = None
+        self._emit_answer_done(answer, stop_reason="qa")
+        return answer
+
+    def _retrieve(self, query: str) -> str:
+        if self._knowledge is None:
+            self.last_evidence = EMPTY_RESULT
+            return self.last_evidence
+        text = self._knowledge.search_text(query)
+        self.last_evidence = text
+        return text
+
+    def _remember_tool_evidence(self, steps: list[StepRecord]) -> None:
+        lines: list[str] = []
+        for step in steps:
+            if step.tool_name in {"search_knowledge", "wiki_lookup", "web_search"}:
+                lines.append(str(step.result or ""))
+        if lines:
+            self.last_evidence = "\n".join(lines)
 
     def _agent_task(self, card: TaskCard, run_task: str) -> str:
         extras = [
@@ -521,9 +575,10 @@ class SessionManager:
         session_id: str,
     ) -> str:
         self.last_verify_reasons = []
+        evidence = self.last_evidence
         if not self._config.verifier_enabled:
-            return answer
-        reasons = verify(answer, card)
+            return self._attach_sources(answer, card, evidence)
+        reasons = verify(answer, card, evidence=evidence)
         retries = max(0, int(self._config.answer_max_retries))
         if card.type == "writer":
             retries = 0
@@ -531,7 +586,7 @@ class SessionManager:
         while reasons and attempt < retries:
             self.last_verify_reasons = list(reasons)
             self._emit_rejected(session_id, reasons)
-            prompt = FINAL_ANSWER.format(task=run_task, history_text="（无）")
+            prompt = FINAL_ANSWER.format(task=run_task, history_text=evidence or "（无）")
             prompt = (
                 f"{prompt}\n\n验收未通过：{'；'.join(reasons)}\n"
                 "请修正后重新输出回答。"
@@ -542,13 +597,18 @@ class SessionManager:
                 break
             except LLMFormatError:
                 break
-            reasons = verify(answer, card)
+            reasons = verify(answer, card, evidence=evidence)
             attempt += 1
         if reasons:
             self.last_verify_reasons = list(reasons)
             self._emit_rejected(session_id, reasons)
-            return attach_degrade(answer, reasons)
-        return answer
+            return self._attach_sources(attach_degrade(answer, reasons), card, evidence)
+        return self._attach_sources(answer, card, evidence)
+
+    def _attach_sources(self, answer: str, card: TaskCard, evidence: str) -> str:
+        if not card.needs_knowledge:
+            return answer
+        return attach_sources(answer, extract_sources(evidence))
 
     def _emit_rejected(self, session_id: str, reasons: list[str]) -> None:
         if self._events is not None:
@@ -732,3 +792,8 @@ class SessionManager:
             if len(summary) > limit:
                 summary = summary[:limit]
             state.rolling_summary = summary
+
+
+def _is_empty_retrieval(text: str) -> bool:
+    body = (text or "").strip()
+    return (not body) or any(phrase in body for phrase in HONEST_PHRASES)
