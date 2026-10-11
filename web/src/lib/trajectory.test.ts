@@ -161,6 +161,23 @@ describe("projectEvents route", () => {
     expect(rows[0]?.output).toBe("先列大纲再写");
   });
 
+  it("skips answer.delta so the list stays quiet", () => {
+    const rows = projectEvents([
+      {
+        seq: 1,
+        event: "answer.delta",
+        data: { delta: "字" },
+      },
+      {
+        seq: 2,
+        event: "answer.done",
+        data: { answer: "完整回答", turn: 1 },
+      },
+    ]);
+    expect(rows.some((row) => row.event === "answer.delta")).toBe(false);
+    expect(rows.filter((row) => row.kind === "assistant")).toHaveLength(1);
+  });
+
   it("maps rag.empty to other kind with fallback title", () => {
     const rows = projectEvents([
       {

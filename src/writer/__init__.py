@@ -118,6 +118,7 @@ class LongWriter:
         self._llm = llm
         self.on_section: Callable[[int, SectionSpec, str], None] | None = None
         self.on_thinking: Callable[[str], None] | None = None
+        self.on_delta: Callable[[str], None] | None = None
         self.last_outline: list[SectionSpec] = []
         self.last_sections: list[str] = []
         self.last_card: ConsistencyCard = ConsistencyCard()
@@ -170,6 +171,8 @@ class LongWriter:
             budget = max(80, (total_chars - used) // max(remain_sections, 1))
             section.target_chars = min(section.target_chars, budget)
 
+            if written and self.on_delta is not None:
+                self.on_delta("\n\n")
             try:
                 body = self._write_section(
                     topic=topic,
@@ -274,7 +277,11 @@ class LongWriter:
         saved_tokens = _current_max_tokens(self._llm)
         apply_max_tokens(self._llm, section_max_tokens(section.target_chars))
         try:
-            raw = str(self._llm.generate(prompt)).strip()
+            stream = getattr(self._llm, "generate_stream", None)
+            if callable(stream) and self.on_delta is not None:
+                raw = str(stream(prompt, self.on_delta)).strip()
+            else:
+                raw = str(self._llm.generate(prompt)).strip()
         finally:
             if saved_tokens is not None:
                 apply_max_tokens(self._llm, saved_tokens)

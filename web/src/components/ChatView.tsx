@@ -21,12 +21,21 @@ export function ChatView({
       {messages.length === 0 ? (
         <div className="empty-hint">发送一条消息开始对话。步骤细节请切换到「轨迹」。</div>
       ) : null}
-      {messages.map((m) => (
+      {messages.map((m, index) => {
+        const streaming =
+          m.role === "assistant" &&
+          !m.settlement &&
+          !m.error &&
+          index === messages.length - 1;
+        return (
         <div
           key={m.id}
           className={`msg ${m.role}${m.role === "user" ? " msg-user" : ""}${m.error ? " error" : ""}`}
         >
-          <div className="msg-bubble">{m.content}</div>
+          <div className="msg-bubble">
+            {m.content}
+            {streaming ? <span className="stream-cursor">▍</span> : null}
+          </div>
           {m.role === "assistant" && m.settlement ? (
             <div className="settlement-row">
               {m.intent && m.turnId ? (
@@ -47,7 +56,8 @@ export function ChatView({
             </div>
           ) : null}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

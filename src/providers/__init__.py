@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -317,6 +318,18 @@ class ProviderRegistry:
     def generate(self, prompt: str) -> str:
         client = self._get_client(self._config.routing.generate)
         result = client.generate(prompt)
+        self._remember(client)
+        return result
+
+    def generate_stream(self, prompt: str, on_delta: Callable[[str], None]) -> str:
+        client = self._get_client(self._config.routing.generate)
+        stream = getattr(client, "generate_stream", None)
+        if callable(stream):
+            result = str(stream(prompt, on_delta))
+        else:
+            result = str(client.generate(prompt))
+            if result:
+                on_delta(result)
         self._remember(client)
         return result
 

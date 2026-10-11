@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import time
+from collections.abc import Callable
 from typing import Any, Literal, Protocol
 from urllib.parse import urlparse
 
@@ -89,6 +90,10 @@ class LLMClientProtocol(Protocol):
         必须保证返回值符合 schema；不符合时抛 LLMFormatError。"""
         ...
 
+    def generate_stream(self, prompt: str, on_delta: Callable[[str], None]) -> str:
+        """可选：SSE 流式生成。实现方可缺省，调用方须 getattr 探测。"""
+        ...
+
 
 class LLMFormatError(Exception):
     """约束解码失效时的兜底异常（理论上不应发生）。"""
@@ -103,6 +108,86 @@ class LLMAbortedError(Exception):
 
 
 ThinkingMode = Literal["off", "strip", "keep"]
+
+_OPEN_THINK = re.compile(r"^<think\b[^>]*>", re.IGNORECASE)
+_CLOSE_THINK = re.compile(r"^</think\b[^>]*>", re.IGNORECASE)
+
+
+def _maybe_open_think(rest: str) -> bool:
+    low = rest.lower()
+    if ">" in rest:
+        return False
+    return "<think".startswith(low) or low.startswith("<think")
+
+
+def _maybe_close_think(rest: str) -> bool:
+    low = rest.lower()
+    if ">" in rest:
+        return False
+    return "</think".startswith(low) or low.startswith("</think")
+
+
+class _StreamThinkFilter:
+    """跨增量剥离 <think>…</think>，不让思维链进入回答 delta。"""
+
+    def __init__(self) -> None:
+        self.in_think = False
+        self.pending = ""
+        self.thinking_parts: list[str] = []
+
+    def feed(self, chunk: str) -> str:
+        data = self.pending + (chunk or "")
+        self.pending = ""
+        visible: list[str] = []
+        i = 0
+        n = len(data)
+        while i < n:
+            if data[i] != "<":
+                nxt = data.find("<", i)
+                piece = data[i:] if nxt == -1 else data[i:nxt]
+                if self.in_think:
+                    self.thinking_parts.append(piece)
+                else:
+                    visible.append(piece)
+                i = n if nxt == -1 else nxt
+                continue
+            rest = data[i:]
+            if self.in_think:
+                match = _CLOSE_THINK.match(rest)
+                if match:
+                    self.in_think = False
+                    i += match.end()
+                    continue
+                if _maybe_close_think(rest):
+                    self.pending = rest
+                    break
+                self.thinking_parts.append("<")
+                i += 1
+                continue
+            match = _OPEN_THINK.match(rest)
+            if match:
+                self.in_think = True
+                i += match.end()
+                continue
+            if _maybe_open_think(rest):
+                self.pending = rest
+                break
+            visible.append("<")
+            i += 1
+        return "".join(visible)
+
+    def finish(self) -> str:
+        leftover = self.pending
+        self.pending = ""
+        if not leftover:
+            return ""
+        if self.in_think:
+            self.thinking_parts.append(leftover)
+            return ""
+        return leftover
+
+    def thinking_text(self) -> str:
+        return "".join(self.thinking_parts)
 
 
 def is_private_host(host: str) -> bool:
@@ -169,6 +254,131 @@ class OpenAICompatibleClient:
         """自由生成（用于 final_answer、summarize）。"""
         return self._complete(prompt, response_format=None)
 
+    def generate_stream(self, prompt: str, on_delta: Callable[[str], None]) -> str:
+        """SSE 流式生成；每个内容增量回调 on_delta；返回完整文本。"""
+        payload = self._chat_payload(prompt, response_format=None)
+        payload["stream"] = True
+        url = f"{self._config.base_url.rstrip('/')}/chat/completions"
+        if self._abort.is_set():
+            raise LLMAbortedError("aborted")
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        filt = _StreamThinkFilter()
+        collected: list[str] = []
+        self.last_thinking = ""
+        try:
+            with (
+                httpx.Client(
+                    timeout=self._config.timeout, trust_env=self._trust_env
+                ) as client,
+                client.stream("POST", url, json=payload, headers=headers) as response,
+            ):
+                with self._in_flight_lock:
+                    self._in_flight = response
+                try:
+                    if self._abort.is_set():
+                        raise LLMAbortedError("aborted")
+                    if response.status_code == 400:
+                        raw_err = response.read().decode("utf-8", errors="replace")
+                        if "stream" in raw_err.lower():
+                            text = self._complete(prompt, response_format=None)
+                            if text:
+                                on_delta(text)
+                            return text
+                        raise LLMConnectionError(f"HTTP 400: {raw_err}")
+                    if response.status_code >= 400:
+                        raw_err = response.read().decode("utf-8", errors="replace")
+                        raise LLMConnectionError(
+                            f"HTTP {response.status_code}: {raw_err}"
+                        )
+                    for line in response.iter_lines():
+                        if self._abort.is_set():
+                            raise LLMAbortedError("aborted")
+                        stripped = (line or "").strip()
+                        if stripped.startswith("data:") and stripped[5:].strip() == "[DONE]":
+                            break
+                        visible = self._consume_sse_line(line, filt)
+                        if visible:
+                            collected.append(visible)
+                            on_delta(visible)
+                finally:
+                    with self._in_flight_lock:
+                        self._in_flight = None
+        except LLMAbortedError:
+            raise
+        except LLMConnectionError:
+            raise
+        except httpx.RequestError as exc:
+            if self._abort.is_set():
+                raise LLMAbortedError(str(exc)) from exc
+            raise LLMConnectionError(str(exc)) from exc
+        except Exception as exc:
+            if self._abort.is_set():
+                raise LLMAbortedError(str(exc)) from exc
+            raise
+        if self._abort.is_set():
+            raise LLMAbortedError("aborted")
+        tail = filt.finish()
+        if tail:
+            collected.append(tail)
+            on_delta(tail)
+        if self._thinking == "keep":
+            self.last_thinking += filt.thinking_text()
+        else:
+            self.last_thinking = ""
+        return "".join(collected)
+
+    def _consume_sse_line(self, line: str, filt: _StreamThinkFilter) -> str:
+        text = (line or "").strip()
+        if not text.startswith("data:"):
+            return ""
+        payload = text[5:].strip()
+        if payload == "[DONE]":
+            return ""
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            return ""
+        try:
+            delta = data["choices"][0]["delta"]
+        except (KeyError, IndexError, TypeError):
+            return ""
+        if not isinstance(delta, dict):
+            return ""
+        reasoning = delta.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning and self._thinking == "keep":
+            self.last_thinking += reasoning
+        content = delta.get("content")
+        if not isinstance(content, str) or not content:
+            return ""
+        return filt.feed(content)
+
+    def _chat_payload(
+        self,
+        prompt: str,
+        *,
+        response_format: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self._config.model,
+            "messages": [
+                {"role": "system", "content": ""},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": self._config.temperature,
+            "repeat_penalty": self._config.repeat_penalty,
+            "top_p": self._config.top_p,
+            "max_tokens": self._config.max_tokens,
+        }
+        if self._thinking == "off":
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        elif self._thinking == "keep":
+            payload["chat_template_kwargs"] = {"enable_thinking": True}
+        if response_format is not None:
+            payload["response_format"] = response_format
+        return payload
+
     def generate_int(self, prompt: str, minimum: int, maximum: int) -> int:
         """约束整数生成（用于 choose_tool）。"""
         schema = {
@@ -210,24 +420,9 @@ class OpenAICompatibleClient:
         *,
         response_format: dict[str, Any] | None,
     ) -> str:
-        payload: dict[str, Any] = {
-            "model": self._config.model,
-            "messages": [
-                {"role": "system", "content": ""},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": self._config.temperature,
-            "repeat_penalty": self._config.repeat_penalty,
-            "top_p": self._config.top_p,
-            "max_tokens": self._config.max_tokens,
-        }
-        if self._thinking == "off":
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
-        elif self._thinking == "keep":
-            payload["chat_template_kwargs"] = {"enable_thinking": True}
-        if response_format is not None:
-            payload["response_format"] = response_format
-        return self._request_with_retry(payload)
+        return self._request_with_retry(
+            self._chat_payload(prompt, response_format=response_format)
+        )
 
     def _request_with_retry(self, payload: dict[str, Any]) -> str:
         url = f"{self._config.base_url.rstrip('/')}/chat/completions"

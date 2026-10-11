@@ -498,6 +498,19 @@ button:disabled {
   color: #fecaca;
 }
 
+.stream-cursor {
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--color-accent);
+  animation: stream-cursor-blink 1s step-end infinite;
+}
+
+@keyframes stream-cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 .settlement-row {
   display: flex;
   align-items: center;

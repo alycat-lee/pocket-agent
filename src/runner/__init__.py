@@ -124,6 +124,30 @@ class AgentRunner:
             payload["step_index"] = step
         self._emit("step.thinking", payload)
 
+    def _generate_final(self, prompt: str) -> str:
+        stream = getattr(self._llm, "generate_stream", None)
+        if not callable(stream) or self._events is None:
+            return str(self._llm.generate(prompt))
+        buf = ""
+        last = time.monotonic()
+
+        def _feed(text: str) -> None:
+            nonlocal buf, last
+            if not text:
+                return
+            buf += text
+            now = time.monotonic()
+            if now - last >= 0.040 or len(buf) >= 32:
+                self._emit("answer.delta", {"delta": buf})
+                buf = ""
+                last = now
+
+        try:
+            return str(stream(prompt, _feed))
+        finally:
+            if buf:
+                self._emit("answer.delta", {"delta": buf})
+
     def _step_fields(
         self,
         *,
@@ -508,7 +532,7 @@ class AgentRunner:
             prompt_tokens_max = max(prompt_tokens_max, final_tokens)
             llm_t0 = time.perf_counter()
             try:
-                answer = self._llm.generate(final_prompt)
+                answer = self._generate_final(final_prompt)
                 self._emit_thinking()
             except LLMAbortedError:
                 stop_reason = StopReason.STOPPED

@@ -39,6 +39,8 @@ from pocket_agent.verifier import attach_degrade, verify
 from pocket_agent.workspace import WorkspaceManager
 
 _TURN_ANSWER_DIGEST = 120
+_DELTA_FLUSH_SEC = 0.040
+_DELTA_FLUSH_CHARS = 32
 
 _SID_SAFE = re.compile(r"[^\w.\-]+")
 
@@ -57,6 +59,46 @@ def _digest_answer(answer: str, limit: int = _TURN_ANSWER_DIGEST) -> str:
 
 class WriterProtocol(Protocol):
     def write(self, topic: str, **kwargs: Any) -> str: ...
+
+
+class _DeltaPump:
+    """合并 answer.delta，按 40ms 或 32 字冲刷。"""
+
+    def __init__(
+        self,
+        events: EventEmitter | None,
+        session_id: str,
+        turn: int | None,
+    ) -> None:
+        self._events = events
+        self._session_id = session_id
+        self._turn = turn
+        self._buf = ""
+        self._last = time.monotonic()
+
+    def feed(self, text: str) -> None:
+        if not text:
+            return
+        self._buf += text
+        now = time.monotonic()
+        if now - self._last >= _DELTA_FLUSH_SEC or len(self._buf) >= _DELTA_FLUSH_CHARS:
+            self._flush()
+            self._last = now
+
+    def close(self) -> None:
+        self._flush()
+
+    def _flush(self) -> None:
+        if not self._buf or self._events is None:
+            self._buf = ""
+            return
+        payload: dict[str, Any] = {
+            "session_id": self._session_id,
+            "turn": self._turn,
+            "delta": self._buf,
+        }
+        self._events.emit("answer.delta", payload)
+        self._buf = ""
 
 
 @dataclass
@@ -124,6 +166,8 @@ class SessionManager:
         self.rewrite_call_count: int = 0
         self.summary_call_count: int = 0
         self._active_turn: int | None = None
+        self._active_session_id: str = ""
+        self._answer_done_emitted: bool = False
 
     @property
     def persist_enabled(self) -> bool:
@@ -294,6 +338,8 @@ class SessionManager:
         agent：当前 Agent 名称，决定会话目录与人格。
         """
         self._active_agent = agent or DEFAULT_AGENT
+        self._active_session_id = session_id
+        self._answer_done_emitted = False
         self._last_system = self._system_preamble(user_input)
         state = self.get_state(session_id, agent=self._active_agent)
         state.agent = self._active_agent
@@ -385,6 +431,8 @@ class SessionManager:
 
         answer = self._dispatch(card, run_task, session_id, permission, state)
         answer = self._verify_answer(answer, card, run_task, session_id)
+        if card.type == "qa" and not self._answer_done_emitted:
+            self._emit_answer_done(answer, stop_reason="qa")
 
         turn = TurnRecord(
             turn=turn_no,
@@ -550,6 +598,7 @@ class SessionManager:
         writer = self._writer
         if writer is None:
             return topic
+        pump: _DeltaPump | None = None
         if self._events is not None and hasattr(writer, "on_thinking"):
             def _emit_think(text: str) -> None:
                 if text and self._config.reasoning_enabled and self._events is not None:
@@ -563,6 +612,10 @@ class SessionManager:
                     )
 
             writer.on_thinking = _emit_think
+        if self._events is not None:
+            pump = _DeltaPump(self._events, session_id, self._active_turn)
+            if hasattr(writer, "on_delta"):
+                writer.on_delta = pump.feed
         if self._events is not None and hasattr(writer, "on_section"):
             def _on_section(index: int, _section: object, _body: str) -> None:
                 if self._events is not None:
@@ -596,6 +649,11 @@ class SessionManager:
         except LLMAbortedError:
             answer = "\n\n".join(writer.last_sections)
             writer.stopped = True
+        finally:
+            if pump is not None:
+                pump.close()
+            if hasattr(writer, "on_delta"):
+                writer.on_delta = None
         self.last_result = None
         reason = "stopped" if getattr(writer, "stopped", False) else "writer"
         self._emit_answer_done(answer, stop_reason=reason)
@@ -624,7 +682,7 @@ class SessionManager:
                 prompt = FINAL_ANSWER_QA.format(task=run_task, evidence=evidence)
         prompt = self._wrap_system(prompt)
         try:
-            answer = str(self._llm.generate(prompt)).strip()
+            answer = self._generate_user_text(prompt, session_id)
         except LLMAbortedError:
             answer = "（已停止）"
             self.last_result = None
@@ -633,8 +691,17 @@ class SessionManager:
         except LLMFormatError as exc:
             answer = f"[生成回答失败] {exc}"
         self.last_result = None
-        self._emit_answer_done(answer, stop_reason="qa")
         return answer
+
+    def _generate_user_text(self, prompt: str, session_id: str) -> str:
+        stream = getattr(self._llm, "generate_stream", None)
+        if callable(stream) and self._events is not None:
+            pump = _DeltaPump(self._events, session_id, self._active_turn)
+            try:
+                return str(stream(prompt, pump.feed)).strip()
+            finally:
+                pump.close()
+        return str(self._llm.generate(prompt)).strip()
 
     def _retrieve(self, query: str) -> str:
         if self._knowledge is None:
@@ -687,7 +754,7 @@ class SessionManager:
                 "请修正后重新输出回答。"
             )
             try:
-                answer = str(self._llm.generate(prompt)).strip() or answer
+                answer = self._generate_user_text(prompt, session_id) or answer
             except LLMAbortedError:
                 break
             except LLMFormatError:
@@ -720,9 +787,11 @@ class SessionManager:
             return
         meta = getattr(self, "_run_meta", None)
         extra = dict(meta) if isinstance(meta, dict) else {}
+        self._answer_done_emitted = True
         payload: dict[str, Any] = {
             "answer": answer,
             "stop_reason": stop_reason,
+            "session_id": self._active_session_id,
             "total_steps": 0,
             "llm_ms": 0,
             "tool_ms": 0,

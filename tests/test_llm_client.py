@@ -438,3 +438,119 @@ def test_abort_current_interrupts_in_flight_stream() -> None:
     assert not thread.is_alive()
     assert caught
     assert isinstance(caught[0], LLMAbortedError)
+
+
+def _sse_bytes(lines: list[str]) -> bytes:
+    return "".join(f"{line}\n" for line in lines).encode("utf-8")
+
+
+def _transport_for(handler: object) -> object:
+    transport = httpx.MockTransport(handler)  # type: ignore[arg-type]
+    real = httpx.Client
+
+    def factory(*args: object, **kwargs: object) -> httpx.Client:
+        kwargs["transport"] = transport
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    return factory
+
+
+def test_generate_stream_strips_think_and_reasoning() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        body = _sse_bytes(
+            [
+                'data: {"choices":[{"delta":{"content":"你"}}]}',
+                'data: {"choices":[{"delta":{"reasoning_content":"先想"}}]}',
+                'data: {"choices":[{"delta":{"content":"<think>隐"}}]}',
+                'data: {"choices":[{"delta":{"content":"藏</think>好"}}]}',
+                'data: {"choices":[{"delta":{"content":"的"}}]}',
+                "data: [DONE]",
+            ]
+        )
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"content-type": "text/event-stream"},
+            request=request,
+        )
+
+    client = OpenAICompatibleClient(AgentConfig(), thinking="keep")
+    deltas: list[str] = []
+    with patch(
+        "pocket_agent.llm_client.httpx.Client",
+        side_effect=_transport_for(handler),
+    ):
+        text = client.generate_stream("问", deltas.append)
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload.get("stream") is True
+    assert "response_format" not in payload
+    assert deltas == ["你", "好", "的"]
+    assert text == "你好的"
+    assert "先想" in client.last_thinking
+    assert "隐藏" in client.last_thinking
+
+
+def test_generate_stream_abort_raises() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        def _gen() -> object:
+            yield b'data: {"choices":[{"delta":{"content":"a"}}]}\n'
+            for _ in range(40):
+                yield b'data: {"choices":[{"delta":{"content":"b"}}]}\n'
+            yield b"data: [DONE]\n"
+
+        return httpx.Response(
+            200,
+            content=_gen(),
+            headers={"content-type": "text/event-stream"},
+            request=request,
+        )
+
+    client = OpenAICompatibleClient(AgentConfig(), thinking="keep")
+
+    def on_delta(_chunk: str) -> None:
+        client.abort_current()
+
+    with (
+        patch(
+            "pocket_agent.llm_client.httpx.Client",
+            side_effect=_transport_for(handler),
+        ),
+        pytest.raises(LLMAbortedError),
+    ):
+        client.generate_stream("问", on_delta)
+
+
+def test_generate_stream_falls_back_when_stream_rejected() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                400,
+                text='{"error":"stream not supported"}',
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "降级回答"}}
+                ]
+            },
+            request=request,
+        )
+
+    client = OpenAICompatibleClient(AgentConfig())
+    deltas: list[str] = []
+    with patch(
+        "pocket_agent.llm_client.httpx.Client",
+        side_effect=_transport_for(handler),
+    ):
+        text = client.generate_stream("问", deltas.append)
+    assert text == "降级回答"
+    assert deltas == ["降级回答"]

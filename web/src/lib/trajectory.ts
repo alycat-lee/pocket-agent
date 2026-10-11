@@ -24,6 +24,7 @@ function kindOf(event: string, data: Record<string, unknown>): TrajectoryRecord[
   if (event === "merger.start" || event === "merger.done") return "merge";
   if (event === "step.thinking") return "thinking";
   if (event === "rag.empty") return "other";
+  if (event === "answer.delta") return "other";
   if (event === "step.start" || event === "step.cache_hit") return "tool";
   return "other";
 }
@@ -100,6 +101,7 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
   let lastRunMeta: Record<string, string> = {};
   const out: TrajectoryRecord[] = [];
   for (const ev of raw) {
+    if (ev.event === "answer.delta") continue;
     const data = ev.data || {};
     if (ev.event === "run.start") {
       lastRunMeta = runMetaOf(data);

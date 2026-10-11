@@ -71,7 +71,9 @@ _BUS_EVENTS = (
     "merger.start",
     "merger.done",
     "rag.empty",
+    "answer.delta",
 )
+_PERSIST_EVENTS = tuple(name for name in _BUS_EVENTS if name != "answer.delta")
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 
 
@@ -397,7 +399,7 @@ def attach_event_persistence(
 
         return _handler
 
-    return [ctx.on(name, _persist(name)) for name in _BUS_EVENTS]
+    return [ctx.on(name, _persist(name)) for name in _PERSIST_EVENTS]
 
 
 def build_app(

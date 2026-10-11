@@ -20,6 +20,19 @@ function assistant(intentMode: "qa" | "agent" | "writer"): ChatMessage {
   };
 }
 
+describe("ChatView streaming cursor", () => {
+  it("shows a cursor on the last assistant bubble without settlement", () => {
+    render(
+      <ChatView
+        messages={[{ id: "stream-1", role: "assistant", content: "正在" }]}
+        onSettlementClick={vi.fn()}
+        onCorrectIntent={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("▍")).toBeInTheDocument();
+  });
+});
+
 describe("ChatView user bubble", () => {
   it("applies msg-user class so short bubbles shrink to the right", () => {
     render(

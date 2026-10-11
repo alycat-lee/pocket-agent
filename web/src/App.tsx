@@ -50,6 +50,11 @@ import {
   setSessionView,
   setStatusExpanded,
 } from "./lib/storage";
+import {
+  applyAnswerDelta,
+  applyAnswerDone,
+  markStreamError,
+} from "./lib/streaming";
 import { projectEvents, upsertLiveEvent } from "./lib/trajectory";
 
 function newId(): string {
@@ -115,6 +120,8 @@ export default function App() {
   const runStarted = useRef<number>(0);
   const turnCounter = useRef(0);
   const pendingIntentRef = useRef<IntentInfo | null>(null);
+  const runIdRef = useRef<string | null>(null);
+  const streamingRef = useRef("");
 
   const reloadSessions = useCallback(async () => {
     try {
@@ -373,6 +380,12 @@ export default function App() {
           provider_name: String(data.provider_name || ""),
           provider_type: String(data.provider_type || ""),
         });
+      } else if (event === "answer.delta") {
+        const rid = runIdRef.current;
+        const delta = String(data.delta || "");
+        if (!rid || !delta) return;
+        streamingRef.current += delta;
+        setMessages((prev) => applyAnswerDelta(prev, rid, delta));
       } else if (event === "answer.done") {
         const settlement: Settlement = {
           total_steps: Number(data.total_steps ?? 0),
@@ -398,17 +411,15 @@ export default function App() {
         const turnId = `turn-${turnCounter.current}`;
         const intent = pendingIntentRef.current;
         pendingIntentRef.current = null;
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: newId(),
-            role: "assistant",
-            content: String(data.answer || ""),
+        const rid = runIdRef.current;
+        setMessages((prev) =>
+          applyAnswerDone(prev, rid || "", String(data.answer || ""), {
             settlement,
             turnId,
             intent: intent ?? undefined,
-          },
-        ]);
+          }),
+        );
+        streamingRef.current = "";
         const stopped = settlement.stop_reason === "stopped";
         setStatus((s) => ({
           ...s,
@@ -457,15 +468,20 @@ export default function App() {
           setSessionView(sessionId, "chat");
         } else {
           setSoftError("运行出错，请查看轨迹视图中的错误记录。");
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: newId(),
-              role: "assistant",
-              content: "本轮未能完成。请切换到轨迹视图检查详情。",
-              error: true,
-            },
-          ]);
+          const rid = runIdRef.current;
+          if (rid && streamingRef.current) {
+            setMessages((prev) => markStreamError(prev, rid));
+          } else {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: newId(),
+                role: "assistant",
+                content: "本轮未能完成。请切换到轨迹视图检查详情。",
+                error: true,
+              },
+            ]);
+          }
         }
         setStatus((s) => ({ ...s, running: false, phase: "" }));
         setRunId(null);
@@ -511,6 +527,8 @@ export default function App() {
     }
     const rid = newId();
     setRunId(rid);
+    runIdRef.current = rid;
+    streamingRef.current = "";
     pendingIntentRef.current = null;
     setRecords((prev) =>
       upsertLiveEvent(prev, "user.message", {
@@ -577,6 +595,7 @@ export default function App() {
       "merger.start",
       "merger.done",
       "rag.empty",
+      "answer.delta",
       "error",
     ];
     for (const name of names) {
