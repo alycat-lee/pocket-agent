@@ -1,0 +1,54 @@
+[
+  {
+    "id": "d1-json-person",
+    "dimension": "d1",
+    "input": "只输出一个 JSON 对象，不要其他文字。字段必须包含 name 与 age：name 为 Ada，age 为 30。",
+    "parse": {"kind": "json", "keys": ["name", "age"]},
+    "expected": {"name": "Ada", "age": 30},
+    "rubric": {
+      "pass_criteria": ["输出可被解析为 JSON 对象", "含 name 与 age 字段"],
+      "score_fields": ["parse_ok", "format_ok"]
+    }
+  },
+  {
+    "id": "d1-int-only",
+    "dimension": "d1",
+    "input": "计算 3+5。只输出一个整数，不要单位、标点或其他文字。",
+    "parse": {"kind": "int"},
+    "expected": "8",
+    "rubric": {
+      "pass_criteria": ["首行是单个整数"],
+      "score_fields": ["parse_ok"]
+    }
+  },
+  {
+    "id": "d1-md-table",
+    "dimension": "d1",
+    "input": "用 Markdown 表格列出苹果、香蕉、葡萄三种水果的颜色。必须含表头分隔行（---）。",
+    "parse": {"kind": "table"},
+    "rubric": {
+      "pass_criteria": ["含 | 列分隔", "含 --- 表头分隔"],
+      "score_fields": ["parse_ok"]
+    }
+  },
+  {
+    "id": "d1-yaml-list",
+    "dimension": "d1",
+    "input": "用 YAML 列表输出三个亚洲国家名，每行以短横线加空格开头（- ），不要编号或其他格式。",
+    "parse": {"kind": "yaml_list", "count": 3},
+    "rubric": {
+      "pass_criteria": ["至少三行 - 列表项"],
+      "score_fields": ["parse_ok"]
+    }
+  },
+  {
+    "id": "d1-three-lines",
+    "dimension": "d1",
+    "input": "只输出恰好三行，每行一个中文星期名称（例如星期一）。不要空行、不要解释。",
+    "parse": {"kind": "lines", "count": 3},
+    "rubric": {
+      "pass_criteria": ["非空行恰好三行"],
+      "score_fields": ["parse_ok"]
+    }
+  }
+]

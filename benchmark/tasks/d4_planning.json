@@ -1,0 +1,52 @@
+[
+  {
+    "id": "d4-accident-novel",
+    "dimension": "d4",
+    "input": "给我生成一篇2万字的小说 内容随意",
+    "expected_constraints": {"type": "writer", "total_chars": 20000},
+    "rubric": {
+      "pass_criteria": ["任务类型为 writer", "约束 total_chars=20000"],
+      "score_fields": ["type_ok", "constraint_ok"]
+    }
+  },
+  {
+    "id": "d4-analysis-3k",
+    "dimension": "d4",
+    "input": "写一篇 3000 字的新能源汽车行业分析",
+    "expected_constraints": {"type": "writer", "total_chars": 3000},
+    "rubric": {
+      "pass_criteria": ["任务类型为 writer", "约束 total_chars=3000"],
+      "score_fields": ["type_ok", "constraint_ok"]
+    }
+  },
+  {
+    "id": "d4-weather-tool",
+    "dimension": "d4",
+    "input": "查一下北京天气",
+    "expected_constraints": {"type": "agent"},
+    "rubric": {
+      "pass_criteria": ["任务类型为 agent"],
+      "score_fields": ["type_ok"]
+    }
+  },
+  {
+    "id": "d4-hello-qa",
+    "dimension": "d4",
+    "input": "你好，今天过得怎么样",
+    "expected_constraints": {"type": "qa"},
+    "rubric": {
+      "pass_criteria": ["任务类型为 qa"],
+      "score_fields": ["type_ok"]
+    }
+  },
+  {
+    "id": "d4-translate",
+    "dimension": "d4",
+    "input": "翻译这段英文：Hello world",
+    "expected_constraints": {"type": "writer"},
+    "rubric": {
+      "pass_criteria": ["任务类型为 writer（翻译走长文/改写路径）"],
+      "score_fields": ["type_ok"]
+    }
+  }
+]

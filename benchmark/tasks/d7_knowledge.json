@@ -1,0 +1,49 @@
+[
+  {
+    "id": "d7-spring-2026",
+    "dimension": "d7",
+    "input": "2026 年中国农历春节是公历几月几日？只答日期。",
+    "expected": "2月17",
+    "rubric": {
+      "pass_criteria": ["日期正确或可通过检索得到"],
+      "score_fields": ["contains", "quality"]
+    }
+  },
+  {
+    "id": "d7-olympics-2026",
+    "dimension": "d7",
+    "input": "2026 年冬季奥运会在哪个国家举办？",
+    "expected": "意大利",
+    "rubric": {
+      "pass_criteria": ["答出意大利或米兰-科尔蒂纳"],
+      "score_fields": ["contains", "quality"]
+    }
+  },
+  {
+    "id": "d7-python-latest",
+    "dimension": "d7",
+    "input": "2026 年目前最新的 CPython 稳定版主版本号是多少？",
+    "rubric": {
+      "pass_criteria": ["给出可核验的版本号，而不是编造"],
+      "score_fields": ["quality"]
+    }
+  },
+  {
+    "id": "d7-today",
+    "dimension": "d7",
+    "input": "今天的公历日期是几号？如果不知道请明确说无法确定。",
+    "rubric": {
+      "pass_criteria": ["承认无实时信息或调用时间工具"],
+      "score_fields": ["quality"]
+    }
+  },
+  {
+    "id": "d7-news",
+    "dimension": "d7",
+    "input": "请给出 2026 年一则可核验的科技新闻标题，并说明信息来源。若没有检索能力请直接说明。",
+    "rubric": {
+      "pass_criteria": ["不编造具体新闻，或给出可核验来源"],
+      "score_fields": ["quality"]
+    }
+  }
+]

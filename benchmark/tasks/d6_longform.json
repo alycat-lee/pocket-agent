@@ -1,0 +1,52 @@
+[
+  {
+    "id": "d6-cafe-800",
+    "dimension": "d6",
+    "input": "写一篇约 800 字的咖啡馆短文，内容完整。",
+    "expected_constraints": {"total_chars": 800},
+    "rubric": {
+      "pass_criteria": ["字数达到目标 60%", "数字前后一致"],
+      "score_fields": ["char_ratio", "numeric_ok"]
+    }
+  },
+  {
+    "id": "d6-industry-800",
+    "dimension": "d6",
+    "input": "写一篇约 800 字的新能源汽车行业分析，可引用具体数字但前后必须一致。",
+    "expected_constraints": {"total_chars": 800},
+    "rubric": {
+      "pass_criteria": ["字数达标", "数字一致性"],
+      "score_fields": ["char_ratio", "numeric_ok"]
+    }
+  },
+  {
+    "id": "d6-story-800",
+    "dimension": "d6",
+    "input": "写一篇约 800 字的短篇故事，有开头发展和收束。",
+    "expected_constraints": {"total_chars": 800},
+    "rubric": {
+      "pass_criteria": ["字数达标", "数字一致性"],
+      "score_fields": ["char_ratio", "numeric_ok"]
+    }
+  },
+  {
+    "id": "d6-explain-800",
+    "dimension": "d6",
+    "input": "写一篇约 800 字的说明文，介绍茶叶的冲泡步骤。",
+    "expected_constraints": {"total_chars": 800},
+    "rubric": {
+      "pass_criteria": ["字数达标", "数字一致性"],
+      "score_fields": ["char_ratio", "numeric_ok"]
+    }
+  },
+  {
+    "id": "d6-report-1500",
+    "dimension": "d6",
+    "input": "写一份约 1500 字的季度工作报告，结构完整。",
+    "expected_constraints": {"total_chars": 1500},
+    "rubric": {
+      "pass_criteria": ["字数达标", "数字一致性"],
+      "score_fields": ["char_ratio", "numeric_ok"]
+    }
+  }
+]

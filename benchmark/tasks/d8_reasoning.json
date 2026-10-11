@@ -1,0 +1,55 @@
+[
+  {
+    "id": "d8-math-hop",
+    "dimension": "d8",
+    "input": "一本书 32 元，买 3 本打九折，付款后又用优惠券减 5 元。实付多少元？只输出数字。",
+    "expected": "81.4",
+    "parse": {"kind": "number"},
+    "rubric": {
+      "pass_criteria": ["算出 32*3*0.9-5=81.4"],
+      "score_fields": ["contains", "reasoning"]
+    }
+  },
+  {
+    "id": "d8-logic",
+    "dimension": "d8",
+    "input": "甲乙丙三人，只有一人说真话。甲：是乙。乙：不是我。丙：是甲。谁说真话？只答甲或乙或丙。",
+    "expected": "乙",
+    "rubric": {
+      "pass_criteria": ["正确答案为乙"],
+      "score_fields": ["contains", "reasoning"]
+    }
+  },
+  {
+    "id": "d8-chickens",
+    "dimension": "d8",
+    "input": "鸡兔同笼：共 10 个头、28 只脚。兔有几只？只输出整数。",
+    "expected": "4",
+    "parse": {"kind": "int"},
+    "rubric": {
+      "pass_criteria": ["兔=4"],
+      "score_fields": ["parse_ok", "reasoning"]
+    }
+  },
+  {
+    "id": "d8-compare",
+    "dimension": "d8",
+    "input": "A 比 B 大 3，B 比 C 大 2，C=5。A 是多少？只输出整数。",
+    "expected": "10",
+    "parse": {"kind": "int"},
+    "rubric": {
+      "pass_criteria": ["A=10"],
+      "score_fields": ["parse_ok", "reasoning"]
+    }
+  },
+  {
+    "id": "d8-who-oldest",
+    "dimension": "d8",
+    "input": "小明比小红大，小红比小刚大，小刚 10 岁，小明 14 岁。三人里谁最年轻？只答名字。",
+    "expected": "小刚",
+    "rubric": {
+      "pass_criteria": ["最年轻是小刚"],
+      "score_fields": ["contains", "reasoning"]
+    }
+  }
+]

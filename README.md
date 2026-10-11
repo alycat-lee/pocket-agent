@@ -1,5 +1,7 @@
 # pocket-agent
 
+> 纲领文件：[能力等效目标体系](pocket-agent-docs/15-能力等效目标体系.md) — 目标维度由三跑道基准衡量（裸 8B / 8B+框架 / 云端）。
+
 面向 8G 显存本地小模型的工具调用 Agent 框架。
 
 模型只做两种原子任务：**单步选择（选择题）** 与 **参数填充（填空题）**；流程、记忆、去重、格式与护栏由代码保证。
@@ -163,6 +165,7 @@ py -3.13 -m pytest tests/test_integration.py -v --integration
 py -3.13 scripts/eval.py --runs 3
 py -3.13 scripts/eval.py --runs 3 --baseline
 py -3.13 scripts/eval.py --writer
+py -3.13 scripts/eval.py --benchmark --dims d1,d2,d3
 ```
 
 集成测试默认跳过，必须显式加 `--integration`。

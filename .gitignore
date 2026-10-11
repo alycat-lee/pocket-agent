@@ -17,6 +17,9 @@ src/plugins/static/icons.svg
 .coverage.*
 htmlcov/
 eval_results.json
+benchmark_report.md
+benchmark/.last_run.json
+benchmark_runs/
 .checkpoints/
 settings.json
 article.md

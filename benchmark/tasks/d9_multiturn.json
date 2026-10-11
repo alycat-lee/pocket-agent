@@ -1,0 +1,58 @@
+[
+  {
+    "id": "d9-weather-follow",
+    "dimension": "d9",
+    "input": "查北京天气",
+    "turns": ["那上海呢？", "这两座城市温差多少？"],
+    "needle": "上海",
+    "rubric": {
+      "pass_criteria": ["第三轮理解「这两座城市」指北京与上海"],
+      "score_fields": ["needle_hit", "quality"]
+    }
+  },
+  {
+    "id": "d9-name-age",
+    "dimension": "d9",
+    "input": "我叫林小满，请记住。",
+    "turns": ["我今年 17 岁。", "我叫什么？几岁？"],
+    "needle": "林小满",
+    "rubric": {
+      "pass_criteria": ["取回姓名"],
+      "score_fields": ["needle_hit"]
+    }
+  },
+  {
+    "id": "d9-shop",
+    "dimension": "d9",
+    "input": "我买了 3 个苹果。",
+    "turns": ["又买了 2 个梨。", "我一共买了几种水果？只输出整数。"],
+    "expected": "2",
+    "needle": "2",
+    "rubric": {
+      "pass_criteria": ["理解「一共」指两类水果"],
+      "score_fields": ["needle_hit"]
+    }
+  },
+  {
+    "id": "d9-rename",
+    "dimension": "d9",
+    "input": "项目原来叫晨星。",
+    "turns": ["后来改名为夜莺。", "现在项目叫什么？"],
+    "needle": "夜莺",
+    "rubric": {
+      "pass_criteria": ["取回改名后的名称"],
+      "score_fields": ["needle_hit"]
+    }
+  },
+  {
+    "id": "d9-pronoun",
+    "dimension": "d9",
+    "input": "桌上有一只蓝色杯子。",
+    "turns": ["它是空的。", "它是什么颜色的？"],
+    "needle": "蓝",
+    "rubric": {
+      "pass_criteria": ["「它」正确指代杯子"],
+      "score_fields": ["needle_hit"]
+    }
+  }
+]

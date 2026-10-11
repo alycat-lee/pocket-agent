@@ -1,0 +1,66 @@
+[
+  {
+    "id": "d2-name",
+    "dimension": "d2",
+    "input": "请记住：我的名字是林小满。只需确认已记住。",
+    "turns": ["我的名字是什么？只回答名字。"],
+    "needle": "林小满",
+    "rubric": {
+      "pass_criteria": ["最终回答含第 1 轮埋入的名字"],
+      "score_fields": ["needle_hit"]
+    }
+  },
+  {
+    "id": "d2-number",
+    "dimension": "d2",
+    "input": "请记住一个数字口令：7381。不要复述口令以外的内容，只确认记住。",
+    "turns": ["口令是多少？只输出数字。"],
+    "needle": "7381",
+    "rubric": {
+      "pass_criteria": ["最终回答含 7381"],
+      "score_fields": ["needle_hit"]
+    }
+  },
+  {
+    "id": "d2-city",
+    "dimension": "d2",
+    "input": "请记住：我住在成都。",
+    "turns": ["顺便聊一下天气吧，今天适合出门吗？", "我住在哪座城市？只回答城市名。"],
+    "needle": "成都",
+    "rubric": {
+      "pass_criteria": ["干扰轮之后仍能取回城市"],
+      "score_fields": ["needle_hit"]
+    }
+  },
+  {
+    "id": "d2-color",
+    "dimension": "d2",
+    "input": "请记住：我最喜欢的颜色是青绿。",
+    "turns": ["我最喜欢什么颜色？"],
+    "needle": "青绿",
+    "rubric": {
+      "pass_criteria": ["最终回答含青绿"],
+      "score_fields": ["needle_hit"]
+    }
+  },
+  {
+    "id": "d2-long-needle",
+    "dimension": "d2",
+    "input": "请记住项目代号：夜莺。只需确认。",
+    "turns": [
+      "1+1等于几？",
+      "用一句话介绍熊猫。",
+      "今天适合喝茶还是咖啡？",
+      "背一句古诗。",
+      "北京是中国的首都吗？",
+      "3的平方是多少？",
+      "推荐一本小说书名即可。",
+      "现在项目代号是什么？只回答代号。"
+    ],
+    "needle": "夜莺",
+    "rubric": {
+      "pass_criteria": ["第 1 轮埋入，第 10 轮取回"],
+      "score_fields": ["needle_hit"]
+    }
+  }
+]

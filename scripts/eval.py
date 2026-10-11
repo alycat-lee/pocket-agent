@@ -23,6 +23,12 @@ from pocket_agent.tools import ToolRegistry
 from pocket_agent.writer import LongWriter, WriterMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from benchmark.run import parse_dims, parse_tracks, run_benchmark
+from benchmark.schema import TRACKS
+
 REPORT_PATH = REPO_ROOT / "tests" / "fixtures" / "report.txt"
 DEFAULT_BASE_URL = AgentConfig().base_url
 
@@ -322,7 +328,30 @@ def main(argv: list[str] | None = None) -> int:
         default=REPO_ROOT / "eval_results.json",
         help="结果 JSON 路径",
     )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="三跑道能力基准（文档 15）",
+    )
+    parser.add_argument(
+        "--dims",
+        default="d1,d2,d3",
+        help="基准维度，逗号分隔，如 d1,d2,d3",
+    )
+    parser.add_argument(
+        "--tracks",
+        default="bare,pocket,cloud",
+        help="基准跑道，逗号分隔",
+    )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        help="对 rubric 主观项启用云端 judge（需 DEEPSEEK_API_KEY）",
+    )
     args = parser.parse_args(argv)
+
+    if args.benchmark:
+        return _run_benchmark(args)
 
     probe_url = f"{args.base_url.rstrip('/')}/chat/completions"
     try:
@@ -440,6 +469,49 @@ def main(argv: list[str] | None = None) -> int:
         print(f"WARNING: pocket-agent dup_call_rate > 0 (max={max_dup:.2%})", file=sys.stderr)
         return 1
     return 0
+
+
+def _run_benchmark(args: argparse.Namespace) -> int:
+    try:
+        dims = parse_dims(str(args.dims))
+        tracks = parse_tracks(str(args.tracks))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    need_local = any(t in tracks for t in ("bare", "pocket"))
+    if need_local:
+        probe_url = f"{args.base_url.rstrip('/')}/chat/completions"
+        try:
+            with httpx.Client(timeout=3.0, trust_env=False) as client:
+                probe = client.post(
+                    probe_url,
+                    json={
+                        "model": "local-model",
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                    },
+                )
+            if probe.status_code != 200:
+                print(
+                    f"llama-server 不可用（{probe_url} -> HTTP {probe.status_code}）。",
+                    file=sys.stderr,
+                )
+                return 2
+        except httpx.HTTPError as exc:
+            print(f"连接 LLM 失败：{exc}", file=sys.stderr)
+            return 2
+
+    output = args.output
+    if output == REPO_ROOT / "eval_results.json":
+        output = REPO_ROOT / "benchmark_report.md"
+    return run_benchmark(
+        dims=dims,
+        tracks=tracks or list(TRACKS),
+        base_url=str(args.base_url),
+        output=output,
+        judge=bool(args.judge),
+    )
 
 
 if __name__ == "__main__":
