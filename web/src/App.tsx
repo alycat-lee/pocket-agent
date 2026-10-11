@@ -514,6 +514,12 @@ export default function App() {
       "task.planned",
       "task.step_done",
       "answer.rejected",
+      "orchestrator.start",
+      "orchestrator.done",
+      "worker.start",
+      "worker.done",
+      "merger.start",
+      "merger.done",
       "error",
     ];
     for (const name of names) {

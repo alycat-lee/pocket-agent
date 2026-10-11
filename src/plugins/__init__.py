@@ -4,6 +4,7 @@ from pocket_agent.plugins.agent_loop import AgentLoopPlugin
 from pocket_agent.plugins.bridge_mcp import BridgeMcpPlugin
 from pocket_agent.plugins.checkpoint_plugin import CheckpointPlugin
 from pocket_agent.plugins.llm_llamacpp import LlmLlamaCppPlugin
+from pocket_agent.plugins.orchestrator_plugin import OrchestratorPlugin
 from pocket_agent.plugins.prompts_plugin import PromptsPlugin
 from pocket_agent.plugins.session_plugin import SessionPlugin
 from pocket_agent.plugins.tools_core import ToolsCorePlugin
@@ -24,6 +25,7 @@ def builtin_plugins() -> dict[str, Plugin]:
         SessionPlugin(),
         WriterPlugin(),
         AgentLoopPlugin(),
+        OrchestratorPlugin(),
         UiCliPlugin(),
         UiWebPlugin(),
     ]

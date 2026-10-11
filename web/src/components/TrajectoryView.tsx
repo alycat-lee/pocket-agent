@@ -1,4 +1,15 @@
-import { Brain, CheckSquare, ClipboardText, Path, Square } from "@phosphor-icons/react";
+import {
+  Brain,
+  CaretDown,
+  CaretRight,
+  CheckSquare,
+  ClipboardText,
+  GitMerge,
+  Path,
+  Square,
+  TreeStructure,
+  Users,
+} from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TrajectoryRecord } from "../api/types";
 import { formatMs } from "../lib/format";
@@ -46,6 +57,7 @@ export function TrajectoryView({
   onExport,
 }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const displayRecords = useMemo(
@@ -61,6 +73,8 @@ export function TrajectoryView({
       displayRecords.map((r) => {
         if (r.kind === "route") return "route";
         if (r.kind === "task") return "task";
+        if (r.kind === "orchestrator") return "task";
+        if (r.kind === "worker" || r.kind === "merge") return "route";
         if (r.kind === "thinking") return "thinking";
         if (r.badges.includes("rejected")) return "rejected";
         if (r.badges.includes("tool_error")) return "tool_error";
@@ -136,9 +150,33 @@ export function TrajectoryView({
             </div>
           ) : null}
           {displayRecords.map((r, index) => {
+            const parentId =
+              r.kind !== "worker" && r.kind !== "merge"
+                ? typeof r.payload.worker_id === "string"
+                  ? r.payload.worker_id
+                  : null
+                : null;
+            if (parentId && !expanded.has(parentId)) {
+              return null;
+            }
             const prevTurn = index > 0 ? displayRecords[index - 1]?.turn : null;
             const showTurn = r.turn !== prevTurn;
             const info = routeInfoOf(r);
+            const workerId =
+              typeof r.payload.worker_id === "string"
+                ? r.payload.worker_id
+                : r.kind === "worker" || r.kind === "merge"
+                  ? String(r.payload.worker_id || r.id)
+                  : "";
+            const childCount = displayRecords.filter(
+              (c) =>
+                c.kind !== "worker" &&
+                c.kind !== "merge" &&
+                c.payload.worker_id === workerId,
+            ).length;
+            const canExpand =
+              (r.kind === "worker" || r.kind === "merge") && childCount > 0;
+            const isOpen = Boolean(workerId && expanded.has(workerId));
             return (
               <div key={r.id}>
                 {showTurn ? (
@@ -146,14 +184,39 @@ export function TrajectoryView({
                 ) : null}
                 <button
                   type="button"
-                  className={`record ${r.kind === "route" ? "route" : ""} ${r.kind === "task" ? "task" : ""} ${r.kind === "thinking" ? "thinking" : ""} ${selected?.id === r.id ? "selected" : ""}`}
+                  className={`record ${r.kind === "route" ? "route" : ""} ${r.kind === "task" || r.kind === "orchestrator" ? "task" : ""} ${r.kind === "thinking" ? "thinking" : ""} ${r.kind === "worker" || r.kind === "merge" ? "worker" : ""} ${parentId ? "nested" : ""} ${selected?.id === r.id ? "selected" : ""}`}
                   onClick={() => setSelectedId(r.id)}
                 >
                   <span className="record-step">
-                    {r.kind === "route" ? (
+                    {canExpand ? (
+                      <span
+                        className="expand-caret"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpanded((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(workerId)) next.delete(workerId);
+                            else next.add(workerId);
+                            return next;
+                          });
+                        }}
+                      >
+                        {isOpen ? (
+                          <CaretDown size={14} weight="bold" />
+                        ) : (
+                          <CaretRight size={14} weight="bold" />
+                        )}
+                      </span>
+                    ) : r.kind === "route" ? (
                       <Path size={16} weight="bold" />
                     ) : r.kind === "task" ? (
                       <ClipboardText size={16} weight="bold" />
+                    ) : r.kind === "orchestrator" ? (
+                      <TreeStructure size={16} weight="bold" />
+                    ) : r.kind === "worker" ? (
+                      <Users size={16} weight="bold" />
+                    ) : r.kind === "merge" ? (
+                      <GitMerge size={16} weight="bold" />
                     ) : r.kind === "thinking" ? (
                       <Brain size={16} weight="duotone" />
                     ) : r.stepIndex != null ? (
@@ -167,6 +230,12 @@ export function TrajectoryView({
                     <div className="record-meta">
                       {r.kind === "task"
                         ? `计划 ${Array.isArray(r.payload.plan) ? r.payload.plan.length : 0} 步`
+                        : r.kind === "orchestrator"
+                          ? `${String(r.payload.strategy || "collect")} · ${Array.isArray(r.payload.workers) ? r.payload.workers.length : 0} 节点`
+                          : r.kind === "worker" || r.kind === "merge"
+                            ? canExpand
+                              ? `${isOpen ? "收起" : "展开"} ${childCount} 步`
+                              : String(r.payload.strategy || "子任务")
                         : r.kind === "route" && info
                         ? `${SOURCE_LABEL[info.source]} · 置信度 ${Math.round(info.confidence * 100)}%`
                         : r.inProgress

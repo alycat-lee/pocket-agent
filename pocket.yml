@@ -21,6 +21,7 @@ plugins:
       mcp_servers: []
   - name: checkpoint
   - name: agent-loop
+  - name: orchestrator
   - name: session
   - name: writer
   - name: ui-cli

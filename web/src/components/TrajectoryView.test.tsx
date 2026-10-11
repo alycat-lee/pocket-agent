@@ -102,6 +102,57 @@ describe("TrajectoryView route record", () => {
     expect(screen.getByText(/deepseek-chat/)).toBeInTheDocument();
   });
 
+  it("nests worker steps behind an expand control", () => {
+    const orch: TrajectoryRecord = {
+      ...routeRecord(),
+      id: "o1",
+      kind: "orchestrator",
+      event: "orchestrator.start",
+      title: "编排 4 个节点",
+      payload: {
+        strategy: "synthesize",
+        workers: [
+          { id: "w0", title: "查北京天气" },
+          { id: "m3", title: "写对比分析" },
+        ],
+      },
+    };
+    const worker: TrajectoryRecord = {
+      ...routeRecord(),
+      id: "w0",
+      kind: "worker",
+      event: "worker.start",
+      title: "子代理 查北京天气",
+      payload: { worker_id: "w0", title: "查北京天气" },
+    };
+    const step: TrajectoryRecord = {
+      ...routeRecord(),
+      id: "s1",
+      kind: "tool",
+      event: "step.tool_call",
+      title: "工具 get_weather",
+      payload: { worker_id: "w0", tool: "get_weather" },
+      currentTool: "get_weather",
+    };
+    render(
+      <TrajectoryView
+        records={[orch, worker, step]}
+        hasMore={false}
+        loadingEarlier={false}
+        followTail
+        focusId={null}
+        onFollowChange={vi.fn()}
+        onLoadEarlier={vi.fn()}
+        onExport={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("编排 4 个节点")).toBeInTheDocument();
+    expect(screen.getByText("子代理 查北京天气")).toBeInTheDocument();
+    expect(screen.queryByText("工具 get_weather")).toBeNull();
+    fireEvent.click(document.querySelector(".expand-caret") as HTMLElement);
+    expect(screen.getByText("工具 get_weather")).toBeInTheDocument();
+  });
+
   it("shows thinking block in inspector, distinct from answer body", () => {
     const thinking: TrajectoryRecord = {
       ...routeRecord(),

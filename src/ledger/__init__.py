@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -19,6 +20,7 @@ class CallLedger:
     _records: dict[str, str] = field(default_factory=dict)
     real_call_count: int = 0  # 真实执行次数
     hit_count: int = 0  # 缓存命中次数
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def fingerprint(self, tool_name: str, args: dict) -> str:
         """md5(tool_name + canonical_json(args))"""
@@ -28,33 +30,42 @@ class CallLedger:
     def check(self, tool_name: str, args: dict) -> str | None:
         """命中返回缓存结果并 hit_count += 1；未命中返回 None。"""
         fp = self.fingerprint(tool_name, args)
-        if fp not in self._records:
-            return None
-        self.hit_count += 1
-        return self._records[fp]
+        with self._lock:
+            if fp not in self._records:
+                return None
+            self.hit_count += 1
+            return self._records[fp]
 
     def save(self, tool_name: str, args: dict, result: str) -> None:
         """记录结果并 real_call_count += 1（仅在真实执行后调用）。"""
         fp = self.fingerprint(tool_name, args)
-        self._records[fp] = result
-        self.real_call_count += 1
+        with self._lock:
+            self._records[fp] = result
+            self.real_call_count += 1
 
     def seed(self, tool_name: str, args: dict, result: str) -> None:
         """写入缓存记录但不增加 real_call_count（用于跨轮 write_op 预置）。"""
         fp = self.fingerprint(tool_name, args)
-        self._records[fp] = result
+        with self._lock:
+            self._records[fp] = result
 
     def merge_records(self, other: CallLedger) -> None:
         """合并另一账本的指纹缓存（不合并计数器）。"""
-        self._records.update(other._records)
+        incoming = other.export_records() if other is not self else {}
+        if not incoming:
+            return
+        with self._lock:
+            self._records.update(incoming)
 
     def export_records(self) -> dict[str, str]:
         """导出指纹→结果映射，供 checkpoint 序列化。"""
-        return dict(self._records)
+        with self._lock:
+            return dict(self._records)
 
     def import_records(self, records: dict[str, str]) -> None:
         """导入指纹缓存（不修改计数器）。"""
-        self._records.update(records)
+        with self._lock:
+            self._records.update(records)
 
 
 class SemanticDeduper:

@@ -105,6 +105,49 @@ describe("projectEvents route", () => {
     expect(rows[0]?.title).toBe("验收未通过");
   });
 
+  it("maps orchestrator and worker events into nested kinds", () => {
+    const rows = projectEvents([
+      {
+        seq: 1,
+        event: "orchestrator.start",
+        data: {
+          strategy: "synthesize",
+          workers: [
+            { id: "w0", title: "查北京天气", kind: "worker" },
+            { id: "w1", title: "查上海天气", kind: "worker" },
+            { id: "w2", title: "查广州天气", kind: "worker" },
+            { id: "m3", title: "写对比分析", kind: "merge" },
+          ],
+          turn: 1,
+        },
+      },
+      {
+        seq: 2,
+        event: "worker.start",
+        data: { worker_id: "w0", title: "查北京天气", turn: 1 },
+      },
+      {
+        seq: 3,
+        event: "step.tool_call",
+        data: { worker_id: "w0", tool: "get_weather", step_index: 1 },
+      },
+      {
+        seq: 4,
+        event: "merger.start",
+        data: { worker_id: "m3", strategy: "synthesize", title: "写对比分析" },
+      },
+    ]);
+    expect(rows.map((r) => r.kind)).toEqual([
+      "orchestrator",
+      "worker",
+      "tool",
+      "merge",
+    ]);
+    expect(rows[0]?.title).toContain("4 个节点");
+    expect(rows[1]?.title).toContain("查北京天气");
+    expect(rows[3]?.title).toContain("synthesize");
+  });
+
   it("maps step.thinking to thinking kind and text output", () => {
     const rows = projectEvents([
       {

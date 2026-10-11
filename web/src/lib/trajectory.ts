@@ -17,6 +17,11 @@ function kindOf(event: string, data: Record<string, unknown>): TrajectoryRecord[
   if (event === "approval.required") return "approval";
   if (event === "intent.detected") return "route";
   if (event === "task.planned") return "task";
+  if (event === "orchestrator.start" || event === "orchestrator.done") {
+    return "orchestrator";
+  }
+  if (event === "worker.start" || event === "worker.done") return "worker";
+  if (event === "merger.start" || event === "merger.done") return "merge";
   if (event === "step.thinking") return "thinking";
   if (event === "step.start" || event === "step.cache_hit") return "tool";
   return "other";
@@ -56,6 +61,17 @@ function titleOf(
     const goal = String(data.goal || "").trim();
     return goal ? `任务卡：${goal}` : "任务卡";
   }
+  if (kind === "orchestrator") {
+    const n = Array.isArray(data.workers) ? data.workers.length : 0;
+    return n ? `编排 ${n} 个节点` : "编排";
+  }
+  if (kind === "worker") {
+    const title = String(data.title || data.task || "").trim();
+    return title ? `子代理 ${title}` : "子代理";
+  }
+  if (kind === "merge") {
+    return `合并 ${String(data.strategy || "")}`.trim();
+  }
   if (kind === "route") {
     const mode = String(data.mode || "agent") as IntentMode;
     const source = String(data.source || "fallback") as IntentSource;
@@ -85,6 +101,31 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
     const data = ev.data || {};
     if (ev.event === "run.start") {
       lastRunMeta = runMetaOf(data);
+      continue;
+    }
+    if (
+      ev.event === "worker.done" ||
+      ev.event === "merger.done" ||
+      ev.event === "orchestrator.done"
+    ) {
+      const workerId = data.worker_id;
+      for (let i = out.length - 1; i >= 0; i -= 1) {
+        const rec = out[i];
+        const sameWorker =
+          workerId != null && rec.payload.worker_id === workerId;
+        const sameOrch =
+          ev.event === "orchestrator.done" && rec.kind === "orchestrator";
+        if (sameWorker || sameOrch) {
+          out[i] = {
+            ...rec,
+            output:
+              typeof data.answer === "string" ? data.answer : rec.output,
+            payload: { ...rec.payload, ...data },
+            badges: data.skipped ? [...rec.badges, "intercepted"] : rec.badges,
+          };
+          break;
+        }
+      }
       continue;
     }
     if (ev.event === "user.message" || data.role === "user") {
@@ -202,6 +243,30 @@ export function upsertLiveEvent(
     }
     return copy;
   }
+  if (
+    event === "worker.done" ||
+    event === "merger.done" ||
+    event === "orchestrator.done"
+  ) {
+    const workerId = data.worker_id;
+    const copy = list.slice();
+    for (let i = copy.length - 1; i >= 0; i -= 1) {
+      const rec = copy[i];
+      const sameWorker =
+        workerId != null && rec.payload.worker_id === workerId;
+      const sameOrch = event === "orchestrator.done" && rec.kind === "orchestrator";
+      if (sameWorker || sameOrch) {
+        copy[i] = {
+          ...rec,
+          output: typeof data.answer === "string" ? data.answer : rec.output,
+          payload: { ...rec.payload, ...data },
+          badges: data.skipped ? [...rec.badges, "intercepted"] : rec.badges,
+        };
+        return copy;
+      }
+    }
+    return list;
+  }
   if (event === "task.step_done") {
     const index = Number(data.index ?? data.step_index ?? -1);
     const copy = list.slice();
@@ -263,10 +328,14 @@ export function orderRecordsForDisplay(
   const out: TrajectoryRecord[] = [];
   for (const turn of order) {
     const group = groups.get(turn) ?? [];
-    out.push(
+        out.push(
       ...group.filter((r) => r.kind === "task"),
       ...group.filter((r) => r.kind === "route"),
-      ...group.filter((r) => r.kind !== "task" && r.kind !== "route"),
+      ...group.filter((r) => r.kind === "orchestrator"),
+      ...group.filter(
+        (r) =>
+          r.kind !== "task" && r.kind !== "route" && r.kind !== "orchestrator",
+      ),
     );
   }
   return out;

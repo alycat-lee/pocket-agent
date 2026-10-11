@@ -40,6 +40,7 @@ packages = [
     "pocket_agent.compressor",
     "pocket_agent.prompts",
     "pocket_agent.prompt_registry",
+    "pocket_agent.orchestrator",
     "pocket_agent.guard",
     "pocket_agent.runner",
     "pocket_agent.session",

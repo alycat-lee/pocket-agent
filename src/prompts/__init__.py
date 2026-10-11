@@ -161,6 +161,17 @@ _LOCAL_PLANNER: str = """输出任务卡 JSON。type=qa/agent/writer；goal；co
 任务：{user_input}
 只输出 JSON。"""
 
+_CLOUD_SYNTHESIZE: str = """任务：{task}
+
+以下是各子任务摘要（已压缩，不含全文）：
+{summaries}
+
+请合并为完整回答。只输出回答本身。"""
+
+_LOCAL_SYNTHESIZE: str = """任务：{task}
+摘要：{summaries}
+合并为完整回答。只输出回答本身。"""
+
 _BUILTIN_VERSION = "1.0.0"
 
 
@@ -220,6 +231,7 @@ SECTION_WRITE = PromptRef("section_write", _CLOUD_SECTION_WRITE)
 SESSION_TITLE = PromptRef("session_title", _CLOUD_SESSION_TITLE)
 INTENT_ROUTE = PromptRef("intent_route", _CLOUD_INTENT_ROUTE)
 PLANNER = PromptRef("planner", _CLOUD_PLANNER)
+SYNTHESIZE = PromptRef("synthesize", _CLOUD_SYNTHESIZE)
 
 OUTLINE_SCHEMA: dict = {
     "type": "object",
@@ -252,6 +264,7 @@ _ENTRIES: tuple[tuple[str, str, str], ...] = (
     ("session_title", _CLOUD_SESSION_TITLE, _LOCAL_SESSION_TITLE),
     ("intent_route", _CLOUD_INTENT_ROUTE, _LOCAL_INTENT_ROUTE),
     ("planner", _CLOUD_PLANNER, _LOCAL_PLANNER),
+    ("synthesize", _CLOUD_SYNTHESIZE, _LOCAL_SYNTHESIZE),
 )
 
 

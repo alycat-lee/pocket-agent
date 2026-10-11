@@ -62,6 +62,12 @@ _BUS_EVENTS = (
     "task.step_done",
     "answer.rejected",
     "run.start",
+    "orchestrator.start",
+    "orchestrator.done",
+    "worker.start",
+    "worker.done",
+    "merger.start",
+    "merger.done",
 )
 _DEFAULT_APPROVAL_TIMEOUT = 60.0
 
@@ -401,6 +407,8 @@ def build_app(
     def _apply_live_config(config: AgentConfig) -> None:
         if ctx.has("agent"):
             ctx.require("agent").apply_config(config)
+        if ctx.has("orchestrator"):
+            ctx.require("orchestrator").apply_config(config)
 
     def _providers_settings() -> dict[str, Any]:
         return load_settings(settings_file)
@@ -442,6 +450,8 @@ def build_app(
         live = config if config is not None else _resolved_config()
         meta = _run_provider_meta(live)
         ctx.require("prompt_registry").select_for_provider(meta["provider_type"])
+        if ctx.has("orchestrator"):
+            ctx.require("orchestrator").provider_type = meta["provider_type"]
 
     def _bind_routed_llm(config: AgentConfig) -> list[tuple[Any, Any]]:
         if not routing_from_settings:
@@ -882,6 +892,11 @@ def build_app(
         abort_agent = getattr(agent, "request_stop", None) if agent is not None else None
         if callable(abort_agent):
             abort_agent()
+        if ctx.has("orchestrator"):
+            orch = ctx.require("orchestrator")
+            abort_orch = getattr(orch, "request_stop", None)
+            if callable(abort_orch):
+                abort_orch()
 
     @app.post("/api/chat/{run_id}/stop")
     def api_chat_stop(run_id: str) -> JSONResponse:

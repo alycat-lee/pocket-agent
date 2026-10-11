@@ -62,6 +62,9 @@ export interface TrajectoryRecord {
     | "route"
     | "thinking"
     | "task"
+    | "orchestrator"
+    | "worker"
+    | "merge"
     | "other";
   title: string;
   ts: number | null;

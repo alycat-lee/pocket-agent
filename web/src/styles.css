@@ -786,6 +786,23 @@ button:disabled {
   color: var(--color-accent-muted);
 }
 
+.record.worker .record-title {
+  color: var(--color-foreground);
+}
+
+.record.nested {
+  padding-left: calc(var(--space-xl) + 20px);
+  opacity: 0.92;
+}
+
+.expand-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
 .badge.rejected {
   color: #c2410c;
   background: rgba(234, 88, 12, 0.12);

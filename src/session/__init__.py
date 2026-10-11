@@ -11,13 +11,14 @@ from pocket_agent.config import AgentConfig
 from pocket_agent.intent_router import IntentMode, IntentRouter, has_tool_hint
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import LLMAbortedError, LLMClientProtocol, LLMFormatError
+from pocket_agent.orchestrator import Orchestrator
 from pocket_agent.prompts import (
     FINAL_ANSWER,
     REWRITE_QUERY,
     ROLLING_SUMMARY,
     SESSION_TITLE,
 )
-from pocket_agent.runner import AgentRunner, EventEmitter, StepRecord
+from pocket_agent.runner import AgentRunner, EventEmitter, RunResult, StepRecord, StopReason
 from pocket_agent.task import DEFAULT_WRITER_PLAN, Planner, TaskCard, default_card
 from pocket_agent.verifier import attach_degrade, verify
 from pocket_agent.workspace import WorkspaceManager
@@ -75,6 +76,7 @@ class SessionManager:
         writer: WriterProtocol | None = None,
         workspace: WorkspaceManager | None = None,
         sessions_dir: Path | str | None = None,
+        orchestrator: Orchestrator | None = None,
     ) -> None:
         self._config = config
         self._llm = llm
@@ -84,6 +86,7 @@ class SessionManager:
         self._planner = Planner(llm)
         self._writer = writer
         self._workspace = workspace
+        self._orchestrator = orchestrator
         self._sessions_dir = Path(sessions_dir) if sessions_dir else None
         self._sessions: dict[str, SessionState] = {}
         if self._sessions_dir is not None:
@@ -385,8 +388,6 @@ class SessionManager:
         permission: str,
         state: SessionState,
     ) -> str:
-        if card.type == "writer" and self._writer is not None:
-            return self._run_writer(card, run_task, session_id)
         if card.type == "qa":
             try:
                 answer = str(self._llm.generate(run_task)).strip()
@@ -400,6 +401,12 @@ class SessionManager:
             self.last_result = None
             self._emit_answer_done(answer, stop_reason="qa")
             return answer
+        if self._orchestrator is not None and self._orchestrator.should_orchestrate(card):
+            return self._run_orchestrated(
+                card, run_task, session_id, permission, state
+            )
+        if card.type == "writer" and self._writer is not None:
+            return self._run_writer(card, run_task, session_id)
         turn_ledger = CallLedger()
         turn_ledger.merge_records(state.write_op_ledger)
         result = self._runner.run(
@@ -412,6 +419,43 @@ class SessionManager:
         self._sync_write_ops(state, result.steps)
         self._mark_plan_progress(session_id, len(result.steps))
         return str(result.answer)
+
+    def _run_orchestrated(
+        self,
+        card: TaskCard,
+        run_task: str,
+        session_id: str,
+        permission: str,
+        state: SessionState,
+    ) -> str:
+        orch = self._orchestrator
+        if orch is None:
+            result = self._runner.run(
+                self._agent_task(card, run_task),
+                session_id=session_id,
+                permission=permission,
+            )
+            self.last_result = result
+            return str(result.answer)
+        outcome = orch.run(
+            card,
+            self._agent_task(card, run_task),
+            session_id=session_id,
+            permission=permission,
+        )
+        stop = (
+            StopReason.STOPPED
+            if outcome.stop_reason in {"aborted", "stopped"}
+            else StopReason.MODEL_DONE
+        )
+        self.last_result = RunResult(
+            answer=outcome.answer,
+            steps=outcome.steps,
+            stop_reason=stop,
+            stats=dict(outcome.stats),
+        )
+        self._sync_write_ops(state, outcome.steps)
+        return str(outcome.answer)
 
     def _run_writer(self, card: TaskCard, topic: str, session_id: str) -> str:
         writer = self._writer

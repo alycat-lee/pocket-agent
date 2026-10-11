@@ -20,6 +20,7 @@ class SessionPlugin:
         agent = ctx.require("agent")
         writer = ctx.require("writer") if ctx.has("writer") else None
         workspace = ctx.require("workspace") if ctx.has("workspace") else None
+        orchestrator = ctx.require("orchestrator") if ctx.has("orchestrator") else None
         sessions_dir = config.get("sessions_dir")
         manager = SessionManager(
             ac,
@@ -29,5 +30,6 @@ class SessionPlugin:
             writer=writer,
             workspace=workspace,
             sessions_dir=sessions_dir,
+            orchestrator=orchestrator,
         )
         ctx.provide("sessions", manager)
