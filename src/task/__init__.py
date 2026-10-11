@@ -95,21 +95,19 @@ def _normalize_constraints(
     constraints: dict[str, Any],
     user_input: str,
 ) -> dict[str, Any]:
+    """字数只认原文（或模型返回的「N万字」字符串），丢弃臆造整数。"""
     out = dict(constraints)
+    user_parsed = parse_total_chars(user_input, default=0)
+    if user_parsed > 0:
+        out["total_chars"] = user_parsed
+        return out
     raw = out.get("total_chars")
-    parsed = 0
-    if isinstance(raw, bool):
-        parsed = 0
-    elif isinstance(raw, (int, float)):
-        parsed = int(raw)
-    elif isinstance(raw, str):
+    if isinstance(raw, str):
         parsed = parse_total_chars(raw, default=0)
-    if parsed <= 0:
-        parsed = parse_total_chars(user_input, default=0)
-    if parsed > 0:
-        out["total_chars"] = parsed
-    elif "total_chars" in out:
-        out.pop("total_chars", None)
+        if parsed > 0:
+            out["total_chars"] = parsed
+            return out
+    out.pop("total_chars", None)
     return out
 
 

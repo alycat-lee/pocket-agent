@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from pocket_agent.config import AgentConfig
-from pocket_agent.intent_router import IntentMode, IntentRouter
+from pocket_agent.intent_router import IntentMode, IntentRouter, has_tool_hint
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import LLMClientProtocol, LLMFormatError
 from pocket_agent.prompts import (
@@ -321,7 +321,10 @@ class SessionManager:
     ) -> tuple[TaskCard, IntentMode, float, str, str]:
         if self._config.planner_enabled:
             try:
-                card = self._planner.plan(user_input, rolling_summary)
+                card = self._ground_card(
+                    self._planner.plan(user_input, rolling_summary),
+                    user_input,
+                )
                 return card, card.type, 0.85, "planner", "任务卡"
             except LLMFormatError:
                 pass
@@ -351,6 +354,24 @@ class SessionManager:
             confidence,
             source,
             reason,
+        )
+
+    def _ground_card(self, card: TaskCard, user_input: str) -> TaskCard:
+        """用原文硬线索校正小模型任务卡：写长文 / 工具调用不得落成闲聊。"""
+        ruled = self._intent_router.try_rule(user_input)
+        new_type = card.type
+        if ruled is not None and ruled[0] == "writer":
+            new_type = "writer"
+        elif card.type == "qa" and has_tool_hint(user_input):
+            new_type = "agent"
+        if new_type == card.type:
+            return card
+        return TaskCard(
+            type=new_type,
+            goal=card.goal,
+            constraints=card.constraints,
+            plan=card.plan,
+            needs_history=card.needs_history or new_type == "agent",
         )
 
     def _dispatch(

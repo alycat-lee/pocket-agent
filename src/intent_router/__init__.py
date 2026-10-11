@@ -51,6 +51,11 @@ _TOOL_HINTS = (
 _MODES: tuple[IntentMode, ...] = ("qa", "agent", "writer")
 
 
+def has_tool_hint(text: str) -> bool:
+    """用户原文是否带工具线索（查/天气/读取等）。"""
+    return any(h in (text or "") for h in _TOOL_HINTS)
+
+
 class IntentRouter:
     """用户输入 → (mode, confidence, source, reason)。规则路径优先，LLM 兜底。"""
 

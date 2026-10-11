@@ -36,6 +36,21 @@ def test_planner_parses_card_and_normalizes_wanzi(mock_llm_factory: type) -> Non
     ]
 
 
+def test_card_from_dict_drops_invented_total_chars() -> None:
+    card = card_from_dict(
+        {
+            "type": "qa",
+            "goal": "查天气",
+            "constraints": {"total_chars": 2000, "language": "zh"},
+            "plan": ["查", "答"],
+            "needs_history": False,
+        },
+        user_input="查北京天气",
+    )
+    assert "total_chars" not in card.constraints
+    assert card.constraints["language"] == "zh"
+
+
 def test_card_from_dict_fills_chars_from_user_input() -> None:
     card = card_from_dict(
         {
@@ -76,6 +91,38 @@ def test_planner_failure_falls_back_to_rule_then_agent(
     assert mgr2.last_task_card is not None
     assert mgr2.last_task_card.type == "qa"
     assert mgr2.last_intent == "qa"
+
+
+def test_planner_qa_with_tool_hint_grounds_to_agent(
+    mock_llm_factory: type,
+) -> None:
+    cfg = AgentConfig(max_steps=3, verifier_enabled=False)
+    llm = mock_llm_factory(
+        [
+            {
+                "type": "qa",
+                "goal": "查询北京天气",
+                "constraints": {"total_chars": 2000},
+                "plan": ["确认问题", "作答"],
+                "needs_history": False,
+            },
+            "北京晴 22℃",
+            "天气",
+        ]
+    )
+    runner = AgentRunner(cfg, llm, ToolRegistry(cfg))
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            del event, payload
+
+    mgr = SessionManager(cfg, llm, runner, events=_Bus())
+    mgr.chat("s1", "查北京天气")
+    assert mgr.last_task_card is not None
+    assert mgr.last_task_card.type == "agent"
+    assert "total_chars" not in mgr.last_task_card.constraints
+    assert mgr.last_intent == "agent"
+    assert mgr.last_result is not None
 
 
 def test_intent_router_cases_remain_as_fallback() -> None:
