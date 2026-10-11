@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
 if sys.platform == "win32":
+    import msvcrt
     from ctypes import byref, windll
     from ctypes.wintypes import DWORD, HANDLE
 else:  # pragma: no cover — IME 仅 Windows 需要
+    msvcrt = None  # type: ignore[misc,assignment]
     byref = None  # type: ignore[misc,assignment]
     windll = None  # type: ignore[misc,assignment]
     DWORD = Any  # type: ignore[misc,assignment]
@@ -208,6 +211,52 @@ def prompt_approval(
         emit("审批超时已拒绝")
         return False
     return resolve_approval_key(key)
+
+
+def needs_cooked_ime_input(
+    *,
+    platform: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Cursor/VS Code 集成终端的 ConPTY raw/fullscreen 会吞掉 IME，改走 input()。"""
+    plat = platform if platform is not None else sys.platform
+    data = env if env is not None else os.environ
+    if plat != "win32":
+        return False
+    if data.get("WT_SESSION"):
+        return False
+    term = (data.get("TERM_PROGRAM") or "").lower()
+    if term in {"vscode", "cursor"}:
+        return True
+    return bool(data.get("VSCODE_PID") or data.get("CURSOR_TRACE_ID"))
+
+
+def format_cooked_line(kind: str, text: str) -> str:
+    if kind == "user":
+        return f"❯ {text}"
+    return text
+
+
+def poll_console_key(
+    timeout: float,
+    *,
+    clock: Callable[[], float],
+    kbhit: Callable[[], bool],
+    getwch: Callable[[], str],
+    sleep: Callable[[float], None],
+) -> str | None:
+    deadline = clock() + timeout
+    while clock() < deadline:
+        if kbhit():
+            ch = getwch()
+            if ch in {"\x00", "\xe0"}:
+                getwch()
+                return "esc"
+            if ch == "\x1b":
+                return "esc"
+            return ch
+        sleep(0.05)
+    return None
 
 
 def strip_vt_input_flag(mode: int) -> int:
@@ -453,11 +502,61 @@ class TuiApp:
         self._approval_waiting = False
         self._approval_key: str | None = None
         self._approval_ready = threading.Event()
+        self._cooked = False
+        self._cook_quit = False
         self._restore_latest()
 
     def run(self) -> None:
         if not PROMPT_TOOLKIT_AVAILABLE:
             raise PluginError(_PT_MISSING)
+        if needs_cooked_ime_input():
+            self._run_cooked()
+            return
+        self._run_prompt_toolkit()
+
+    def _run_cooked(self) -> None:
+        """集成终端行模式：走系统 input()，中文 IME 才能组字。"""
+        self._cooked = True
+        self._cook_quit = False
+        print(self._title_text(), flush=True)
+        print("（行模式：可直接输入中文；Enter 发送，/quit 退出）", flush=True)
+        for kind, text in list(self.lines):
+            print(format_cooked_line(kind, text), flush=True)
+        while not self._cook_quit:
+            if self.running:
+                self._wait_running()
+                continue
+            try:
+                text = input("❯ ")
+            except EOFError:
+                return
+            except KeyboardInterrupt:
+                self._handle_cooked_interrupt()
+                continue
+            self.submit(text)
+            if self.running:
+                self._wait_running()
+
+    def _wait_running(self) -> None:
+        while self.running and not self._cook_quit:
+            try:
+                time.sleep(0.05)
+            except KeyboardInterrupt:
+                self.request_stop()
+                print("已请求停止，保留已生成内容", flush=True)
+
+    def _handle_cooked_interrupt(self) -> None:
+        if self.running:
+            self.request_stop()
+            print("已请求停止，保留已生成内容", flush=True)
+            return
+        if self._quit_armed:
+            self._cook_quit = True
+            return
+        self._quit_armed = True
+        print("再按一次 Ctrl+C 退出", flush=True)
+
+    def _run_prompt_toolkit(self) -> None:
         textarea = TextArea(
             multiline=True,
             prompt="❯ ",
@@ -573,6 +672,8 @@ class TuiApp:
             return
         if event in {"step.start", "step.tool_call"} and self.running:
             self.status = running_status(data)
+            if self._cooked:
+                print(self.status, flush=True)
         if event == "answer.delta":
             delta = str(data.get("delta") or "")
             if delta:
@@ -581,6 +682,8 @@ class TuiApp:
         elif event == "answer.done":
             answer = str(data.get("answer") or self.stream_buf)
             self._replace_stream(answer)
+            if self._cooked:
+                print(flush=True)
             self._append("dim", format_settlement(data))
             self.stream_buf = ""
             self.running = False
@@ -613,6 +716,7 @@ class TuiApp:
             self._append("dim", slash_help_text())
             return
         if cmd.name == "quit":
+            self._cook_quit = True
             if self._app is not None:
                 self._app.exit()
             return
@@ -729,12 +833,14 @@ class TuiApp:
             return [DEFAULT_AGENT]
         return [item.name for item in self._ctx.require("agents").list()]
 
-    def _header_frags(self) -> StyleAndTextTuples:
+    def _title_text(self) -> str:
         meta = describe_provider(load_providers_config(load_settings(), AgentConfig()))
         provider = meta.get("provider_name") or meta.get("provider_type") or "-"
         model = meta.get("model") or "-"
-        title = f"pocket-agent · {provider}·{model} · agent:{self.agent}"
-        return [("class:title", title)]
+        return f"pocket-agent · {provider}·{model} · agent:{self.agent}"
+
+    def _header_frags(self) -> StyleAndTextTuples:
+        return [("class:title", self._title_text())]
 
     def _body_frags(self) -> StyleAndTextTuples:
         out: StyleAndTextTuples = []
@@ -755,18 +861,41 @@ class TuiApp:
 
     def _append(self, kind: str, text: str) -> None:
         self.lines.append((kind, text))
+        if self._cooked and kind != "user":
+            print(format_cooked_line(kind, text), flush=True)
 
     def _replace_stream(self, text: str) -> None:
+        prev = ""
         if self.lines and self.lines[-1][0] == "assistant":
+            prev = self.lines[-1][1]
             self.lines[-1] = ("assistant", text)
         else:
             self.lines.append(("assistant", text))
+        if not self._cooked:
+            return
+        extra = text.removeprefix(prev)
+        if extra:
+            print(extra, end="", flush=True)
 
     def _resolve_approval_keypress(self, key: str) -> None:
         self._approval_key = key
         self._approval_ready.set()
 
     def _wait_approval_key(self, timeout: float) -> str | None:
+        if self._cooked and msvcrt is not None:
+            return poll_console_key(
+                timeout,
+                clock=time.monotonic,
+                kbhit=msvcrt.kbhit,
+                getwch=msvcrt.getwch,
+                sleep=time.sleep,
+            )
+        if self._cooked:
+            try:
+                line = input("y/n> ")
+            except EOFError:
+                return None
+            return line[:1] if line else None
         self._approval_key = None
         self._approval_ready.clear()
         self._approval_waiting = True

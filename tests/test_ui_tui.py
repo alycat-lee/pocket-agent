@@ -14,9 +14,12 @@ from pocket_agent.plugins.ui_tui import (
     bind_tui_keys,
     configure_win32_ime_input,
     format_approval_line,
+    format_cooked_line,
     format_provider_rows,
     format_settlement,
+    needs_cooked_ime_input,
     parse_slash,
+    poll_console_key,
     project_event,
     prompt_approval,
     resolve_approval_key,
@@ -106,6 +109,61 @@ def test_format_settlement_and_status() -> None:
     assert line == "轮次 3 · 2 步 · 缓存命中 50% · 拦截 1 · 停止原因 qa"
     assert running_status({"step_index": 2, "current_tool": "read_file"}) == (
         "运行中 · S2 · read_file…"
+    )
+
+
+def test_needs_cooked_ime_input_for_cursor_not_windows_terminal() -> None:
+    assert needs_cooked_ime_input(
+        platform="win32", env={"VSCODE_PID": "1"}
+    )
+    assert needs_cooked_ime_input(
+        platform="win32", env={"TERM_PROGRAM": "vscode"}
+    )
+    assert needs_cooked_ime_input(
+        platform="win32", env={"TERM_PROGRAM": "cursor"}
+    )
+    assert not needs_cooked_ime_input(
+        platform="win32", env={"WT_SESSION": "abc"}
+    )
+    assert not needs_cooked_ime_input(
+        platform="linux", env={"VSCODE_PID": "1"}
+    )
+    assert format_cooked_line("user", "你好") == "❯ 你好"
+    assert format_cooked_line("dim", "就绪") == "就绪"
+
+
+def test_poll_console_key_yes_and_timeout() -> None:
+    now = {"t": 0.0}
+
+    def clock() -> float:
+        return now["t"]
+
+    def sleep(delta: float) -> None:
+        now["t"] += delta
+
+    hits = {"n": 0}
+
+    def kbhit() -> bool:
+        hits["n"] += 1
+        return hits["n"] >= 2
+
+    assert poll_console_key(
+        1.0,
+        clock=clock,
+        kbhit=kbhit,
+        getwch=lambda: "y",
+        sleep=sleep,
+    ) == "y"
+    now["t"] = 0.0
+    assert (
+        poll_console_key(
+            0.1,
+            clock=clock,
+            kbhit=lambda: False,
+            getwch=lambda: "n",
+            sleep=sleep,
+        )
+        is None
     )
 
 
