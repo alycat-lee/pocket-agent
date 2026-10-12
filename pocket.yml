@@ -16,8 +16,8 @@ plugins:
   - name: shell
   - name: knowledge-base
     config:
-      # hash：无 extras 也可入库检索；local：bge-small-zh（需 pocket-agent[knowledge]）
-      embedder: hash
+      # lexical：去停用 bigram+IDF（hash 为兼容别名）；local：bge-small-zh（需 extras）
+      embedder: lexical
       db_path: ".knowledge/kb.sqlite"
       searxng_url: ""
       serper_key: ""

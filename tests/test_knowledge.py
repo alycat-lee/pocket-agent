@@ -19,6 +19,7 @@ from pocket_agent.knowledge import (
     format_hits,
     parse_document,
     split_text,
+    wants_bare_answer,
 )
 from pocket_agent.knowledge.embed import LocalEmbedder
 from pocket_agent.knowledge.web import is_blocked_url
@@ -110,6 +111,16 @@ def test_ingest_then_search_with_hash_embedder(tmp_path: Path) -> None:
     assert "林小满" in packed
 
 
+def test_lexical_search_hits_author_not_codename(tmp_path: Path) -> None:
+    kb = _kb(tmp_path)
+    kb.ingest("内部手册.md", HANDBOOK.read_text(encoding="utf-8"), source="内部手册.md")
+    miss = kb.search("现在项目代号是什么？只回答代号。")
+    assert miss == []
+    hit = kb.search("雨巷灯火的作者")
+    assert hit
+    assert "林小满" in hit[0].text
+
+
 def test_parse_document_txt() -> None:
     assert "星核" in parse_document("note.txt", "星核协议".encode())
 
@@ -144,6 +155,31 @@ def test_attach_sources_appends_list() -> None:
     text = attach_sources("星核协议签署于2019年。", ["内部手册.md"])
     assert "来源：" in text
     assert "- 内部手册.md" in text
+
+
+def test_attach_sources_skips_bare_and_empty() -> None:
+    assert wants_bare_answer("我的名字是什么？只回答名字。")
+    assert wants_bare_answer("只答年份。")
+    named = attach_sources(
+        "林小满",
+        ["内部手册.md"],
+        user_input="我的名字是什么？只回答名字。",
+    )
+    assert "来源" not in named
+    year = attach_sources(
+        "2019",
+        ["内部手册.md"],
+        user_input="《星核协议》是哪一年签署的？只答年份。",
+    )
+    assert "来源" not in year
+    empty = attach_sources(EMPTY_RESULT, ["内部手册.md"])
+    assert "来源" not in empty
+    normal = attach_sources(
+        "短篇小说《雨巷灯火》的作者是林小满。",
+        ["内部手册.md"],
+        user_input="短篇小说《雨巷灯火》的作者是谁？",
+    )
+    assert "来源：" in normal
 
 
 def test_extract_claims_numbers_and_proper_nouns() -> None:

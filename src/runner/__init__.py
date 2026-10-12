@@ -25,7 +25,8 @@ from pocket_agent.llm_client import (
 )
 from pocket_agent.permissions import evaluate
 from pocket_agent.prompts import CHOOSE_TOOL, FILL_ARGS, FINAL_ANSWER, SYSTEM_BASE
-from pocket_agent.tools import Tool, ToolRegistry
+from pocket_agent.tool_context import set_session_id
+from pocket_agent.tools import Tool, ToolRegistry, filter_tools_by_domain
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +237,11 @@ class AgentRunner:
                     ),
                 },
             )
-            candidates = active_registry.recall(task, self._config.tool_recall_top_n)
+            pool = filter_tools_by_domain(task, active_registry.all())
+            filtered = ToolRegistry(self._config)
+            for item in pool:
+                filtered._tools[item.name] = item
+            candidates = filtered.recall(task, self._config.tool_recall_top_n)
             if not candidates:
                 stop_reason = StopReason.MODEL_DONE
                 break
@@ -251,11 +256,7 @@ class AgentRunner:
 
             llm_t0 = time.perf_counter()
             try:
-                choice = self._llm.generate_int(
-                    choose_prompt,
-                    minimum=-1,
-                    maximum=len(candidates) - 1,
-                )
+                choice = self._choose_index(choose_prompt, len(candidates) - 1)
                 self._emit_thinking(step=step)
             except LLMAbortedError:
                 stop_reason = StopReason.STOPPED
@@ -513,8 +514,6 @@ class AgentRunner:
                             break
                         continue
                 tool_t0 = time.perf_counter()
-                from pocket_agent.tool_context import set_session_id
-
                 set_session_id(self._run_session_id)
                 try:
                     raw_result = tool.fn(**args)
@@ -649,6 +648,13 @@ class AgentRunner:
             )
         finally:
             self._run_turn = None
+
+    def _choose_index(self, prompt: str, maximum: int) -> int:
+        try:
+            return self._llm.generate_int(prompt, minimum=-1, maximum=maximum)
+        except LLMFormatError:
+            retry = f"{prompt}\n上次未输出合法编号"
+            return self._llm.generate_int(retry, minimum=-1, maximum=maximum)
 
     def _dump_checkpoint(
         self,

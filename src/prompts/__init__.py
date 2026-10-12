@@ -1,6 +1,7 @@
 # 运行时提示词模板：cloud 变体与 pocket-agent-docs/04 逐字一致。
 # 冲突：文档 19 要求 Planner 增补 needs_knowledge，并新增 qa 诚实兜底变体；
-# 以规格签名与文档 19 原文为准，planner / final_answer_qa 不再与 04 逐字相同。
+# Phase 46 要求 CHOOSE_TOOL / FINAL_ANSWER 增补领域与终答规则，04 已同步。
+# 以规格签名与文档 19 / 33 原文为准，planner / final_answer_qa 不再与 04 逐字相同。
 # local 变体是文档 18 要求的超短指令（≤150 字），由 prompt_registry 按 provider 选用。
 
 from __future__ import annotations
@@ -26,6 +27,12 @@ _CLOUD_CHOOSE_TOOL: str = """任务：{task}
 可用工具：
 {options}
 
+规则：
+1. 工具必须直接产生任务需要的原始数据。
+2. 百科/网页/知识库工具只用于开放知识，不得用于天气、时间、计算、本地文件。
+3. 同名工具可用不同参数处理不同子任务；禁止的是「同工具+同参数」重复。
+4. 若上一个工具结果与任务无关，不得继续选同类工具。
+
 下一步应该使用哪个工具？如果已有信息足以回答任务，输出 -1。
 只输出一个数字。例如：0"""
 
@@ -50,11 +57,21 @@ _CLOUD_FINAL_ANSWER: str = """任务：{task}
 {history_text}
 
 基于以上信息回答任务。如果信息不足以完整回答，说明缺失的部分。
+只输出用户可读结论；禁止罗列步骤编号、工具名、args、[缓存]、[已拒绝]，除非用户明确要求执行日志。
 直接输出回答，不要复述过程。"""
 
 # 文档 19 §4：检索空结果必须诚实声明，禁止编造。
 _CLOUD_FINAL_ANSWER_QA: str = """根据检索资料回答问题。
 若资料为「未找到相关资料」或不足以回答，必须回答「未找到相关资料」，禁止编造。
+
+问题：{task}
+
+检索资料：
+{evidence}
+
+直接输出回答，不要复述过程。"""
+
+_CLOUD_FINAL_ANSWER_QA_AUGMENT: str = """根据会话已知信息回答问题。检索资料仅为可选补充；若资料与当前问题无关，忽略资料，禁止回答「未找到相关资料」。
 
 问题：{task}
 
@@ -129,7 +146,7 @@ _LOCAL_CHOOSE_TOOL: str = """任务：{task}
 进度：{state}
 历史：{history_text}
 工具：{options}
-选编号；够了输出 -1。只输出数字。例如：0"""
+须直接出原始数据。百科网页知识库勿用于天气时间计算文件。同工具可不同参；禁同参重复。上步无关勿再同类。选编号；够了-1。只输出数字。例如：0"""
 
 _LOCAL_FILL_ARGS: str = """任务：{task}
 已知：{state}
@@ -142,9 +159,14 @@ _LOCAL_SUMMARIZE: str = """压缩为不超过 {limit} 字，保留数字、名�
 
 _LOCAL_FINAL_ANSWER: str = """任务：{task}
 信息：{history_text}
-据此回答；不足则说明缺什么。直接输出，不要复述过程。"""
+据此回答；不足则说明缺什么。只给用户结论。禁步骤编号、工具名、args、[缓存]、[已拒绝]。直接输出，不要复述过程。"""
 
 _LOCAL_FINAL_ANSWER_QA: str = """按资料回答。资料不足或「未找到相关资料」时必须答「未找到相关资料」，禁止编造。
+问题：{task}
+资料：{evidence}
+直接输出回答。"""
+
+_LOCAL_FINAL_ANSWER_QA_AUGMENT: str = """按会话已知信息回答。资料仅可选；无关则忽略。禁止答「未找到相关资料」。
 问题：{task}
 资料：{evidence}
 直接输出回答。"""
@@ -252,6 +274,9 @@ INTENT_ROUTE = PromptRef("intent_route", _CLOUD_INTENT_ROUTE)
 PLANNER = PromptRef("planner", _CLOUD_PLANNER)
 SYNTHESIZE = PromptRef("synthesize", _CLOUD_SYNTHESIZE)
 FINAL_ANSWER_QA = PromptRef("final_answer_qa", _CLOUD_FINAL_ANSWER_QA)
+FINAL_ANSWER_QA_AUGMENT = PromptRef(
+    "final_answer_qa_augment", _CLOUD_FINAL_ANSWER_QA_AUGMENT
+)
 
 OUTLINE_SCHEMA: dict = {
     "type": "object",
@@ -286,6 +311,11 @@ _ENTRIES: tuple[tuple[str, str, str], ...] = (
     ("planner", _CLOUD_PLANNER, _LOCAL_PLANNER),
     ("synthesize", _CLOUD_SYNTHESIZE, _LOCAL_SYNTHESIZE),
     ("final_answer_qa", _CLOUD_FINAL_ANSWER_QA, _LOCAL_FINAL_ANSWER_QA),
+    (
+        "final_answer_qa_augment",
+        _CLOUD_FINAL_ANSWER_QA_AUGMENT,
+        _LOCAL_FINAL_ANSWER_QA_AUGMENT,
+    ),
 )
 
 

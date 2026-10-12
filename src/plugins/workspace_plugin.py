@@ -253,11 +253,21 @@ def register_workspace_tools(
         return fenced_grep_files(manager, get_session_id(), pattern, path)
 
     return [
-        registry.register_with_disposer(read_file, "读取工作区内文件", cacheable=True),
-        registry.register_with_disposer(write_file, "写入工作区内文件", cacheable=False),
-        registry.register_with_disposer(edit_file, "替换文件中的文本", cacheable=False),
-        registry.register_with_disposer(list_dir, "列出工作区目录", cacheable=True),
-        registry.register_with_disposer(grep_files, "搜索工作区文本", cacheable=True),
+        registry.register_with_disposer(
+            read_file, "读取工作区内文件", cacheable=True, domain="file"
+        ),
+        registry.register_with_disposer(
+            write_file, "写入工作区内文件", cacheable=False, domain="file"
+        ),
+        registry.register_with_disposer(
+            edit_file, "替换文件中的文本", cacheable=False, domain="file"
+        ),
+        registry.register_with_disposer(
+            list_dir, "列出工作区目录", cacheable=True, domain="file"
+        ),
+        registry.register_with_disposer(
+            grep_files, "搜索工作区文本", cacheable=True, domain="file"
+        ),
     ]
 
 

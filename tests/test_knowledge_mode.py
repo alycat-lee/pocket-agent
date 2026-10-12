@@ -82,6 +82,7 @@ def test_augment_empty_kb_falls_back_and_emits(
     assert empty.get("turn") == 1
     assert verify(answer, mgr.last_task_card, evidence=EMPTY_RESULT) == []
     assert llm.prompts
+    assert any("必须回答「未找到相关资料」" in p for p in llm.prompts)
 
 
 def test_identity_rule_beats_short_chitchat() -> None:

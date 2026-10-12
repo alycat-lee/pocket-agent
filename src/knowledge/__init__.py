@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 import uuid
@@ -13,6 +14,7 @@ from typing import Any
 from pocket_agent.knowledge.embed import (
     Embedder,
     HashEmbedder,
+    LexicalEmbedder,
     UnavailableEmbedder,
     cosine,
     resolve_embedder,
@@ -23,6 +25,23 @@ CHUNK_OVERLAP = 50
 EMPTY_RESULT = "未找到相关资料"
 HONEST_PHRASES = ("未找到相关资料", "未找到资料")
 MIN_SCORE = 0.15
+LEXICAL_MIN_SCORE = 0.22
+_BARE_ANSWER_HINTS = ("只回答", "只输出", "仅返回", "不要解释", "只答")
+_STOP_PHRASES = (
+    "是什么",
+    "只回答",
+    "只输出",
+    "仅返回",
+    "不要解释",
+    "只答",
+    "现在",
+    "请问",
+    "哪个",
+    "哪些",
+    "怎么",
+    "什么",
+)
+_STOP_CHARS = set("的了是在和与或也就都而及等吗呢吧啊着过被把让给对从到为以")
 
 
 @dataclass
@@ -102,14 +121,29 @@ def format_hits(hits: list[KnowledgeHit], *, limit: int = 300) -> str:
     return "\n".join(lines)
 
 
-def attach_sources(answer: str, sources: list[str]) -> str:
+def wants_bare_answer(user_input: str) -> bool:
+    """用户要求只输出答案本身时，禁止追加来源尾注。"""
+    body = user_input or ""
+    return any(hint in body for hint in _BARE_ANSWER_HINTS)
+
+
+def attach_sources(
+    answer: str,
+    sources: list[str],
+    *,
+    user_input: str = "",
+) -> str:
     """代码拼装来源列表，不依赖模型自觉。"""
+    body = (answer or "").rstrip()
+    if wants_bare_answer(user_input):
+        return body
+    if not body or any(body == phrase or body.startswith(phrase) for phrase in HONEST_PHRASES):
+        return body
     unique: list[str] = []
     for item in sources:
         name = str(item).strip()
         if name and name not in unique:
             unique.append(name)
-    body = (answer or "").rstrip()
     if not unique:
         return body
     if "\n来源：" in body or body.endswith("来源："):
@@ -147,7 +181,7 @@ class KnowledgeBase:
     @classmethod
     def from_config(cls, config: dict[str, Any] | None = None) -> KnowledgeBase:
         data = dict(config or {})
-        embedder = resolve_embedder(str(data.get("embedder") or "local"), data)
+        embedder = resolve_embedder(str(data.get("embedder") or "lexical"), data)
         db_path = data.get("db_path") or ".knowledge/kb.sqlite"
         return cls(
             Path(str(db_path)),
@@ -251,7 +285,6 @@ class KnowledgeBase:
         q = (query or "").strip()
         if not q:
             return []
-        qvec = self._embedder.embed([q])[0]
         limit = top_k or self.top_k
         with self._connect() as conn:
             rows = conn.execute(
@@ -261,6 +294,17 @@ class KnowledgeBase:
                 JOIN documents d ON d.id = c.doc_id
                 """
             ).fetchall()
+        if self.embedder_name in {"lexical", "hash"}:
+            return self._search_lexical(q, rows, limit)
+        return self._search_cosine(q, rows, limit)
+
+    def _search_cosine(
+        self,
+        query: str,
+        rows: list[tuple[Any, ...]],
+        limit: int,
+    ) -> list[KnowledgeHit]:
+        qvec = self._embedder.embed([query])[0]
         scored: list[KnowledgeHit] = []
         for row in rows:
             try:
@@ -268,18 +312,36 @@ class KnowledgeBase:
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             score = cosine(qvec, vector)
-            source = str(row[4] or row[3] or row[1])
-            scored.append(
-                KnowledgeHit(
-                    text=str(row[2]),
-                    source=source,
-                    score=score,
-                    doc_id=str(row[1]),
-                    chunk_id=str(row[0]),
-                )
-            )
+            scored.append(_hit_from_row(row, score))
         scored.sort(key=lambda item: item.score, reverse=True)
         return [item for item in scored[:limit] if item.score >= MIN_SCORE]
+
+    def _search_lexical(
+        self,
+        query: str,
+        rows: list[tuple[Any, ...]],
+        limit: int,
+    ) -> list[KnowledgeHit]:
+        query_grams = lexical_grams(query)
+        if not query_grams:
+            return []
+        chunk_grams = [lexical_grams(str(row[2])) for row in rows]
+        n_docs = max(1, len(rows))
+        df: dict[str, int] = {}
+        for grams in chunk_grams:
+            for gram in set(grams):
+                df[gram] = df.get(gram, 0) + 1
+        query_weight = sum(_idf(df.get(g, 0), n_docs) for g in query_grams)
+        if query_weight <= 0:
+            return []
+        scored: list[KnowledgeHit] = []
+        for row, grams in zip(rows, chunk_grams, strict=True):
+            present = set(grams)
+            matched = sum(_idf(df.get(g, 0), n_docs) for g in query_grams if g in present)
+            score = matched / query_weight
+            scored.append(_hit_from_row(row, score))
+        scored.sort(key=lambda item: item.score, reverse=True)
+        return [item for item in scored[:limit] if item.score >= LEXICAL_MIN_SCORE]
 
     def search_text(self, query: str, *, top_k: int | None = None) -> str:
         if not self.available:
@@ -315,6 +377,60 @@ class KnowledgeBase:
         return sqlite3.connect(self._path)
 
 
+def lexical_grams(text: str) -> list[str]:
+    """中文去停用后的字符 bigram；拉丁词保留为 token。CJK 与数字分开切。"""
+    raw = (text or "").lower()
+    for phrase in _STOP_PHRASES:
+        raw = raw.replace(phrase, " ")
+    grams: list[str] = []
+    cjk = ""
+    latin = ""
+
+    def flush_cjk() -> None:
+        nonlocal cjk
+        if len(cjk) == 1:
+            grams.append(cjk)
+        elif len(cjk) >= 2:
+            grams.extend(cjk[i : i + 2] for i in range(len(cjk) - 1))
+        cjk = ""
+
+    def flush_latin() -> None:
+        nonlocal latin
+        if latin:
+            grams.append(latin)
+        latin = ""
+
+    for char in raw:
+        if "\u4e00" <= char <= "\u9fff" and char not in _STOP_CHARS:
+            flush_latin()
+            cjk += char
+            continue
+        if char.isalnum() and char not in _STOP_CHARS:
+            flush_cjk()
+            latin += char
+            continue
+        flush_cjk()
+        flush_latin()
+    flush_cjk()
+    flush_latin()
+    return grams
+
+
+def _idf(df: int, n_docs: int) -> float:
+    return math.log((n_docs + 1) / (df + 1)) + 1.0
+
+
+def _hit_from_row(row: tuple[Any, ...], score: float) -> KnowledgeHit:
+    source = str(row[4] or row[3] or row[1])
+    return KnowledgeHit(
+        text=str(row[2]),
+        source=source,
+        score=score,
+        doc_id=str(row[1]),
+        chunk_id=str(row[0]),
+    )
+
+
 __all__ = [
     "CHUNK_OVERLAP",
     "CHUNK_SIZE",
@@ -324,12 +440,15 @@ __all__ = [
     "KnowledgeBase",
     "KnowledgeDocument",
     "KnowledgeHit",
+    "LexicalEmbedder",
     "UnavailableEmbedder",
     "attach_sources",
     "compress_hit",
     "extract_sources",
     "format_hits",
+    "lexical_grams",
     "parse_document",
     "resolve_embedder",
     "split_text",
+    "wants_bare_answer",
 ]

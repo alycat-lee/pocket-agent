@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pocket_agent.config import AgentConfig
+from pocket_agent.llm_client import EMPTY_THINK_NOTE
 from pocket_agent.runner import AgentRunner
 from pocket_agent.session import SessionManager
 from pocket_agent.task import TaskCard
@@ -159,6 +160,78 @@ def test_weather_skip_tools_verify_rejects_and_retries(mock_llm_factory: type) -
     assert "应调用工具但未调用" in rejected[0]
     assert any("应调用工具但未调用" in p for p in llm.prompts)
     assert mgr.last_intent == "agent"
+
+
+def test_execution_log_leak_rejected() -> None:
+    card = _card("agent")
+    leaked = '北京天气\n1. get_weather [缓存] args={"city":"北京"} → 晴'
+    assert "执行日志泄漏" in verify(leaked, card)
+    assert "执行日志泄漏" not in verify("北京今天晴，气温二十五度左右。", card)
+
+
+def test_cache_marker_triggers_verify_retry(mock_llm_factory: type) -> None:
+    cfg = AgentConfig(max_steps=3, verifier_enabled=True, answer_max_retries=1)
+    llm = mock_llm_factory(
+        [
+            {
+                "type": "qa",
+                "goal": "查天气",
+                "constraints": {},
+                "plan": ["查", "答"],
+                "needs_history": False,
+            },
+            "1. get_weather [缓存] args={\"city\":\"北京\"} → 晴",
+            "北京今天晴，气温二十五度左右。",
+            "天气",
+        ]
+    )
+    rejected: list[list[str]] = []
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            if event == "answer.rejected":
+                rejected.append(list(payload.get("reasons") or []))
+
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, ToolRegistry(cfg)), events=_Bus()
+    )
+    answer = mgr.chat("s1", "你好")
+    assert rejected
+    assert "执行日志泄漏" in rejected[0]
+    assert "[缓存]" not in answer
+
+
+def test_empty_think_note_retries_formal_answer(mock_llm_factory: type) -> None:
+    cfg = AgentConfig(max_steps=3, verifier_enabled=True, answer_max_retries=1)
+    llm = mock_llm_factory(
+        [
+            {
+                "type": "qa",
+                "goal": "报时",
+                "constraints": {},
+                "plan": ["答"],
+                "needs_history": False,
+            },
+            EMPTY_THINK_NOTE,
+            "现在是下午三点整，已经说明。",
+            "报时",
+        ]
+    )
+    rejected: list[list[str]] = []
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            if event == "answer.rejected":
+                rejected.append(list(payload.get("reasons") or []))
+
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, ToolRegistry(cfg)), events=_Bus()
+    )
+    answer = mgr.chat("s1", "你好")
+    assert rejected
+    assert "正式回答为空" in rejected[0]
+    assert EMPTY_THINK_NOTE not in answer
+    assert "下午三点" in answer
 
 
 def test_degrade_message() -> None:

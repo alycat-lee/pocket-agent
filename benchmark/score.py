@@ -114,7 +114,7 @@ def _objective(field: str, task: dict[str, Any], result: TrackResult) -> float:
             return 1.0 if all(str(v) in answer for v in expected.values()) else 0.0
         return 1.0 if str(expected) in answer else 0.0
     if field == "tool_used":
-        return 1.0 if int(result.extras.get("real_calls") or 0) >= 1 else 0.0
+        return _score_tool_used(task, result)
     if field == "dup_call_rate":
         if int(result.extras.get("real_calls") or 0) < 1:
             return 0.0
@@ -138,6 +138,32 @@ def _objective(field: str, task: dict[str, Any], result: TrackResult) -> float:
         return 0.0 if "思维链泄漏" in verify(answer, card) else 1.0
     if field == "leak_caught":
         return _score_leak_caught(answer, result)
+    return 0.0
+
+
+def _score_tool_used(task: dict[str, Any], result: TrackResult) -> float:
+    calls = result.extras.get("tool_calls")
+    if not isinstance(calls, list):
+        calls = []
+    names = [
+        str(item.get("name") or "")
+        for item in calls
+        if isinstance(item, dict)
+    ]
+    forbidden = {str(x) for x in (task.get("forbidden_tools") or []) if x}
+    if forbidden and any(name in forbidden for name in names):
+        return 0.0
+    expected = [str(x) for x in (task.get("expected_tools") or []) if x]
+    if not expected:
+        return 1.0 if int(result.extras.get("real_calls") or 0) >= 1 else 0.0
+    for item in calls:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if name not in expected:
+            continue
+        if item.get("from_cache") or not item.get("error"):
+            return 1.0
     return 0.0
 
 

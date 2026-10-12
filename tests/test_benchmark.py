@@ -180,6 +180,66 @@ def test_d2_d9_d3_tasks_encode_phase45_contracts() -> None:
     assert d3["d3-now"]["input"] == "现在几点了"
 
 
+def test_scorer_forbidden_web_search_scores_zero_on_weather() -> None:
+    task = {
+        "id": "wx",
+        "dimension": "d3",
+        "input": "查北京天气",
+        "expected_tools": ["get_weather"],
+        "forbidden_tools": ["search_knowledge", "wiki_lookup", "web_search"],
+        "rubric": {
+            "pass_criteria": ["tool"],
+            "score_fields": ["tool_used"],
+        },
+    }
+    result = TrackResult(
+        track="pocket",
+        task_id="wx",
+        dimension="d3",
+        answer="网上说北京晴",
+        extras={
+            "real_calls": 1,
+            "tool_calls": [
+                {
+                    "name": "web_search",
+                    "args": {"query": "北京天气"},
+                    "from_cache": False,
+                    "error": None,
+                }
+            ],
+        },
+    )
+    assert score_result(task, result)["fields"]["tool_used"] == 0.0
+
+
+def test_d3_tasks_declare_expected_and_forbidden_tools() -> None:
+    d3 = {t["id"]: t for t in load_tasks(["d3"])}
+    for weather_id in (
+        "d3-weather-bj",
+        "d3-how-weather",
+        "d3-two-city",
+        "d3-three-city",
+    ):
+        assert d3[weather_id]["expected_tools"] == ["get_weather"]
+        assert "wiki_lookup" in d3[weather_id]["forbidden_tools"]
+    assert d3["d3-now"]["expected_tools"] == ["get_current_time"]
+
+
+def test_dup_rate_ignores_fill_errors() -> None:
+    from types import SimpleNamespace
+
+    from benchmark.runners.pocket import _dup_call_rate
+
+    steps = [
+        SimpleNamespace(tool_name="get_weather", args={"city": "北京"}, error=None),
+        SimpleNamespace(tool_name="get_weather", args={"city": "上海"}, error=None),
+        SimpleNamespace(tool_name="get_weather", args={}, error="invalid json"),
+        SimpleNamespace(tool_name="(format_error)", args={}, error="bad"),
+    ]
+    assert _dup_call_rate(2, steps) == 0.0
+    assert _dup_call_rate(3, steps) == 1.0
+
+
 def test_scorer_zero_dup_rate_is_success() -> None:
     task = {
         "id": "t",

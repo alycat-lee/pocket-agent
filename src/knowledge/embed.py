@@ -146,10 +146,23 @@ class CloudEmbedder:
         return out
 
 
+class LexicalEmbedder:
+    """去停用 bigram + IDF 覆盖率检索；ingest 仍写占位向量以保持 sqlite 表结构。"""
+
+    def __init__(self, *, alias: str = "lexical") -> None:
+        self.name = alias if alias in {"lexical", "hash"} else "lexical"
+        self.available = True
+        self.reason = ""
+        self._hash = HashEmbedder()
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._hash.embed(texts)
+
+
 def resolve_embedder(kind: str, config: dict[str, object]) -> Embedder:
-    name = (kind or "local").strip().lower()
-    if name == "hash":
-        return HashEmbedder()
+    name = (kind or "lexical").strip().lower()
+    if name in {"hash", "lexical"}:
+        return LexicalEmbedder(alias=name)
     if name == "cloud":
         return CloudEmbedder(
             str(config.get("embed_base_url") or config.get("base_url") or ""),

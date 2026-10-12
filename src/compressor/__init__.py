@@ -84,15 +84,44 @@ class ContextCompressor:
         summary: str,
         turns: list[tuple[str, str]],
         rewritten: str,
+        fact_pins: list[str] | None = None,
     ) -> str:
-        """注入滚动摘要 + 最近轮原文；超预算先砍旧轮，保摘要与最近轮。"""
+        """注入优先级：fact_pins > 摘要 > 最近轮；超预算先砍旧轮，再砍摘要。"""
         prefix = "以下是本会话已知信息：\n"
         tail = f"\n\n请回答：{rewritten}"
+        pins = [p.strip() for p in (fact_pins or []) if str(p).strip()]
+        pins_block = ""
+        if pins:
+            pins_block = "长期事实：\n" + "\n".join(f"- {p}" for p in pins)
         summary_block = f"会话摘要：{summary.strip()}" if summary.strip() else ""
         reserved = len(prefix) + len(tail)
-        if summary_block:
-            reserved += len(summary_block) + 1
-        remaining = max(1, self._config.prompt_char_budget - reserved)
+        if pins_block:
+            reserved += len(pins_block) + 1
+        room = self._config.prompt_char_budget - reserved
+        selected: list[str] = []
+        include_summary = False
+        if room > 0:
+            summary_cost = len(summary_block) + 1 if summary_block else 0
+            turn_budget = room - summary_cost if summary_block else room
+            selected = self._select_newest_turns(turns, max(0, turn_budget))
+            if summary_block and (selected or not turns):
+                include_summary = True
+            elif summary_block and not selected and turns:
+                selected = self._select_newest_turns(turns, room)
+                include_summary = False
+        blocks: list[str] = []
+        if pins_block:
+            blocks.append(pins_block)
+        if include_summary and summary_block:
+            blocks.append(summary_block)
+        blocks.extend(selected)
+        if not blocks:
+            return rewritten
+        known = "\n".join(blocks)
+        return f"{prefix}{known}{tail}"
+
+    @staticmethod
+    def _select_newest_turns(turns: list[tuple[str, str]], remaining: int) -> list[str]:
         selected: list[str] = []
         used = 0
         for user, assistant in reversed(turns):
@@ -103,14 +132,7 @@ class ContextCompressor:
             selected.append(piece)
             used += extra
         selected.reverse()
-        blocks: list[str] = []
-        if summary_block:
-            blocks.append(summary_block)
-        blocks.extend(selected)
-        if not blocks:
-            return rewritten
-        known = "\n".join(blocks)
-        return f"{prefix}{known}{tail}"
+        return selected
 
     def summarize_state(self, history: list[str], keep_last: int = 3) -> str:
         """生成"已完成 N 步：<最近 keep_last 步>"格式摘要。"""

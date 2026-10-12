@@ -79,6 +79,16 @@ def test_list_sessions_sorted_by_updated(tmp_path: Path) -> None:
     assert rows[1]["session_id"] == "old"
 
 
+def test_fact_pins_persist_across_reload(tmp_path: Path) -> None:
+    mgr = _mgr(tmp_path, ["已记住"])
+    mgr.chat("s1", "请记住：我的名字是林小满。只需确认已记住。")
+    pins = mgr.get_state("s1").fact_pins
+    assert any("林小满" in p for p in pins)
+    mgr2 = _mgr(tmp_path, ["第二轮"])
+    loaded = mgr2.get_state("s1").fact_pins
+    assert loaded == pins
+
+
 def test_delete_session(tmp_path: Path) -> None:
     """删除会话后文件消失。"""
     mgr = _mgr(tmp_path, ["x"])

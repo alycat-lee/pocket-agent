@@ -28,7 +28,7 @@ _UNARY_OPS: dict[type, Any] = {
 def register_core_tools(registry: ToolRegistry) -> None:
     """注册真实执行的核心工具（不含编造数据）。"""
 
-    @tool(registry, "计算数学表达式")
+    @tool(registry, "计算数学表达式", domain="math")
     def calculator(expression: str) -> str:
         try:
             value = _safe_eval(expression)
@@ -36,7 +36,7 @@ def register_core_tools(registry: ToolRegistry) -> None:
             return f"计算失败：{exc}"
         return str(value)
 
-    @tool(registry, "读取本地文件")
+    @tool(registry, "读取本地文件", domain="file")
     def read_file(path: str) -> str:
         file_path = Path(path)
         if not file_path.is_file():
@@ -47,7 +47,7 @@ def register_core_tools(registry: ToolRegistry) -> None:
             return f"读取失败：{exc}"
         return text[:2000]
 
-    @tool(registry, "获取当前时间")
+    @tool(registry, "获取当前时间", domain="time")
     def get_current_time() -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 

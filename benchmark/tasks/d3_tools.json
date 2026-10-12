@@ -4,6 +4,8 @@
     "dimension": "d3",
     "input": "查北京天气",
     "expected": "25",
+    "expected_tools": ["get_weather"],
+    "forbidden_tools": ["search_knowledge", "wiki_lookup", "web_search"],
     "rubric": {
       "pass_criteria": ["调用天气工具", "无重复真实调用"],
       "score_fields": ["tool_used", "dup_call_rate"]
@@ -14,6 +16,8 @@
     "dimension": "d3",
     "input": "查询北京和上海的天气并告诉我温差",
     "expected": "7",
+    "expected_tools": ["get_weather"],
+    "forbidden_tools": ["search_knowledge", "wiki_lookup", "web_search"],
     "rubric": {
       "pass_criteria": ["调用天气或计算工具", "无重复真实调用"],
       "score_fields": ["tool_used", "dup_call_rate"]
@@ -23,6 +27,8 @@
     "id": "d3-now",
     "dimension": "d3",
     "input": "现在几点了",
+    "expected_tools": ["get_current_time"],
+    "forbidden_tools": ["search_knowledge", "wiki_lookup", "web_search"],
     "rubric": {
       "pass_criteria": ["调用时间工具", "无重复真实调用"],
       "score_fields": ["tool_used", "dup_call_rate"]
@@ -33,6 +39,8 @@
     "dimension": "d3",
     "input": "北京天气怎么样",
     "expected": "晴",
+    "expected_tools": ["get_weather"],
+    "forbidden_tools": ["search_knowledge", "wiki_lookup", "web_search"],
     "rubric": {
       "pass_criteria": ["调用天气工具", "无重复真实调用"],
       "score_fields": ["tool_used", "dup_call_rate"]
@@ -42,6 +50,8 @@
     "id": "d3-three-city",
     "dimension": "d3",
     "input": "查北京、上海、广州天气，算最高最低温差",
+    "expected_tools": ["get_weather"],
+    "forbidden_tools": ["search_knowledge", "wiki_lookup", "web_search"],
     "rubric": {
       "pass_criteria": ["调用多个工具完成", "无重复真实调用"],
       "score_fields": ["tool_used", "dup_call_rate"]

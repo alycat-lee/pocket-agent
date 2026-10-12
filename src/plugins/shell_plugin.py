@@ -74,6 +74,7 @@ def register_shell_tools(
             run_command,
             "在工作区执行命令",
             cacheable=False,
+            domain="shell",
         ),
     ]
 

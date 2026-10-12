@@ -8,6 +8,7 @@ from difflib import SequenceMatcher
 import pocket_agent.prompts as prompt_mod
 from pocket_agent.intent_router import has_tool_hint
 from pocket_agent.knowledge import EMPTY_RESULT, HONEST_PHRASES
+from pocket_agent.llm_client import EMPTY_THINK_NOTE
 from pocket_agent.prompt_registry import current_registry
 from pocket_agent.prompts import builtin_entries
 from pocket_agent.task import TaskCard
@@ -36,6 +37,8 @@ _CLAIM_STOP = {
     "一个",
     "我们",
 }
+
+_STEP_LOG_LINE = re.compile(r"^\d+\.\s+[A-Za-z_][A-Za-z0-9_]*")
 
 _LEAK_CANDIDATES = (
     "可用工具",
@@ -109,6 +112,10 @@ def verify(
         and has_tool_hint(user_input)
     ):
         problems.append("应调用工具但未调用")
+    if EMPTY_THINK_NOTE in text or "模型仅输出了思考过程" in text:
+        problems.append("正式回答为空")
+    if _execution_log_leaked(text):
+        problems.append("执行日志泄漏")
     return problems
 
 
@@ -157,6 +164,20 @@ def attach_degrade(answer: str, reasons: list[str]) -> str:
     if not body:
         return note
     return f"{body}\n\n{note}"
+
+
+def _execution_log_leaked(text: str) -> bool:
+    if "[缓存]" in text or "args={" in text:
+        return True
+    streak = 0
+    for line in (text or "").splitlines():
+        if _STEP_LOG_LINE.match(line.strip()):
+            streak += 1
+            if streak >= 2:
+                return True
+        elif line.strip():
+            streak = 0
+    return False
 
 
 def _phrase_leaked(phrase: str, text: str) -> bool:

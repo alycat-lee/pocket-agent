@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from pocket_agent.config import AgentConfig
+from pocket_agent.llm_client import LLMFormatError
 from pocket_agent.runner import AgentRunner, StopReason
 from pocket_agent.tools import ToolRegistry, tool
 
@@ -193,3 +194,82 @@ def test_exception_script_tool_error_continues_and_recorded(
     assert result.steps[1].error is None
     assert "晴" in result.steps[1].result
     assert result.answer == "天气晴，先前工具出错已忽略"
+
+
+def test_weather_choose_prompt_excludes_wiki_and_web(mock_llm_factory: type) -> None:
+    config = AgentConfig(max_steps=4)
+    registry = ToolRegistry(config)
+
+    @tool(registry, "查询指定城市天气", domain="weather")
+    def get_weather(city: str) -> str:
+        return f"{city}：晴，25℃"
+
+    @tool(registry, "获取当前时间", domain="time")
+    def get_current_time() -> str:
+        return "12:00:00"
+
+    @tool(registry, "查维基百科摘要", domain="knowledge")
+    def wiki_lookup(query: str) -> str:
+        return "百科"
+
+    @tool(registry, "搜索网页标题摘要", domain="web")
+    def web_search(query: str) -> str:
+        return "网页"
+
+    llm = mock_llm_factory([0, {"city": "北京"}, -1, "北京晴 25℃"])
+    AgentRunner(config, llm, registry).run("查北京、上海、广州天气，算最高最低温差")
+    choose = next(p for p in llm.prompts if "可用工具" in p or "工具：" in p)
+    assert "wiki" not in choose
+    assert "web_search" not in choose
+    assert "get_weather" in choose
+
+
+def test_three_city_weather_not_duplicate_by_args(mock_llm_factory: type) -> None:
+    config = AgentConfig(max_steps=10)
+    registry = ToolRegistry(config)
+
+    @tool(registry, "查询指定城市天气", domain="weather")
+    def get_weather(city: str) -> str:
+        return f"{city}：晴"
+
+    llm = mock_llm_factory(
+        [
+            0,
+            {"city": "北京"},
+            0,
+            {"city": "上海"},
+            0,
+            {"city": "广州"},
+            -1,
+            "三地温差已计算",
+        ]
+    )
+    result = AgentRunner(config, llm, registry).run(
+        "查北京、上海、广州天气，算最高最低温差"
+    )
+    weather = [s for s in result.steps if s.tool_name == "get_weather"]
+    assert len(weather) == 3
+    assert result.stats["real_calls"] == 3
+    assert all(not s.from_cache for s in weather)
+
+
+def test_choose_format_error_retries_without_step(mock_llm_factory: type) -> None:
+    config = AgentConfig(max_steps=5)
+    registry = ToolRegistry(config)
+
+    @tool(registry, "查询指定城市天气", domain="weather")
+    def get_weather(city: str) -> str:
+        return f"{city}：晴，25℃"
+
+    llm = mock_llm_factory(
+        [
+            LLMFormatError("bad int"),
+            0,
+            {"city": "北京"},
+            -1,
+            "北京晴 25℃",
+        ]
+    )
+    result = AgentRunner(config, llm, registry).run("查北京天气")
+    assert all(s.tool_name != "(format_error)" for s in result.steps)
+    assert result.steps[0].tool_name == "get_weather"

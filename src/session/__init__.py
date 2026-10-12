@@ -30,6 +30,7 @@ from pocket_agent.orchestrator import Orchestrator
 from pocket_agent.prompts import (
     FINAL_ANSWER,
     FINAL_ANSWER_QA,
+    FINAL_ANSWER_QA_AUGMENT,
     REWRITE_QUERY,
     ROLLING_SUMMARY,
     SESSION_TITLE,
@@ -50,6 +51,27 @@ _DELTA_FLUSH_SEC = 0.040
 _DELTA_FLUSH_CHARS = 32
 
 _SID_SAFE = re.compile(r"[^\w.\-]+")
+_PIN_MAX = 80
+_PIN_BAD = frozenset({"什么", "谁", "哪", "多少", "几岁", "哪个", "哪些"})
+_PIN_NAME_RE = re.compile(
+    r"(?:我(?:的名字是|叫)|名字是)\s*([^\s，。,.？?！!：:]{1,20})"
+)
+_PIN_CITY_RE = re.compile(r"我住在\s*([^\s，。,.？?！!]{1,20})")
+_PIN_COLOR_RE = re.compile(r"我最喜欢的颜色是\s*([^\s，。,.？?！!]{1,20})")
+_PIN_AGE_RE = re.compile(r"我今年\s*(\d+)\s*岁")
+_PIN_PASS_RE = re.compile(r"(?:数字)?口令[：:是]?\s*(\d+)")
+_PIN_CODE_RE = re.compile(
+    r"(?:项目(?:代号|现在叫|原来叫|叫)|(?:后来)?改名为)[：:是]?\s*"
+    r"([^\s，。,.？?！!]{1,20})"
+)
+_PIN_SLOT_PREFIX: tuple[tuple[str, str], ...] = (
+    ("name", "我的名字是"),
+    ("age", "我今年"),
+    ("city", "我住在"),
+    ("color", "我最喜欢的颜色是"),
+    ("passcode", "口令是"),
+    ("codename", "项目代号是"),
+)
 
 
 def _safe_sid(session_id: str) -> str:
@@ -113,6 +135,7 @@ class SessionState:
     session_id: str
     turns: list[TurnRecord] = field(default_factory=list)  # 最近 keep_full_turns 轮
     rolling_summary: str = ""  # 更早轮次的滚动摘要
+    fact_pins: list[str] = field(default_factory=list)
     write_op_ledger: CallLedger = field(default_factory=CallLedger)
     title: str = "新会话"
     agent: str = DEFAULT_AGENT
@@ -258,6 +281,7 @@ class SessionManager:
                 for t in state.turns
             ],
             "rolling_summary": state.rolling_summary,
+            "fact_pins": list(state.fact_pins),
             "created_at": state.created_at,
             "updated_at": state.updated_at,
         }
@@ -309,11 +333,18 @@ class SessionManager:
                 for t in data.get("turns", [])
                 if isinstance(t, dict)
             ]
+            raw_pins = data.get("fact_pins") or []
+            pins = [
+                str(item).strip()[:_PIN_MAX]
+                for item in raw_pins
+                if isinstance(item, str) and item.strip()
+            ]
             state = SessionState(
                 session_id=sid,
                 agent=owner,
                 turns=turns,
                 rolling_summary=str(data.get("rolling_summary", "")),
+                fact_pins=pins,
                 title=str(data.get("title", "新会话")),
                 created_at=float(data.get("created_at", time.time())),
                 updated_at=float(data.get("updated_at", time.time())),
@@ -343,6 +374,7 @@ class SessionManager:
         self._last_system = self._system_preamble(user_input)
         state = self.get_state(session_id, agent=self._active_agent)
         state.agent = self._active_agent
+        state.fact_pins = apply_fact_pins(state.fact_pins, user_input)
         if self._agents is not None and permission == "workspace":
             try:
                 permission = self._agents.get(self._active_agent).permission
@@ -547,7 +579,13 @@ class SessionManager:
         state: SessionState,
     ) -> str:
         if card.type == "qa":
-            return self._run_qa(card, run_task, session_id)
+            return self._run_qa(
+                card,
+                run_task,
+                session_id,
+                query=self.last_rewritten,
+                has_history=bool(state.turns),
+            )
         if self._orchestrator is not None and self._orchestrator.should_orchestrate(card):
             return self._run_orchestrated(
                 card, run_task, session_id, permission, state
@@ -674,10 +712,19 @@ class SessionManager:
         self._emit_answer_done(answer, stop_reason=reason)
         return answer
 
-    def _run_qa(self, card: TaskCard, run_task: str, session_id: str = "") -> str:
+    def _run_qa(
+        self,
+        card: TaskCard,
+        run_task: str,
+        session_id: str = "",
+        *,
+        query: str = "",
+        has_history: bool = False,
+    ) -> str:
         prompt = run_task
+        search_query = (query or "").strip()
         if card.needs_knowledge:
-            evidence = self._retrieve(run_task)
+            evidence = self._retrieve(search_query)
             if _is_empty_retrieval(evidence):
                 if card.knowledge_mode != "augment":
                     answer = EMPTY_RESULT
@@ -690,9 +737,17 @@ class SessionManager:
                         {
                             "session_id": session_id,
                             "turn": self._active_turn,
-                            "query": run_task,
+                            "query": search_query,
                         },
                     )
+                if not has_history:
+                    prompt = FINAL_ANSWER_QA.format(
+                        task=run_task, evidence=evidence
+                    )
+            elif has_history and card.knowledge_mode == "augment":
+                prompt = FINAL_ANSWER_QA_AUGMENT.format(
+                    task=run_task, evidence=evidence
+                )
             else:
                 prompt = FINAL_ANSWER_QA.format(task=run_task, evidence=evidence)
         prompt = self._wrap_system(prompt)
@@ -756,7 +811,7 @@ class SessionManager:
         self.last_verify_reasons = []
         evidence = self.last_evidence
         if not self._config.verifier_enabled:
-            return self._attach_sources(answer, card, evidence)
+            return self._attach_sources(answer, card, evidence, user_input=user_input)
         real_calls: int | None = None
         if self._runner._registry.all():
             real_calls = 0
@@ -779,10 +834,11 @@ class SessionManager:
         while reasons and attempt < retries:
             self.last_verify_reasons = list(reasons)
             self._emit_rejected(session_id, reasons)
-            prompt = FINAL_ANSWER.format(task=run_task, history_text=evidence or "（无）")
+            history_text = self._tool_result_text() or evidence or "（无）"
+            prompt = FINAL_ANSWER.format(task=run_task, history_text=history_text)
             prompt = self._wrap_system(
                 f"{prompt}\n\n验收未通过：{'；'.join(reasons)}\n"
-                "请修正后重新输出回答。"
+                "请根据已有结果直接回答用户，不要复述执行过程。"
             )
             try:
                 t0 = time.perf_counter()
@@ -800,18 +856,58 @@ class SessionManager:
                 break
             except LLMFormatError:
                 break
-            reasons = verify(answer, card, evidence=evidence)
+            reasons = verify(
+                answer,
+                card,
+                evidence=evidence,
+                user_input=hint_text,
+                real_calls=real_calls,
+            )
             attempt += 1
         if reasons:
             self.last_verify_reasons = list(reasons)
             self._emit_rejected(session_id, reasons)
-            return self._attach_sources(attach_degrade(answer, reasons), card, evidence)
-        return self._attach_sources(answer, card, evidence)
+            cleaned = self._fallback_answer(answer, reasons)
+            return self._attach_sources(
+                cleaned, card, evidence, user_input=user_input
+            )
+        return self._attach_sources(answer, card, evidence, user_input=user_input)
 
-    def _attach_sources(self, answer: str, card: TaskCard, evidence: str) -> str:
+    def _tool_result_text(self) -> str:
+        result = self.last_result
+        if result is None:
+            return ""
+        parts = [
+            str(step.result)
+            for step in result.steps
+            if step.result and not step.error
+        ]
+        return "\n".join(parts).strip()
+
+    def _fallback_answer(self, answer: str, reasons: list[str]) -> str:
+        if "正式回答为空" in reasons:
+            parts = self._tool_result_text()
+            if parts:
+                return parts
+            body = (answer or "").replace(EMPTY_THINK_NOTE, "").strip()
+            for marker in ("[生成回答失败]", "[格式错误]"):
+                body = body.replace(marker, "")
+            return body.strip() or "未能生成正式回答"
+        return attach_degrade(answer, reasons)
+
+    def _attach_sources(
+        self,
+        answer: str,
+        card: TaskCard,
+        evidence: str,
+        *,
+        user_input: str = "",
+    ) -> str:
         if not card.needs_knowledge:
             return answer
-        return attach_sources(answer, extract_sources(evidence))
+        return attach_sources(
+            answer, extract_sources(evidence), user_input=user_input
+        )
 
     def _emit_rejected(self, session_id: str, reasons: list[str]) -> None:
         if self._events is not None:
@@ -968,7 +1064,7 @@ class SessionManager:
     ) -> str:
         """qa/agent 有历史则硬注入；needs_history 只决定是否 rewrite。"""
         active = card or default_card(mode, rewritten)
-        if active.type == "writer" or not state.turns:
+        if active.type == "writer" or (not state.turns and not state.fact_pins):
             body = rewritten
         else:
             body = self._compose_budgeted(state, rewritten)
@@ -986,10 +1082,13 @@ class SessionManager:
             summary=state.rolling_summary,
             turns=pairs,
             rewritten=rewritten,
+            fact_pins=list(state.fact_pins),
         )
 
     def _history_text(self, state: SessionState) -> str:
         parts: list[str] = []
+        if state.fact_pins:
+            parts.append("长期事实：" + "；".join(state.fact_pins))
         if state.rolling_summary.strip():
             parts.append(f"摘要：{state.rolling_summary.strip()}")
         for turn in state.turns:
@@ -1083,3 +1182,83 @@ class SessionManager:
 def _is_empty_retrieval(text: str) -> bool:
     body = (text or "").strip()
     return (not body) or any(phrase in body for phrase in HONEST_PHRASES)
+
+
+def apply_fact_pins(existing: list[str], user_input: str) -> list[str]:
+    """合并用户原文抽出的事实钉：按槽位覆盖，去重，每条 ≤80 字。"""
+    keyed: dict[str, str] = {}
+    extra: list[str] = []
+    for pin in existing:
+        text = str(pin).strip()[:_PIN_MAX]
+        if not text:
+            continue
+        slot = _slot_of_pin(text)
+        if slot:
+            keyed[slot] = text
+        elif text not in extra:
+            extra.append(text)
+    for slot, stmt in extract_fact_pins(user_input):
+        clipped = stmt.strip()[:_PIN_MAX]
+        if not clipped:
+            continue
+        if slot == "extra":
+            if clipped not in extra and clipped not in keyed.values():
+                extra.append(clipped)
+        else:
+            keyed[slot] = clipped
+    ordered = [
+        keyed[name]
+        for name, _prefix in _PIN_SLOT_PREFIX
+        if name in keyed
+    ]
+    for item in extra:
+        if item not in ordered:
+            ordered.append(item)
+    return ordered
+
+
+def extract_fact_pins(user_input: str) -> list[tuple[str, str]]:
+    """仅从高置信用户陈述抽出 (slot, statement)。"""
+    text = _clip_pin_source(user_input)
+    if not text:
+        return []
+    found: list[tuple[str, str]] = []
+
+    def _add(slot: str, value: str, statement: str) -> None:
+        cleaned = value.strip("。．.，,：: ")
+        if not cleaned or cleaned in _PIN_BAD or "?" in cleaned or "？" in cleaned:
+            return
+        found.append((slot, statement))
+
+    match = _PIN_NAME_RE.search(text)
+    if match:
+        _add("name", match.group(1), f"我的名字是{match.group(1).strip()}")
+    match = _PIN_CITY_RE.search(text)
+    if match:
+        _add("city", match.group(1), f"我住在{match.group(1).strip()}")
+    match = _PIN_COLOR_RE.search(text)
+    if match:
+        _add("color", match.group(1), f"我最喜欢的颜色是{match.group(1).strip()}")
+    match = _PIN_AGE_RE.search(text)
+    if match:
+        _add("age", match.group(1), f"我今年{match.group(1).strip()}岁")
+    match = _PIN_PASS_RE.search(text)
+    if match:
+        _add("passcode", match.group(1), f"口令是{match.group(1).strip()}")
+    match = _PIN_CODE_RE.search(text)
+    if match:
+        _add("codename", match.group(1), f"项目代号是{match.group(1).strip()}")
+    return found
+
+
+def _clip_pin_source(user_input: str) -> str:
+    body = (user_input or "").strip()
+    body = re.split(r"(?:只需确认|只确认记住|不要复述[^。]*)", body)[0]
+    return body.strip()
+
+
+def _slot_of_pin(statement: str) -> str:
+    for slot, prefix in _PIN_SLOT_PREFIX:
+        if statement.startswith(prefix):
+            return slot
+    return ""

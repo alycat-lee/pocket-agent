@@ -7,16 +7,17 @@ from pathlib import Path
 from typing import Any
 
 from pocket_agent.config import AgentConfig
-from pocket_agent.knowledge import HashEmbedder, KnowledgeBase
+from pocket_agent.knowledge import KnowledgeBase
+from pocket_agent.knowledge.embed import resolve_embedder
 
 _TESTS = Path(__file__).resolve().parents[2] / "tests"
 if str(_TESTS) not in sys.path:
     sys.path.insert(0, str(_TESTS))
 
 from pocket_agent.llm_client import LlamaCppClient, LLMConnectionError, LLMFormatError
+from pocket_agent.plugins.knowledge_plugin import register_knowledge_tools
 from pocket_agent.runner import AgentRunner
 from pocket_agent.session import SessionManager
-from pocket_agent.plugins.knowledge_plugin import register_knowledge_tools
 from pocket_agent.tools import ToolRegistry
 from pocket_agent.writer import LongWriter
 
@@ -49,7 +50,7 @@ class PocketRunner:
         registry = ToolRegistry(self._config)
         register_fixture_tools(registry)
         kb_path = Path(__file__).resolve().parents[2] / ".knowledge" / "bench.sqlite"
-        self._kb = KnowledgeBase(kb_path, HashEmbedder())
+        self._kb = KnowledgeBase(kb_path, resolve_embedder("lexical", {}))
         self._kb.ingest("内部手册.md", _HANDBOOK, source="内部手册.md", doc_id="handbook")
         register_knowledge_tools(registry, self._kb)
         self._agent = AgentRunner(self._config, self._llm, registry)
@@ -122,11 +123,25 @@ def _extras(mgr: SessionManager) -> dict[str, Any]:
         extras["real_calls"] = real
         extras["steps"] = int(result.stats.get("total_steps") or 0)
         extras["intercepts"] = int(result.stats.get("intercepts") or 0)
-        fps = {
-            f"{s.tool_name}:{sorted(s.args.items())}"
-            for s in result.steps
-            if s.tool_name != "(format_error)"
-        }
-        extras["dup_call_rate"] = 0.0 if real == len(fps) else 1.0
+        extras["dup_call_rate"] = _dup_call_rate(real, result.steps)
         extras["tool_names"] = [s.tool_name for s in result.steps]
+        extras["tool_calls"] = [
+            {
+                "name": s.tool_name,
+                "args": s.args,
+                "from_cache": s.from_cache,
+                "error": s.error,
+            }
+            for s in result.steps
+        ]
     return extras
+
+
+def _dup_call_rate(real_calls: int, steps: list[Any]) -> float:
+    """重复真实调用：同一工具+同一参数被真实执行多次。失败/缓存不计入去重分母。"""
+    fps = {
+        f"{s.tool_name}:{sorted((s.args or {}).items())}"
+        for s in steps
+        if getattr(s, "tool_name", "") != "(format_error)" and not getattr(s, "error", None)
+    }
+    return 0.0 if real_calls == len(fps) else 1.0

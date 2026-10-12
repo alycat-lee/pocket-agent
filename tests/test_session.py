@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from pocket_agent.config import AgentConfig
+from pocket_agent.knowledge import EMPTY_RESULT, KnowledgeBase
+from pocket_agent.knowledge.embed import HashEmbedder
 from pocket_agent.runner import AgentRunner
-from pocket_agent.session import SessionManager
+from pocket_agent.session import SessionManager, apply_fact_pins, extract_fact_pins
 from pocket_agent.tools import ToolRegistry, tool
 
 
@@ -386,3 +389,114 @@ def test_compose_excludes_unrelated_history_for_writer_and_qa(
     mgr.chat("s1", "你好")
     assert mgr.last_intent == "qa"
     assert "上海" in mgr.last_run_task
+
+
+def test_extract_fact_pins_high_confidence_statements() -> None:
+    samples = {
+        "请记住：项目代号是夜莺": "夜莺",
+        "请记住一个数字口令：7381": "7381",
+        "我叫林小满": "林小满",
+        "我的名字是林小满": "林小满",
+        "我住在成都": "成都",
+        "我最喜欢的颜色是青绿": "青绿",
+        "项目后来改名为夜莺": "夜莺",
+        "项目现在叫夜莺": "夜莺",
+    }
+    for text, needle in samples.items():
+        pins = extract_fact_pins(text)
+        assert pins, text
+        assert any(needle in stmt for _slot, stmt in pins), text
+    merged = apply_fact_pins([], "项目原来叫晨星。")
+    merged = apply_fact_pins(merged, "后来改名为夜莺。")
+    assert any("夜莺" in p for p in merged)
+    assert not any("晨星" in p for p in merged)
+
+
+def test_fact_pins_survive_lost_summary_and_distractors() -> None:
+    """埋针后 ≥7 轮干扰，假摘要丢「夜莺」，prompt 仍含钉。"""
+    cfg = AgentConfig(
+        max_steps=3,
+        keep_full_turns=6,
+        planner_enabled=False,
+        verifier_enabled=False,
+    )
+
+    class _Llm:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def generate(self, prompt: str) -> str:
+            self.prompts.append(prompt)
+            if "压缩" in prompt:
+                return "用户在闲聊数字、动物和饮品"
+            return "好的"
+
+        def generate_int(self, prompt: str, minimum: int, maximum: int) -> int:
+            self.prompts.append(prompt)
+            return 0
+
+        def generate_json(self, prompt: str, schema: dict) -> dict:
+            self.prompts.append(prompt)
+            return {}
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            del event, payload
+
+    llm = _Llm()
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, ToolRegistry(cfg)), events=_Bus()
+    )
+    mgr.chat("s1", "请记住项目代号：夜莺。只需确认。")
+    distractors = [
+        "1+1等于几？",
+        "用一句话介绍熊猫。",
+        "今天适合喝茶还是咖啡？",
+        "背一句古诗。",
+        "北京是中国的首都吗？",
+        "3的平方是多少？",
+        "推荐一本小说书名即可。",
+    ]
+    assert len(distractors) >= 7
+    for query in distractors:
+        mgr.chat("s1", query)
+    assert "夜莺" not in mgr.get_state("s1").rolling_summary
+    mgr.chat("s1", "现在项目代号是什么？只回答代号。")
+    assert any("夜莺" in p for p in mgr.get_state("s1").fact_pins)
+    assert "夜莺" in mgr.last_run_task
+
+
+def test_augment_irrelevant_hit_does_not_force_not_found(
+    tmp_path: Path,
+    mock_llm_factory: type,
+) -> None:
+    kb = KnowledgeBase(tmp_path / "kb.sqlite", HashEmbedder())
+    handbook = (Path(__file__).resolve().parent / "fixtures" / "handbook.md").read_text(
+        encoding="utf-8"
+    )
+    kb.ingest("内部手册.md", handbook, source="内部手册.md")
+    cfg = AgentConfig(
+        max_steps=3,
+        planner_enabled=False,
+        verifier_enabled=False,
+    )
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            del event, payload
+
+    llm = mock_llm_factory([0, "已记住", "夜莺标题", 0, "夜莺"])
+    mgr = SessionManager(
+        cfg,
+        llm,
+        AgentRunner(cfg, llm, ToolRegistry(cfg)),
+        events=_Bus(),
+        knowledge=kb,
+    )
+    mgr.chat("s1", "请记住项目代号：夜莺。只需确认。")
+    answer = mgr.chat("s1", "现在项目代号是什么？只回答代号。")
+    assert EMPTY_RESULT not in answer
+    assert "夜莺" in mgr.last_run_task
+    qa_prompts = [p for p in llm.prompts if "检索资料" in p]
+    for prompt in qa_prompts:
+        assert "必须回答「未找到相关资料」" not in prompt

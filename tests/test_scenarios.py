@@ -75,6 +75,7 @@ def test_out_of_range_choice(mock_llm_factory: type) -> None:
     llm = mock_llm_factory(
         [
             LLMFormatError("constraint decode failed"),
+            LLMFormatError("still invalid"),
             0,
             {"city": "北京"},
             -1,

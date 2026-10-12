@@ -37,9 +37,13 @@ def register_knowledge_tools(
         )
 
     return [
-        registry.register_with_disposer(search_knowledge, "检索私有知识库"),
-        registry.register_with_disposer(wiki_lookup, "查维基百科摘要"),
-        registry.register_with_disposer(web_search, "搜索网页标题摘要"),
+        registry.register_with_disposer(
+            search_knowledge, "检索私有知识库", domain="knowledge"
+        ),
+        registry.register_with_disposer(
+            wiki_lookup, "查维基百科摘要", domain="knowledge"
+        ),
+        registry.register_with_disposer(web_search, "搜索网页标题摘要", domain="web"),
     ]
 
 
@@ -55,7 +59,7 @@ class KnowledgePlugin:
         db_path = Path(str(data.get("db_path") or ".knowledge/kb.sqlite"))
         kb = KnowledgeBase.from_config(
             {
-                "embedder": data.get("embedder") or "local",
+                "embedder": data.get("embedder") or "lexical",
                 "db_path": str(db_path),
                 "top_k": data.get("top_k") or 5,
                 "result_limit": data.get("result_limit")

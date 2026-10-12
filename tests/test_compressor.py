@@ -57,6 +57,19 @@ def test_pack_session_history_keeps_summary_and_newest() -> None:
     assert "XXXX" not in packed
 
 
+def test_pack_never_drops_fact_pins() -> None:
+    cfg = AgentConfig(prompt_char_budget=70)
+    compressor = ContextCompressor(cfg)
+    packed = compressor.pack_session_history(
+        summary="很长的摘要" + ("X" * 80),
+        turns=[("旧问", "旧答" + ("Y" * 80))],
+        rewritten="现在项目代号是什么",
+        fact_pins=["项目代号是夜莺"],
+    )
+    assert "夜莺" in packed
+    assert "XXXX" not in packed
+
+
 def test_estimate_tokens_monotonic(compressor: ContextCompressor) -> None:
     shorter = "你好世界"
     longer = shorter + "额外内容"

@@ -24,6 +24,7 @@ class Tool:
     schema: dict
     fn: Callable[..., str]  # 执行函数，返回值必须为 str
     cacheable: bool = True  # False 表示写操作，跨轮账本持久拦截
+    domain: str = "general"
 
 
 class ToolRegistry:
@@ -37,6 +38,7 @@ class ToolRegistry:
         short_desc: str | None = None,
         *,
         cacheable: bool = True,
+        domain: str = "general",
     ) -> Tool:
         name = fn.__name__
         desc = (short_desc or "").strip() or name
@@ -48,6 +50,7 @@ class ToolRegistry:
             schema=_build_schema(fn),
             fn=fn,
             cacheable=cacheable,
+            domain=domain or "general",
         )
         self._tools[name] = tool
         return tool
@@ -58,13 +61,16 @@ class ToolRegistry:
         short_desc: str | None = None,
         *,
         cacheable: bool = True,
+        domain: str = "general",
     ) -> Disposer:
         """注册工具并返回注销函数（插件卸载时回收）。"""
         if isinstance(tool, Tool):
             self._tools[tool.name] = tool
             name = tool.name
         else:
-            registered = self.register(tool, short_desc, cacheable=cacheable)
+            registered = self.register(
+                tool, short_desc, cacheable=cacheable, domain=domain
+            )
             name = registered.name
 
         disposed = False
@@ -101,19 +107,54 @@ class ToolRegistry:
         return [t for _, t in scored[:top_n]]
 
 
+_DIRECT_DOMAINS = frozenset({"weather", "time", "file", "shell", "math"})
+_KNOWLEDGE_DOMAINS = frozenset({"knowledge", "web"})
+_DOMAIN_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("weather", ("天气", "气温", "温度", "下雨", "多少度", "晴", "阴")),
+    ("time", ("几点", "几点了", "当前时间", "星期几", "现在几点")),
+    ("math", ("计算", "温差", "平方", "相加", "相减", "乘以", "除以", "等于几")),
+    ("file", ("读取文件", "写入文件", "编辑文件", "列出目录", "工作区文件")),
+    ("shell", ("运行命令", "执行命令", "终端命令")),
+    ("knowledge", ("百科", "维基", "维基百科", "知识库", "网页搜索", "网上搜", "搜索网页")),
+)
+
+
 def tool(
     registry: ToolRegistry,
     short_desc: str = "",
     *,
     cacheable: bool = True,
+    domain: str = "general",
 ) -> Callable[[Callable[..., str]], Callable[..., str]]:
     """装饰器：@tool(registry, "查询指定城市天气")"""
 
     def decorator(fn: Callable[..., str]) -> Callable[..., str]:
-        registry.register(fn, short_desc=short_desc or None, cacheable=cacheable)
+        registry.register(
+            fn,
+            short_desc=short_desc or None,
+            cacheable=cacheable,
+            domain=domain,
+        )
         return fn
 
     return decorator
+
+
+def detect_tool_domains(task: str) -> set[str]:
+    body = task or ""
+    return {name for name, hints in _DOMAIN_HINTS if any(h in body for h in hints)}
+
+
+def filter_tools_by_domain(task: str, tools: list[Tool]) -> list[Tool]:
+    """命中直接数据领域且未命中知识领域时，去掉 knowledge/web；不得返回空表。"""
+    if not tools:
+        return []
+    domains = detect_tool_domains(task)
+    if domains & _DIRECT_DOMAINS and not (domains & _KNOWLEDGE_DOMAINS):
+        kept = [t for t in tools if t.domain not in _KNOWLEDGE_DOMAINS]
+        if kept:
+            return kept
+    return list(tools)
 
 
 def _build_schema(fn: Callable[..., str]) -> dict:
