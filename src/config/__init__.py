@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import warnings
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,15 @@ class AgentConfig:
     # Agent 目录（Phase 34）
     agents_root: str = "agents"  # 改路径不搬迁已有 agents
 
+    # 权限规则（Phase 40）：settings.json 覆盖 pocket.yml；请求 overrides 不开放
+    permission_rules: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.permission_rules, list):
+            self.permission_rules = []
+        else:
+            self.permission_rules = [item for item in self.permission_rules if isinstance(item, dict)]
+
     @classmethod
     def known_keys(cls) -> set[str]:
         return {f.name for f in fields(cls)}
@@ -89,7 +98,13 @@ class AgentConfig:
         if settings:
             merged.update({k: v for k, v in settings.items() if k in cls.known_keys()})
         if overrides:
-            merged.update({k: v for k, v in overrides.items() if k in cls.known_keys()})
+            merged.update(
+                {
+                    k: v
+                    for k, v in overrides.items()
+                    if k in cls.known_keys() and k != "permission_rules"
+                }
+            )
         return cls(**merged)
 
     def to_dict(self) -> dict[str, Any]:

@@ -12,7 +12,11 @@ from pocket_agent.config import (
     redact_secrets,
     save_settings,
 )
-from pocket_agent.config_schema import assert_schema_covers_agent_config, schema_keys
+from pocket_agent.config_schema import (
+    assert_schema_covers_agent_config,
+    get_config_schema,
+    schema_keys,
+)
 
 
 def test_from_layers_priority() -> None:
@@ -78,6 +82,18 @@ def test_redact_api_key() -> None:
 def test_schema_covers_all_agent_config_fields() -> None:
     assert_schema_covers_agent_config()
     assert schema_keys() == {f.name for f in fields(AgentConfig)}
+    visible = {item["key"] for item in get_config_schema()}
+    assert "permission_rules" not in visible
+
+
+def test_settings_permission_rules_override_base_not_request() -> None:
+    settings_rules = [{"effect": "allow", "tool": "run_command", "pattern": "^echo "}]
+    cfg = AgentConfig.from_layers(
+        base={"permission_rules": [{"effect": "deny", "tool": "*"}]},
+        settings={"permission_rules": settings_rules},
+        overrides={"permission_rules": [{"effect": "allow", "tool": "*"}]},
+    )
+    assert cfg.permission_rules == settings_rules
 
 
 def test_extract_base_from_pocket() -> None:

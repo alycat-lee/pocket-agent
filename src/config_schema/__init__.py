@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pocket_agent.config import AgentConfig
 
-FieldType = Literal["string", "number", "integer", "boolean"]
+FieldType = Literal["string", "number", "integer", "boolean", "json"]
 
 
 def _item(
@@ -257,12 +257,22 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
         group="Agent",
         description="Agent 根目录路径。修改后只影响新创建的 agent，不会搬迁已有目录。",
     ),
+    _item(
+        "permission_rules",
+        type="json",
+        group="权限",
+        description="权限规则列表。本期只支持编辑 settings.json，设置页不做 UI。",
+    ),
 ]
 
 
 def get_config_schema() -> list[dict[str, Any]]:
     """返回配置 schema 副本（设置页数据源）；deprecated 项不返回。"""
-    return [dict(item) for item in CONFIG_SCHEMA if not item.get("deprecated")]
+    return [
+        dict(item)
+        for item in CONFIG_SCHEMA
+        if not item.get("deprecated") and item.get("type") != "json"
+    ]
 
 
 def schema_keys() -> set[str]:

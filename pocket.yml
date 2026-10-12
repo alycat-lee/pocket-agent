@@ -13,6 +13,7 @@ plugins:
       base_url: "http://localhost:8000/v1"
   - name: tools-core
   - name: workspace
+  - name: shell
   - name: knowledge-base
     config:
       # hash：无 extras 也可入库检索；local：bge-small-zh（需 pocket-agent[knowledge]）

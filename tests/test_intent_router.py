@@ -52,6 +52,9 @@ def test_tool_hints_include_save_and_edit():
     assert has_tool_hint("修改这段")
     assert has_tool_hint("创建文件")
     assert has_tool_hint("新建文件")
+    assert has_tool_hint("运行 echo hello")
+    assert has_tool_hint("执行脚本")
+    assert has_tool_hint("这条命令是什么")
 
 
 def test_rule_tool_hint_prevents_qa():

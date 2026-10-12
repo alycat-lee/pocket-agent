@@ -1194,6 +1194,8 @@ button:disabled {
   max-height: 160px;
   font-family: var(--font-mono);
   font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .modal-actions {

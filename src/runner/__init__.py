@@ -21,6 +21,7 @@ from pocket_agent.llm_client import (
     LLMFormatError,
     take_thinking,
 )
+from pocket_agent.permissions import evaluate
 from pocket_agent.prompts import CHOOSE_TOOL, FILL_ARGS, FINAL_ANSWER, SYSTEM_BASE
 from pocket_agent.tools import Tool, ToolRegistry
 
@@ -186,13 +187,11 @@ class AgentRunner:
         """
         active_ledger = ledger if ledger is not None else self._ledger
         active_registry = registry if registry is not None else self._registry
-        # readonly 模式：过滤掉非 cacheable 工具
+        # readonly：去掉写工具与 run_command（shell 不受路径围栏约束）
         if permission == "readonly":
-            from pocket_agent.tools import ToolRegistry as _TR
-
-            filtered = _TR(self._config)
+            filtered = ToolRegistry(self._config)
             for t in active_registry.all():
-                if t.cacheable:
+                if t.cacheable and t.name != "run_command":
                     filtered._tools[t.name] = t
             active_registry = filtered
         self._guard = LoopGuard(self._config)
@@ -409,7 +408,57 @@ class AgentRunner:
                 )
             else:
                 from_cache = False
-                if not tool.cacheable and self.approval_gate is not None and permission != "full":
+                verdict, rule = evaluate(
+                    self._config.permission_rules,
+                    tool.name,
+                    args,
+                    cacheable=tool.cacheable,
+                )
+                if verdict == "deny":
+                    error = (
+                        f"[已拒绝] 命中权限规则：{rule.note or rule.pattern or rule.tool}"
+                    )
+                    result = error
+                    intercepts += 1
+                    self._emit(
+                        "step.intercepted",
+                        {
+                            "reason": "permission_rule",
+                            "tool": tool.name,
+                            **self._step_fields(
+                                step=step,
+                                t0=t0,
+                                prompt_tokens_est=fill_tokens,
+                                current_tool=tool.name,
+                            ),
+                        },
+                    )
+                    steps.append(
+                        StepRecord(
+                            step=step,
+                            tool_name=tool.name,
+                            args=args,
+                            result=result,
+                            from_cache=False,
+                            error=error,
+                        )
+                    )
+                    if run_id:
+                        self._dump_checkpoint(run_id, steps, active_ledger)
+                    guard_verdict = self._guard.on_step(
+                        step,
+                        f"{choice}:{json.dumps(args, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}",
+                        intercepted=True,
+                    )
+                    if guard_verdict.should_stop:
+                        stop_reason = StopReason(guard_verdict.reason)
+                        break
+                    continue
+                if (
+                    verdict == "ask"
+                    and self.approval_gate is not None
+                    and permission != "full"
+                ):
                     approval_id = str(uuid.uuid4())
                     approval_payload = {
                         "approval_id": approval_id,
@@ -418,6 +467,8 @@ class AgentRunner:
                         "args": args,
                         "timeout_sec": 60,
                         "session_id": self._run_session_id,
+                        "note": rule.note,
+                        "reason": rule.note,
                     }
                     self._emit("approval.required", approval_payload)
                     if not self.approval_gate(approval_payload):

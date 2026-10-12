@@ -47,6 +47,7 @@ packages = [
     "pocket_agent.prompts",
     "pocket_agent.prompt_registry",
     "pocket_agent.orchestrator",
+    "pocket_agent.permissions",
     "pocket_agent.guard",
     "pocket_agent.agents",
     "pocket_agent.knowledge",
