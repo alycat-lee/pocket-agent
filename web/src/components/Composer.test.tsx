@@ -1,6 +1,27 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { Composer } from "./Composer";
+import { Composer, shouldSendOnEnter } from "./Composer";
+
+describe("shouldSendOnEnter", () => {
+  it("sends on Enter, not Shift+Enter or IME compose", () => {
+    const enter = { key: "Enter", shiftKey: false, nativeEvent: {} };
+    const shift = { key: "Enter", shiftKey: true, nativeEvent: {} };
+    const composing = {
+      key: "Enter",
+      shiftKey: false,
+      nativeEvent: { isComposing: true },
+    };
+    const imeKey = {
+      key: "Enter",
+      shiftKey: false,
+      nativeEvent: { keyCode: 229 },
+    };
+    expect(shouldSendOnEnter(enter)).toBe(true);
+    expect(shouldSendOnEnter(shift)).toBe(false);
+    expect(shouldSendOnEnter(composing)).toBe(false);
+    expect(shouldSendOnEnter(imeKey)).toBe(false);
+  });
+});
 
 describe("Composer", () => {
   it("has workspace and permission selectors only — no intent badge", () => {

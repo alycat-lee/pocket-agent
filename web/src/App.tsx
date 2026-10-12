@@ -498,10 +498,10 @@ export default function App() {
   }) => {
     const text = (opts?.text ?? draft).trim();
     if (!text || status.running) return;
-    const ok = await checkHealth();
-    if (!ok) {
-      setOffline(true);
-      return;
+    // 探活走后台，不挡回车：用户气泡必须立刻出现。仅已知离线时才同步复探。
+    if (offline) {
+      const ok = await checkHealth();
+      if (!ok) return;
     }
     setOffline(false);
     setSoftError(null);

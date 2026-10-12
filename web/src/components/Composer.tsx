@@ -1,6 +1,18 @@
 import type { PermissionMode } from "../api/types";
 import { formatChars } from "../lib/format";
 
+export type EnterSendEvent = {
+  key: string;
+  shiftKey: boolean;
+  nativeEvent: { isComposing?: boolean; keyCode?: number };
+};
+
+export function shouldSendOnEnter(e: EnterSendEvent): boolean {
+  if (e.key !== "Enter" || e.shiftKey) return false;
+  if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return false;
+  return true;
+}
+
 interface Props {
   permission: PermissionMode;
   workspaces: { id: string; name: string; root: string }[];
@@ -68,10 +80,9 @@ export function Composer({
           placeholder="输入消息…（Enter 发送 / Shift+Enter 换行）"
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              if (!running) onSend();
-            }
+            if (!shouldSendOnEnter(e)) return;
+            e.preventDefault();
+            if (!running) onSend();
           }}
         />
         {running ? (
