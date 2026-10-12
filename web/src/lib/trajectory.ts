@@ -120,7 +120,8 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
   let turn = 0;
   let lastRunMeta: Record<string, string> = {};
   const out: TrajectoryRecord[] = [];
-  for (const ev of raw) {
+  const ordered = raw.slice().sort((a, b) => a.seq - b.seq);
+  for (const ev of ordered) {
     if (ev.event === "answer.delta") continue;
     const data = ev.data || {};
     if (ev.event === "run.start") {
@@ -358,31 +359,53 @@ export function upsertLiveEvent(
   return [...list, next];
 }
 
-/** 每轮把 route 记录排到该轮第一条，其余保持原序。 */
+function recordTime(record: TrajectoryRecord): number {
+  if (typeof record.ts === "number" && Number.isFinite(record.ts)) {
+    return record.ts;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+function compareChronological(
+  a: TrajectoryRecord,
+  b: TrajectoryRecord,
+): number {
+  if (a.seq !== b.seq) return a.seq - b.seq;
+  return recordTime(a) - recordTime(b);
+}
+
+function pinTurnLeaders(group: TrajectoryRecord[]): TrajectoryRecord[] {
+  return [
+    ...group.filter((r) => r.kind === "task"),
+    ...group.filter((r) => r.kind === "route"),
+    ...group.filter((r) => r.kind === "orchestrator"),
+    ...group.filter(
+      (r) =>
+        r.kind !== "task" && r.kind !== "route" && r.kind !== "orchestrator",
+    ),
+  ];
+}
+
+/** 按发生时间正序（1→N）；每轮把 task / route / orchestrator 排到该轮前面。 */
 export function orderRecordsForDisplay(
   records: TrajectoryRecord[],
 ): TrajectoryRecord[] {
-  const groups = new Map<number, TrajectoryRecord[]>();
-  const order: number[] = [];
-  for (const record of records) {
-    if (!groups.has(record.turn)) {
-      groups.set(record.turn, []);
-      order.push(record.turn);
+  const chronological = records.slice().sort(compareChronological);
+  const groups: TrajectoryRecord[][] = [];
+  for (const record of chronological) {
+    const last = groups[groups.length - 1];
+    if (!last || last[0].turn !== record.turn) {
+      groups.push([record]);
+    } else {
+      last.push(record);
     }
-    groups.get(record.turn)?.push(record);
   }
   const out: TrajectoryRecord[] = [];
-  for (const turn of order) {
-    const group = groups.get(turn) ?? [];
-        out.push(
-      ...group.filter((r) => r.kind === "task"),
-      ...group.filter((r) => r.kind === "route"),
-      ...group.filter((r) => r.kind === "orchestrator"),
-      ...group.filter(
-        (r) =>
-          r.kind !== "task" && r.kind !== "route" && r.kind !== "orchestrator",
-      ),
-    );
+  for (const [index, group] of groups.entries()) {
+    const displayTurn = index + 1;
+    for (const record of pinTurnLeaders(group)) {
+      out.push(record.turn === displayTurn ? record : { ...record, turn: displayTurn });
+    }
   }
   return out;
 }

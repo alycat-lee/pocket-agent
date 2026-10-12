@@ -270,4 +270,25 @@ describe("orderRecordsForDisplay", () => {
     ]);
     expect(ordered.map((r) => r.id)).toEqual(["t", "r", "u", "a"]);
   });
+
+  it("shows turns in chronological order even if records arrive newest-first", () => {
+    const ordered = orderRecordsForDisplay([
+      rec({ id: "u3", kind: "user", title: "第三轮", turn: 3, seq: 5 }),
+      rec({ id: "a3", kind: "assistant", title: "回答3", turn: 3, seq: 6 }),
+      rec({ id: "u1", kind: "user", title: "第一轮", turn: 1, seq: 1 }),
+      rec({ id: "a1", kind: "assistant", title: "回答1", turn: 1, seq: 2 }),
+      rec({ id: "u2", kind: "user", title: "第二轮", turn: 2, seq: 3 }),
+    ]);
+    expect(ordered.map((r) => r.turn)).toEqual([1, 1, 2, 3, 3]);
+    expect(ordered.map((r) => r.id)).toEqual(["u1", "a1", "u2", "u3", "a3"]);
+  });
+
+  it("renumbers a later reset turn=1 after earlier turns", () => {
+    const ordered = orderRecordsForDisplay([
+      rec({ id: "greet", kind: "user", title: "问候", turn: 1, seq: 30, ts: 200 }),
+      rec({ id: "novel", kind: "user", title: "小说", turn: 2, seq: 10, ts: 100 }),
+    ]);
+    expect(ordered.map((r) => r.id)).toEqual(["novel", "greet"]);
+    expect(ordered.map((r) => r.turn)).toEqual([1, 2]);
+  });
 });

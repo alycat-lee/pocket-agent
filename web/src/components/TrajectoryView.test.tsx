@@ -181,6 +181,26 @@ describe("TrajectoryView route record", () => {
     expect(document.querySelector(".thinking-block")).not.toBeNull();
   });
 
+  it("renders turn headers in ascending order", () => {
+    render(
+      <TrajectoryView
+        records={[
+          { ...routeRecord(), id: "t2", turn: 2, seq: 2, ts: 200, title: "意图：第二轮" },
+          { ...routeRecord(), id: "t1", turn: 1, seq: 1, ts: 100, title: "意图：第一轮" },
+        ]}
+        hasMore={false}
+        loadingEarlier={false}
+        followTail
+        focusId={null}
+        onFollowChange={vi.fn()}
+        onLoadEarlier={vi.fn()}
+        onExport={vi.fn()}
+      />,
+    );
+    const headers = screen.getAllByText(/轮次 \d/);
+    expect(headers.map((el) => el.textContent)).toEqual(["轮次 1", "轮次 2"]);
+  });
+
   it("renders HH:MM:SS from a unix timestamp on the record row", () => {
     render(
       <TrajectoryView
