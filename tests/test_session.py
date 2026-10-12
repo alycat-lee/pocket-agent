@@ -168,11 +168,14 @@ def test_auto_rename_after_first_turn(mock_llm_factory: type) -> None:
     runner = AgentRunner(cfg, llm, registry)
 
     renamed_events: list[dict] = []
+    llm_calls: list[dict] = []
 
     class _CaptureEvents:
         def emit(self, event: str, payload: dict) -> None:
             if event == "session.renamed":
                 renamed_events.append(payload)
+            if event == "llm.call":
+                llm_calls.append(payload)
 
     mgr = SessionManager(cfg, llm, runner, events=_CaptureEvents())
     mgr.chat("s1", "北京天气怎么样")
@@ -182,6 +185,14 @@ def test_auto_rename_after_first_turn(mock_llm_factory: type) -> None:
     assert len(renamed_events) == 1
     assert renamed_events[0]["session_id"] == "s1"
     assert renamed_events[0]["title"] == "北京天气查询"
+    rename_calls = [p for p in llm_calls if p.get("purpose") == "rename"]
+    assert len(rename_calls) == 1
+    assert rename_calls[0]["session_id"] == "s1"
+    assert rename_calls[0]["turn"] == 1
+    assert "标题" in rename_calls[0]["prompt_preview"]
+    assert len(rename_calls[0]["prompt_preview"]) <= 120
+    assert rename_calls[0]["response_preview"] == "北京天气查询"
+    assert "usage" not in rename_calls[0]
     # list_sessions 返回 title
     rows = mgr.list_sessions()
     assert rows[0]["title"] == "北京天气查询"
@@ -195,14 +206,42 @@ def test_auto_rename_fallback_on_llm_failure(mock_llm_factory: type) -> None:
     llm = mock_llm_factory([1, "回答1", RuntimeError("title gen failed")])
     runner = AgentRunner(cfg, llm, registry)
 
-    class _NullEvents:
-        def emit(self, event: str, payload: dict) -> None: ...
+    llm_calls: list[dict] = []
 
-    mgr = SessionManager(cfg, llm, runner, events=_NullEvents())
+    class _CaptureEvents:
+        def emit(self, event: str, payload: dict) -> None:
+            if event == "llm.call":
+                llm_calls.append(payload)
+
+    mgr = SessionManager(cfg, llm, runner, events=_CaptureEvents())
     mgr.chat("s1", "这是一个非常非常长的用户输入超过十二个字呢")
 
     state = mgr.get_state("s1")
     assert state.title == "这是一个非常非常长的用户输入超过十二个字呢"[:12]
+    assert not any(p.get("purpose") == "rename" for p in llm_calls)
+
+
+def test_answer_done_carries_usage_from_session(mock_llm_factory: type) -> None:
+    cfg = AgentConfig(max_steps=3, planner_enabled=False, verifier_enabled=False)
+    registry = ToolRegistry(cfg)
+    llm = mock_llm_factory(["我是 pocket-agent", "自我介绍"])
+    llm.last_usage = {
+        "prompt_tokens": 24,
+        "completion_tokens": 12,
+        "total_tokens": 36,
+    }
+    done: list[dict] = []
+
+    class _Capture:
+        def emit(self, event: str, payload: dict) -> None:
+            if event == "answer.done":
+                done.append(payload)
+
+    mgr = SessionManager(cfg, llm, AgentRunner(cfg, llm, registry), events=_Capture())
+    mgr.chat("s1", "你是谁")
+    assert done
+    assert done[0]["usage"] == llm.last_usage
+    assert "prompt_tokens_max" in done[0]
 
 
 def test_no_auto_rename_without_events(mock_llm_factory: type) -> None:

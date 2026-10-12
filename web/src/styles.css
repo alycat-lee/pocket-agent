@@ -834,6 +834,13 @@ button:disabled {
   color: var(--color-muted-fg);
 }
 
+.record.llm-call .record-title,
+.record.llm-call .record-meta,
+.record.llm-call .record-step {
+  color: var(--color-muted-fg);
+  font-weight: 400;
+}
+
 .overview-seg.thinking {
   background: color-mix(in srgb, var(--color-muted-fg) 45%, transparent);
 }

@@ -220,6 +220,8 @@ class Planner:
 
     def __init__(self, llm: LLMClientProtocol) -> None:
         self._llm = llm
+        self.last_prompt: str = ""
+        self.last_raw: dict[str, Any] | None = None
 
     def classify(self, user_input: str, rolling_summary: str = "") -> TaskCard:
         return self.plan(user_input, rolling_summary)
@@ -237,7 +239,9 @@ class Planner:
         )
         if system.strip():
             prompt = f"{system.strip()}\n\n{prompt}"
+        self.last_prompt = prompt
         data = self._llm.generate_json(prompt, TASK_CARD_SCHEMA)
         if not isinstance(data, dict):
             raise LLMFormatError("planner output is not object")
+        self.last_raw = data
         return card_from_dict(data, user_input=user_input)

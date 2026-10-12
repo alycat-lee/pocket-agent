@@ -72,6 +72,7 @@ _BUS_EVENTS = (
     "merger.done",
     "rag.empty",
     "answer.delta",
+    "llm.call",
 )
 _PERSIST_EVENTS = tuple(name for name in _BUS_EVENTS if name != "answer.delta")
 _DEFAULT_APPROVAL_TIMEOUT = 60.0

@@ -18,7 +18,12 @@ from pocket_agent.knowledge import (
     extract_sources,
 )
 from pocket_agent.ledger import CallLedger
-from pocket_agent.llm_client import LLMAbortedError, LLMClientProtocol, LLMFormatError
+from pocket_agent.llm_client import (
+    LLMAbortedError,
+    LLMClientProtocol,
+    LLMFormatError,
+    last_usage_of,
+)
 from pocket_agent.orchestrator import Orchestrator
 from pocket_agent.prompts import (
     FINAL_ANSWER,
@@ -39,6 +44,7 @@ from pocket_agent.verifier import attach_degrade, verify
 from pocket_agent.workspace import WorkspaceManager
 
 _TURN_ANSWER_DIGEST = 120
+_LLM_CALL_PREVIEW = 120
 _DELTA_FLUSH_SEC = 0.040
 _DELTA_FLUSH_CHARS = 32
 
@@ -367,6 +373,7 @@ class SessionManager:
                 state.turns.pop()
             card = default_card(mode, rewritten or user_input, user_input=user_input)
         else:
+            self._active_turn = len(state.turns) + 1
             card, mode, confidence, source, reason = self._resolve_card(
                 user_input, state.rolling_summary
             )
@@ -454,14 +461,26 @@ class SessionManager:
     ) -> tuple[TaskCard, IntentMode, float, str, str]:
         if self._config.planner_enabled:
             try:
-                card = self._ground_card(
-                    self._planner.plan(
-                        user_input,
-                        rolling_summary,
-                        system=self._last_system,
-                    ),
+                t0 = time.perf_counter()
+                planned = self._planner.plan(
                     user_input,
+                    rolling_summary,
+                    system=self._last_system,
                 )
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                raw = getattr(self._planner, "last_raw", None)
+                response = json.dumps(
+                    raw if isinstance(raw, dict) else planned.to_dict(),
+                    ensure_ascii=False,
+                )
+                self._emit_llm_call(
+                    session_id=self._active_session_id,
+                    purpose="planner",
+                    prompt=getattr(self._planner, "last_prompt", "") or "",
+                    response=response,
+                    elapsed_ms=elapsed_ms,
+                )
+                card = self._ground_card(planned, user_input)
                 return card, card.type, 0.85, "planner", "任务卡"
             except LLMFormatError:
                 pass
@@ -754,7 +773,17 @@ class SessionManager:
                 "请修正后重新输出回答。"
             )
             try:
-                answer = self._generate_user_text(prompt, session_id) or answer
+                t0 = time.perf_counter()
+                retry_text = self._generate_user_text(prompt, session_id)
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                self._emit_llm_call(
+                    session_id=session_id,
+                    purpose="verify_retry",
+                    prompt=prompt,
+                    response=retry_text,
+                    elapsed_ms=elapsed_ms,
+                )
+                answer = retry_text or answer
             except LLMAbortedError:
                 break
             except LLMFormatError:
@@ -804,7 +833,35 @@ class SessionManager:
         }
         if self._active_turn is not None:
             payload.setdefault("turn", self._active_turn)
+        usage = last_usage_of(self._llm)
+        if usage is not None:
+            payload["usage"] = usage
         self._events.emit("answer.done", payload)
+
+    def _emit_llm_call(
+        self,
+        *,
+        session_id: str,
+        purpose: str,
+        prompt: str,
+        response: str,
+        elapsed_ms: float,
+    ) -> None:
+        if self._events is None:
+            return
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "purpose": purpose,
+            "prompt_preview": prompt[:_LLM_CALL_PREVIEW],
+            "response_preview": response[:_LLM_CALL_PREVIEW],
+            "elapsed_ms": int(elapsed_ms),
+        }
+        if self._active_turn is not None:
+            payload["turn"] = self._active_turn
+        usage = last_usage_of(self._llm)
+        if usage is not None:
+            payload["usage"] = usage
+        self._events.emit("llm.call", payload)
 
     def _mark_plan_progress(self, session_id: str, steps: int) -> None:
         card = self.last_task_card
@@ -829,7 +886,16 @@ class SessionManager:
         title = ""
         try:
             prompt = SESSION_TITLE.format(user_input=user_input)
+            t0 = time.perf_counter()
             raw = str(self._llm.generate(prompt)).strip()
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            self._emit_llm_call(
+                session_id=state.session_id,
+                purpose="rename",
+                prompt=prompt,
+                response=raw,
+                elapsed_ms=elapsed_ms,
+            )
             # 取首行、去引号、限 12 字
             title = raw.splitlines()[0].strip().strip("\"'""") if raw else ""
             if title:
@@ -867,7 +933,16 @@ class SessionManager:
         )
         self.rewrite_call_count += 1
         try:
+            t0 = time.perf_counter()
             rewritten = str(self._llm.generate(prompt)).strip()
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            self._emit_llm_call(
+                session_id=state.session_id,
+                purpose="rewrite",
+                prompt=prompt,
+                response=rewritten,
+                elapsed_ms=elapsed_ms,
+            )
         except LLMFormatError:
             return user_input
         return rewritten or user_input
@@ -958,7 +1033,16 @@ class SessionManager:
             prompt = ROLLING_SUMMARY.format(limit=limit, turns_text=turns_text)
             self.summary_call_count += 1
             try:
+                t0 = time.perf_counter()
                 summary = str(self._llm.generate(prompt)).strip()
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                self._emit_llm_call(
+                    session_id=state.session_id,
+                    purpose="summarize",
+                    prompt=prompt,
+                    response=summary,
+                    elapsed_ms=elapsed_ms,
+                )
             except LLMFormatError:
                 summary = turns_text[:limit]
             if len(summary) > limit:

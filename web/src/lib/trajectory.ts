@@ -25,6 +25,7 @@ function kindOf(event: string, data: Record<string, unknown>): TrajectoryRecord[
   if (event === "step.thinking") return "thinking";
   if (event === "rag.empty") return "other";
   if (event === "answer.delta") return "other";
+  if (event === "llm.call") return "other";
   if (event === "step.start" || event === "step.cache_hit") return "tool";
   return "other";
 }
@@ -82,6 +83,17 @@ function titleOf(
   }
   if (event === "step.start") return `步骤 ${data.step_index ?? ""}`.trim();
   if (event === "rag.empty") return "未检索到资料，由模型自身作答";
+  if (event === "llm.call") {
+    const purpose = String(data.purpose || "");
+    const labels: Record<string, string> = {
+      rename: "标题生成",
+      rewrite: "指代补全",
+      summarize: "摘要压缩",
+      verify_retry: "验收重试",
+      planner: "任务规划",
+    };
+    return `内部调用：${labels[purpose] || purpose}`;
+  }
   return event;
 }
 
@@ -217,25 +229,29 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
       inProgress,
       payload,
       input:
-        typeof data.prompt === "string"
-          ? data.prompt
-          : typeof data.input === "string"
-            ? data.input
-            : typeof data.query === "string"
-              ? data.query
-              : undefined,
+        typeof data.prompt_preview === "string"
+          ? data.prompt_preview
+          : typeof data.prompt === "string"
+            ? data.prompt
+            : typeof data.input === "string"
+              ? data.input
+              : typeof data.query === "string"
+                ? data.query
+                : undefined,
       output:
         ev.event === "step.thinking" && typeof data.text === "string"
           ? data.text
-          : typeof data.result === "string"
-            ? data.result
-            : typeof data.answer === "string"
-              ? data.answer
-              : typeof data.output === "string"
-                ? data.output
-                : typeof data.text === "string"
-                  ? data.text
-                  : undefined,
+          : typeof data.response_preview === "string"
+            ? data.response_preview
+            : typeof data.result === "string"
+              ? data.result
+              : typeof data.answer === "string"
+                ? data.answer
+                : typeof data.output === "string"
+                  ? data.output
+                  : typeof data.text === "string"
+                    ? data.text
+                    : undefined,
       args: data.args,
     });
   }

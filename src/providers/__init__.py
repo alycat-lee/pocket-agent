@@ -12,6 +12,7 @@ from pocket_agent.llm_client import (
     LLMClientProtocol,
     OpenAICompatibleClient,
     ThinkingMode,
+    last_usage_of,
 )
 
 ProviderType = Literal["llamacpp", "openai_compatible", "deepseek"]
@@ -21,7 +22,7 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "base_url": "http://localhost:8000/v1",
         "requires_key": False,
         "trust_env": False,
-        "thinking": "off",
+        "thinking": "strip",
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
@@ -278,6 +279,7 @@ class ProviderRegistry:
         self._base = base
         self._clients: dict[str, LLMClientProtocol] = {}
         self.last_thinking: str = ""
+        self.last_usage: dict[str, int] | None = None
 
     def _build_client(self, pc: ProviderConfig) -> LLMClientProtocol:
         ac = replace(
@@ -314,6 +316,7 @@ class ProviderRegistry:
 
     def _remember(self, client: LLMClientProtocol) -> None:
         self.last_thinking = str(getattr(client, "last_thinking", "") or "")
+        self.last_usage = last_usage_of(client)
 
     def generate(self, prompt: str) -> str:
         client = self._get_client(self._config.routing.generate)

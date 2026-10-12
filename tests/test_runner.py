@@ -86,6 +86,26 @@ def test_step_events_carry_authoritative_turn(mock_llm_factory: type) -> None:
         assert payload.get("turn") == 1
     answer = next(payload for name, payload in bus.events if name == "answer.done")
     assert answer.get("turn") == 1
+    assert "usage" not in answer
+
+
+def test_answer_done_carries_last_usage(mock_llm_factory: type) -> None:
+    config = AgentConfig(max_steps=10)
+    llm = mock_llm_factory([-1, "两地对比完毕"])
+    llm.last_usage = {
+        "prompt_tokens": 24,
+        "completion_tokens": 165,
+        "total_tokens": 189,
+        "cached_tokens": 2,
+    }
+    bus = _Bus()
+    AgentRunner(config, llm, _weather_registry(config), events=bus).run(
+        "查询北京天气",
+        turn=1,
+    )
+    answer = next(payload for name, payload in bus.events if name == "answer.done")
+    assert answer["usage"] == llm.last_usage
+    assert "prompt_tokens_max" in answer
 
 
 def test_repeat_script_ledger_intercept_then_consecutive_stop(

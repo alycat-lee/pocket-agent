@@ -1,3 +1,5 @@
+import type { TokenUsage } from "../api/types";
+
 /** 缓存命中率展示：不谎报 100%（仅真满命中）。 */
 export function formatCacheHitRate(rate: number | null | undefined): string {
   if (rate == null || Number.isNaN(rate)) return "—";
@@ -24,4 +26,13 @@ export function formatElapsed(sec: number): string {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return m > 0 ? `${m}:${String(r).padStart(2, "0")}` : `${r}s`;
+}
+
+/** 真实 token 用量；缺字段时返回空串，调用方直接拼接。 */
+export function formatUsageTokens(usage: TokenUsage | null | undefined): string {
+  if (!usage) return "";
+  const up = usage.completion_tokens;
+  const down = usage.prompt_tokens;
+  if (typeof up !== "number" || typeof down !== "number") return "";
+  return ` · tokens ${up}↑/${down}↓`;
 }

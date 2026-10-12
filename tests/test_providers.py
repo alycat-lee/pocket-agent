@@ -9,6 +9,10 @@ from pocket_agent.config import AgentConfig
 from pocket_agent.plugins.ui_web import ApprovalBroker, build_app
 from pocket_agent.providers import (
     PROVIDER_PRESETS,
+    ProviderConfig,
+    ProviderRegistry,
+    ProvidersConfig,
+    RoutingConfig,
     load_providers_config,
     migrate_providers,
 )
@@ -27,6 +31,43 @@ def test_migrate_creates_providers_from_flat_fields() -> None:
     assert migrated["providers"][0]["base_url"] == "http://localhost:8000/v1"
     assert migrated["default_provider_id"] == "local"
     assert migrated["routing"]["choose_fill"] == "local"
+
+
+def test_llamacpp_preset_defaults_thinking_to_strip() -> None:
+    assert PROVIDER_PRESETS["llamacpp"]["thinking"] == "strip"
+
+
+def test_registry_remembers_last_usage() -> None:
+    cfg = ProvidersConfig(
+        providers=[
+            ProviderConfig(
+                id="p",
+                name="P",
+                type="llamacpp",
+                base_url="http://127.0.0.1:9/v1",
+            )
+        ],
+        default_provider_id="p",
+        routing=RoutingConfig(choose_fill="p", generate="p"),
+    )
+    registry = ProviderRegistry(cfg, AgentConfig())
+
+    class _Stub:
+        last_thinking = ""
+
+        def __init__(self) -> None:
+            self.last_usage = {
+                "prompt_tokens": 24,
+                "completion_tokens": 165,
+                "total_tokens": 189,
+            }
+
+    registry._remember(_Stub())  # type: ignore[arg-type]
+    assert registry.last_usage == {
+        "prompt_tokens": 24,
+        "completion_tokens": 165,
+        "total_tokens": 189,
+    }
 
 
 def test_migrate_idempotent() -> None:

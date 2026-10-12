@@ -197,7 +197,7 @@ export function TrajectoryView({
                 ) : null}
                 <button
                   type="button"
-                  className={`record ${r.kind === "route" ? "route" : ""} ${r.kind === "task" || r.kind === "orchestrator" ? "task" : ""} ${r.kind === "thinking" ? "thinking" : ""} ${r.kind === "worker" || r.kind === "merge" ? "worker" : ""} ${parentId ? "nested" : ""} ${selected?.id === r.id ? "selected" : ""}`}
+                  className={`record ${r.event === "llm.call" ? "llm-call" : ""} ${r.kind === "route" ? "route" : ""} ${r.kind === "task" || r.kind === "orchestrator" ? "task" : ""} ${r.kind === "thinking" ? "thinking" : ""} ${r.kind === "worker" || r.kind === "merge" ? "worker" : ""} ${parentId ? "nested" : ""} ${selected?.id === r.id ? "selected" : ""}`}
                   onClick={() => setSelectedId(r.id)}
                 >
                   <span className="record-step">
@@ -240,7 +240,11 @@ export function TrajectoryView({
                   </span>
                   <span>
                     <div className="record-title-row">
-                      <div className="record-title">{r.title}</div>
+                      <div
+                        className={`record-title${r.event === "llm.call" ? " status-meta" : ""}`}
+                      >
+                        {r.title}
+                      </div>
                       {clock ? <span className="rec-ts">{clock}</span> : null}
                     </div>
                     <div className="record-meta">
@@ -306,6 +310,39 @@ function InspectorBody({ record }: { record: TrajectoryRecord }) {
       : "";
   if (record.kind === "task") {
     return <TaskCardInspector record={record} />;
+  }
+  if (record.event === "llm.call") {
+    const usage = record.payload.usage;
+    return (
+      <dl>
+        <div>
+          <dt>事件</dt>
+          <dd>{record.event}</dd>
+        </div>
+        <div>
+          <dt>prompt</dt>
+          <dd>{String(record.payload.prompt_preview || record.input || "—")}</dd>
+        </div>
+        <div>
+          <dt>response</dt>
+          <dd>
+            {String(record.payload.response_preview || record.output || "—")}
+          </dd>
+        </div>
+        <div>
+          <dt>耗时</dt>
+          <dd>{formatMs(record.elapsedMs)}</dd>
+        </div>
+        <div>
+          <dt>usage</dt>
+          <dd>
+            {usage && typeof usage === "object"
+              ? JSON.stringify(usage)
+              : "—"}
+          </dd>
+        </div>
+      </dl>
+    );
   }
   return (
     <dl>

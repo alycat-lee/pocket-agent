@@ -1,6 +1,11 @@
 import { CircleNotch, Lightning } from "@phosphor-icons/react";
 import type { StatusSnapshot } from "../api/types";
-import { formatCacheHitRate, formatElapsed, formatMs } from "../lib/format";
+import {
+  formatCacheHitRate,
+  formatElapsed,
+  formatMs,
+  formatUsageTokens,
+} from "../lib/format";
 
 interface Props {
   status: StatusSnapshot;
@@ -73,6 +78,7 @@ export function StatusBar({ status, expanded, onToggle, onJump }: Props) {
           {formatCacheHitRate(status.settlement.cache_hit_rate)} · 真实调用{" "}
           {status.settlement.real_calls ?? 0} 次 · 拦截{" "}
           {status.settlement.intercepts ?? 0} 次
+          {formatUsageTokens(status.settlement.usage)}
         </div>
       ) : null}
     </div>

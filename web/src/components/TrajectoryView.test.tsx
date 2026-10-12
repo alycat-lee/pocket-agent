@@ -226,4 +226,43 @@ describe("TrajectoryView route record", () => {
     expect(container.textContent).not.toContain("undefined");
     expect(screen.getByText("规划器生成")).toBeInTheDocument();
   });
+
+  it("renders llm.call as a muted internal-call row with previews", () => {
+    const rec: TrajectoryRecord = {
+      ...routeRecord(),
+      id: "llm1",
+      kind: "other",
+      event: "llm.call",
+      title: "内部调用：标题生成",
+      elapsedMs: 12,
+      payload: {
+        purpose: "rename",
+        prompt_preview: "为对话生成不超过 12 字标题",
+        response_preview: "北京天气查询",
+        elapsed_ms: 12,
+        usage: { prompt_tokens: 24, completion_tokens: 165, total_tokens: 189 },
+      },
+      input: "为对话生成不超过 12 字标题",
+      output: "北京天气查询",
+    };
+    render(
+      <TrajectoryView
+        records={[rec]}
+        hasMore={false}
+        loadingEarlier={false}
+        followTail
+        focusId={null}
+        onFollowChange={vi.fn()}
+        onLoadEarlier={vi.fn()}
+        onExport={vi.fn()}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /内部调用：标题生成/ });
+    expect(btn.className).toContain("llm-call");
+    expect(btn.querySelector(".record-title")?.className).toContain("status-meta");
+    fireEvent.click(btn);
+    expect(screen.getByText("为对话生成不超过 12 字标题")).toBeInTheDocument();
+    expect(screen.getByText("北京天气查询")).toBeInTheDocument();
+    expect(screen.getByText(/prompt_tokens/)).toBeInTheDocument();
+  });
 });

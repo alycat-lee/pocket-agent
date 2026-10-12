@@ -59,6 +59,25 @@ describe("ChatView intent badge", () => {
     );
     expect(screen.getByText("直接问答 · 未调用工具")).toBeInTheDocument();
     expect(screen.queryByText(/自动识别/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/tokens /)).not.toBeInTheDocument();
+  });
+
+  it("appends real token usage on the settlement line", () => {
+    const msg = assistant("qa");
+    msg.settlement = {
+      total_steps: 0,
+      intercepts: 0,
+      cache_hit_rate: 0,
+      usage: { prompt_tokens: 24, completion_tokens: 165, total_tokens: 189 },
+    };
+    render(
+      <ChatView
+        messages={[msg]}
+        onSettlementClick={vi.fn()}
+        onCorrectIntent={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/tokens 165↑\/24↓/)).toBeInTheDocument();
   });
 
   it("renders agent badge and confirms correction rerun", () => {

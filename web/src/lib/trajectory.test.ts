@@ -205,6 +205,30 @@ describe("projectEvents route", () => {
     expect(rows[0]?.payload.plan_done).toEqual([true, true, true]);
   });
 
+  it("maps llm.call to a muted other record with purpose title", () => {
+    const rows = projectEvents([
+      {
+        seq: 1,
+        event: "llm.call",
+        data: {
+          purpose: "rename",
+          prompt_preview: "为对话生成不超过 12 字标题……",
+          response_preview: "北京天气查询",
+          elapsed_ms: 8,
+          turn: 1,
+          usage: { prompt_tokens: 24, completion_tokens: 165, total_tokens: 189 },
+        },
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.kind).toBe("other");
+    expect(rows[0]?.event).toBe("llm.call");
+    expect(rows[0]?.title).toBe("内部调用：标题生成");
+    expect(rows[0]?.input).toBe("为对话生成不超过 12 字标题……");
+    expect(rows[0]?.output).toBe("北京天气查询");
+    expect(rows[0]?.elapsedMs).toBe(8);
+  });
+
   it("maps rag.empty to other kind with fallback title", () => {
     const rows = projectEvents([
       {

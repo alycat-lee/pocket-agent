@@ -46,6 +46,13 @@ export interface AgentInfo {
   root: string;
 }
 
+export interface TokenUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  cached_tokens?: number;
+}
+
 export interface Settlement {
   total_steps: number;
   llm_ms?: number;
@@ -59,6 +66,7 @@ export interface Settlement {
   provider_name?: string;
   provider_type?: string;
   model?: string;
+  usage?: TokenUsage;
 }
 
 export interface ChatMessage {

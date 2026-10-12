@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import re
 import threading
 import time
@@ -11,6 +12,9 @@ from urllib.parse import urlparse
 
 import httpx
 from pocket_agent.config import AgentConfig
+
+logger = logging.getLogger(__name__)
+_thinking_off_warned = False
 
 _INT_RE = re.compile(r"-?\d+")
 _THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -54,6 +58,37 @@ def take_thinking(llm: object) -> str:
     if hasattr(llm, "last_thinking"):
         llm.last_thinking = ""
     return str(text)
+
+
+def parse_usage(raw: object) -> dict[str, int] | None:
+    """解析 OpenAI 兼容 usage；缺字段或旧服务无 usage 时返回 None。"""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        val = raw.get(key)
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            continue
+        out[key] = int(val)
+    details = raw.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens")
+        if isinstance(cached, (int, float)) and not isinstance(cached, bool):
+            out["cached_tokens"] = int(cached)
+    return out or None
+
+
+def last_usage_of(llm: object) -> dict[str, int] | None:
+    """读取客户端上一次请求的真实 token 用量；无则 None。"""
+    raw = getattr(llm, "last_usage", None)
+    if not isinstance(raw, dict) or not raw:
+        return None
+    out: dict[str, int] = {}
+    for key, val in raw.items():
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            continue
+        out[str(key)] = int(val)
+    return out or None
 
 
 def apply_max_tokens(llm: object, max_tokens: int) -> None:
@@ -232,6 +267,7 @@ class OpenAICompatibleClient:
             self._thinking = "keep" if config.reasoning_enabled else "off"
         self._trust_env = resolve_trust_env(config.base_url, trust_env)
         self.last_thinking: str = ""
+        self.last_usage: dict[str, int] | None = None
         self._abort = threading.Event()
         self._in_flight_lock = threading.Lock()
         self._in_flight: httpx.Response | None = None
@@ -267,6 +303,7 @@ class OpenAICompatibleClient:
         filt = _StreamThinkFilter()
         collected: list[str] = []
         self.last_thinking = ""
+        self.last_usage = None
         try:
             with (
                 httpx.Client(
@@ -340,6 +377,9 @@ class OpenAICompatibleClient:
             data = json.loads(payload)
         except json.JSONDecodeError:
             return ""
+        usage = parse_usage(data.get("usage") if isinstance(data, dict) else None)
+        if usage is not None:
+            self.last_usage = usage
         try:
             delta = data["choices"][0]["delta"]
         except (KeyError, IndexError, TypeError):
@@ -347,12 +387,25 @@ class OpenAICompatibleClient:
         if not isinstance(delta, dict):
             return ""
         reasoning = delta.get("reasoning_content")
+        self._maybe_downgrade_fake_thinking_off(reasoning)
         if isinstance(reasoning, str) and reasoning and self._thinking == "keep":
             self.last_thinking += reasoning
         content = delta.get("content")
         if not isinstance(content, str) or not content:
             return ""
         return filt.feed(content)
+
+    def _maybe_downgrade_fake_thinking_off(self, reasoning: object) -> None:
+        """R1 类模板忽略 enable_thinking=false 时，降级为 strip，避免后续白烧思维链。"""
+        global _thinking_off_warned
+        if self._thinking != "off":
+            return
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            return
+        if not _thinking_off_warned:
+            logger.warning("模型模板不支持 enable_thinking，已按 strip 处理")
+            _thinking_off_warned = True
+        self._thinking = "strip"
 
     def _chat_payload(
         self,
@@ -427,6 +480,7 @@ class OpenAICompatibleClient:
     def _request_with_retry(self, payload: dict[str, Any]) -> str:
         url = f"{self._config.base_url.rstrip('/')}/chat/completions"
         last_error: Exception | None = None
+        self.last_usage = None
 
         for attempt in range(_MAX_ATTEMPTS):
             if self._abort.is_set():
@@ -482,6 +536,10 @@ class OpenAICompatibleClient:
                 if not isinstance(message, dict):
                     raise LLMFormatError("message is not object")
                 thinking = extract_thinking(message)
+                self.last_usage = parse_usage(data.get("usage"))
+                self._maybe_downgrade_fake_thinking_off(
+                    message.get("reasoning_content")
+                )
                 self.last_thinking = thinking if self._thinking == "keep" else ""
                 raw = message.get("content")
                 content = strip_think_blocks(raw) if isinstance(raw, str) else ""

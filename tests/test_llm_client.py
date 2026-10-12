@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from pocket_agent import llm_client as llm_client_mod
 from pocket_agent.config import AgentConfig
 from pocket_agent.llm_client import (
     LlamaCppClient,
@@ -13,18 +15,26 @@ from pocket_agent.llm_client import (
     LLMConnectionError,
     LLMFormatError,
     OpenAICompatibleClient,
+    parse_usage,
     resolve_trust_env,
 )
 
 
-def _openai_response(content: str, status_code: int = 200) -> httpx.Response:
+def _openai_response(
+    content: str,
+    status_code: int = 200,
+    usage: dict | None = None,
+) -> httpx.Response:
+    body: dict = {
+        "choices": [
+            {"message": {"role": "assistant", "content": content}},
+        ]
+    }
+    if usage is not None:
+        body["usage"] = usage
     return httpx.Response(
         status_code,
-        json={
-            "choices": [
-                {"message": {"role": "assistant", "content": content}},
-            ]
-        },
+        json=body,
         request=httpx.Request("POST", "http://localhost:8080/v1/chat/completions"),
     )
 
@@ -71,6 +81,7 @@ def test_generate_parses_content() -> None:
     assert payload["max_tokens"] == config.max_tokens
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert "response_format" not in payload
+    assert client.last_usage is None
 
 
 def test_generate_rejects_reasoning_content_fallback() -> None:
@@ -360,6 +371,109 @@ def test_thinking_strip_omits_kwargs_and_drops_reasoning() -> None:
     payload = mock_http.stream.call_args.kwargs["json"]
     assert "chat_template_kwargs" not in payload
     assert client.last_thinking == ""
+
+
+def test_thinking_off_degrades_to_strip_when_reasoning_leaks(caplog: pytest.LogCaptureFixture) -> None:
+    llm_client_mod._thinking_off_warned = False
+    client = OpenAICompatibleClient(AgentConfig(), thinking="off")
+    response = httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "最终答案",
+                        "reasoning_content": "这是不该泄漏的思维链",
+                    }
+                }
+            ]
+        },
+        request=httpx.Request("POST", "http://localhost:8000/v1/chat/completions"),
+    )
+    follow = _openai_response("第二次")
+    mock_http = _patch_client([response, follow])
+    with (
+        caplog.at_level(logging.WARNING, logger="pocket_agent.llm_client"),
+        patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http),
+    ):
+        first = client.generate("问")
+        second = client.generate("再问")
+    assert first == "最终答案"
+    assert "思维链" not in first
+    assert second == "第二次"
+    assert client._thinking == "strip"
+    assert client.last_thinking == ""
+    warnings = [r for r in caplog.records if "enable_thinking" in r.message]
+    assert len(warnings) == 1
+    assert "已按 strip 处理" in warnings[0].message
+    second_payload = mock_http.stream.call_args_list[1].kwargs["json"]
+    assert "chat_template_kwargs" not in second_payload
+
+
+def test_parse_usage_from_non_stream_response() -> None:
+    usage = {
+        "prompt_tokens": 24,
+        "completion_tokens": 165,
+        "total_tokens": 189,
+        "prompt_tokens_details": {"cached_tokens": 2},
+    }
+    client = OpenAICompatibleClient(AgentConfig(), thinking="strip")
+    mock_http = _patch_client([_openai_response("正文", usage=usage)])
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        assert client.generate("问") == "正文"
+    assert client.last_usage == {
+        "prompt_tokens": 24,
+        "completion_tokens": 165,
+        "total_tokens": 189,
+        "cached_tokens": 2,
+    }
+
+
+def test_parse_usage_missing_field_is_none() -> None:
+    assert parse_usage(None) is None
+    assert parse_usage({}) is None
+    assert parse_usage("nope") is None
+    client = OpenAICompatibleClient(AgentConfig(), thinking="strip")
+    mock_http = _patch_client([_openai_response("正文")])
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        assert client.generate("问") == "正文"
+    assert client.last_usage is None
+
+
+def test_parse_usage_from_stream_chunk() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _sse_bytes(
+            [
+                'data: {"choices":[{"delta":{"content":"好"}}]}',
+                (
+                    'data: {"choices":[{"delta":{}}],'
+                    '"usage":{"prompt_tokens":10,"completion_tokens":2,'
+                    '"total_tokens":12}}'
+                ),
+                "data: [DONE]",
+            ]
+        )
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"content-type": "text/event-stream"},
+            request=request,
+        )
+
+    client = OpenAICompatibleClient(AgentConfig(), thinking="strip")
+    deltas: list[str] = []
+    with patch(
+        "pocket_agent.llm_client.httpx.Client",
+        side_effect=_transport_for(handler),
+    ):
+        text = client.generate_stream("问", deltas.append)
+    assert text == "好"
+    assert client.last_usage == {
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "total_tokens": 12,
+    }
 
 
 def test_thinking_keep_captures_and_enables() -> None:

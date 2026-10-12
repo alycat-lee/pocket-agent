@@ -1,5 +1,5 @@
 import type { ChatMessage, IntentMode } from "../api/types";
-import { formatCacheHitRate } from "../lib/format";
+import { formatCacheHitRate, formatUsageTokens } from "../lib/format";
 import { IntentBadge } from "./IntentBadge";
 
 interface Props {
@@ -52,6 +52,7 @@ export function ChatView({
                 {m.settlement.total_steps} 步 · 缓存命中{" "}
                 {formatCacheHitRate(m.settlement.cache_hit_rate)} · 拦截{" "}
                 {m.settlement.intercepts ?? 0}
+                {formatUsageTokens(m.settlement.usage)}
               </button>
             </div>
           ) : null}

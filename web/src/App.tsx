@@ -406,6 +406,11 @@ export default function App() {
           provider_name: String(data.provider_name || ""),
           provider_type: String(data.provider_type || ""),
           model: String(data.model || ""),
+          ...(data.usage &&
+          typeof data.usage === "object" &&
+          !Array.isArray(data.usage)
+            ? { usage: data.usage as Settlement["usage"] }
+            : {}),
         };
         if (data.model) {
           setActiveModel({
@@ -602,6 +607,7 @@ export default function App() {
       "merger.done",
       "rag.empty",
       "answer.delta",
+      "llm.call",
       "error",
     ];
     for (const name of names) {

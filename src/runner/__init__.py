@@ -19,6 +19,7 @@ from pocket_agent.llm_client import (
     LLMAbortedError,
     LLMClientProtocol,
     LLMFormatError,
+    last_usage_of,
     take_thinking,
 )
 from pocket_agent.permissions import evaluate
@@ -615,6 +616,9 @@ class AgentRunner:
             "prompt_tokens_max": prompt_tokens_max,
             "elapsed_ms": int((time.perf_counter() - run_t0) * 1000),
         }
+        usage = last_usage_of(self._llm)
+        if usage is not None:
+            settlement["usage"] = usage
         meta = getattr(self, "_run_meta", None)
         extra = dict(meta) if isinstance(meta, dict) else {}
         self._emit(
