@@ -13,6 +13,7 @@ from pocket_agent.plugins.tools_core import ToolsCorePlugin
 from pocket_agent.plugins.ui_cli import UiCliPlugin
 from pocket_agent.plugins.ui_tui import UiTuiPlugin
 from pocket_agent.plugins.ui_web import UiWebPlugin
+from pocket_agent.plugins.workspace_plugin import WorkspacePlugin
 from pocket_agent.plugins.writer_plugin import WriterPlugin
 from pocket_agent.runtime import Plugin
 
@@ -24,6 +25,7 @@ def builtin_plugins() -> dict[str, Plugin]:
         LlmLlamaCppPlugin(),
         AgentsPlugin(),
         ToolsCorePlugin(),
+        WorkspacePlugin(),
         KnowledgePlugin(),
         BridgeMcpPlugin(),
         CheckpointPlugin(),

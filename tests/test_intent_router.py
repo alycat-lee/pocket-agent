@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pocket_agent.intent_router import IntentRouter
+from pocket_agent.intent_router import IntentRouter, has_tool_hint
 from pocket_agent.llm_client import LLMFormatError
 
 _CASES_PATH = Path(__file__).parent / "fixtures" / "intent_cases.json"
@@ -44,6 +44,14 @@ def test_rule_qa_short_chitchat():
     assert conf == 0.9
     assert source == "rule"
     assert reason == "短句闲聊"
+
+
+def test_tool_hints_include_save_and_edit():
+    assert has_tool_hint("保存文件")
+    assert has_tool_hint("写入草稿")
+    assert has_tool_hint("修改这段")
+    assert has_tool_hint("创建文件")
+    assert has_tool_hint("新建文件")
 
 
 def test_rule_tool_hint_prevents_qa():
