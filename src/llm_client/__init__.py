@@ -15,6 +15,9 @@ from pocket_agent.config import AgentConfig
 
 logger = logging.getLogger(__name__)
 _thinking_off_warned = False
+EMPTY_THINK_NOTE = "（模型仅输出了思考过程，已截取要点）"
+_EMPTY_THINK_FALLBACK_CHARS = 300
+_EMPTY_CONTENT_RETRIES = 1
 
 _INT_RE = re.compile(r"-?\d+")
 _THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -76,6 +79,16 @@ def parse_usage(raw: object) -> dict[str, int] | None:
         if isinstance(cached, (int, float)) and not isinstance(cached, bool):
             out["cached_tokens"] = int(cached)
     return out or None
+
+
+def degrade_empty_thinking(thinking: str) -> str:
+    """空正文时截取思维链末尾，并标注降级说明。"""
+    body = (thinking or "").strip()
+    if body:
+        body = body[-_EMPTY_THINK_FALLBACK_CHARS:]
+    if not body:
+        return EMPTY_THINK_NOTE
+    return f"{body}\n{EMPTY_THINK_NOTE}"
 
 
 def last_usage_of(llm: object) -> dict[str, int] | None:
@@ -268,6 +281,7 @@ class OpenAICompatibleClient:
         self._trust_env = resolve_trust_env(config.base_url, trust_env)
         self.last_thinking: str = ""
         self.last_usage: dict[str, int] | None = None
+        self._last_reasoning: str = ""
         self._abort = threading.Event()
         self._in_flight_lock = threading.Lock()
         self._in_flight: httpx.Response | None = None
@@ -304,6 +318,7 @@ class OpenAICompatibleClient:
         collected: list[str] = []
         self.last_thinking = ""
         self.last_usage = None
+        self._last_reasoning = ""
         try:
             with (
                 httpx.Client(
@@ -364,7 +379,16 @@ class OpenAICompatibleClient:
             self.last_thinking += filt.thinking_text()
         else:
             self.last_thinking = ""
-        return "".join(collected)
+        text = "".join(collected)
+        if text.strip():
+            return text
+        retried = self._request_with_retry(
+            self._chat_payload(prompt, response_format=None),
+            empty_retries=0,
+        )
+        if retried:
+            on_delta(retried)
+        return retried
 
     def _consume_sse_line(self, line: str, filt: _StreamThinkFilter) -> str:
         text = (line or "").strip()
@@ -388,8 +412,10 @@ class OpenAICompatibleClient:
             return ""
         reasoning = delta.get("reasoning_content")
         self._maybe_downgrade_fake_thinking_off(reasoning)
-        if isinstance(reasoning, str) and reasoning and self._thinking == "keep":
-            self.last_thinking += reasoning
+        if isinstance(reasoning, str) and reasoning:
+            self._last_reasoning += reasoning
+            if self._thinking == "keep":
+                self.last_thinking += reasoning
         content = delta.get("content")
         if not isinstance(content, str) or not content:
             return ""
@@ -477,10 +503,17 @@ class OpenAICompatibleClient:
             self._chat_payload(prompt, response_format=response_format)
         )
 
-    def _request_with_retry(self, payload: dict[str, Any]) -> str:
+    def _request_with_retry(
+        self,
+        payload: dict[str, Any],
+        *,
+        empty_retries: int = _EMPTY_CONTENT_RETRIES,
+    ) -> str:
         url = f"{self._config.base_url.rstrip('/')}/chat/completions"
         last_error: Exception | None = None
         self.last_usage = None
+        saved_thinking = ""
+        remain_empty = empty_retries
 
         for attempt in range(_MAX_ATTEMPTS):
             if self._abort.is_set():
@@ -540,6 +573,9 @@ class OpenAICompatibleClient:
                 self._maybe_downgrade_fake_thinking_off(
                     message.get("reasoning_content")
                 )
+                if thinking.strip():
+                    saved_thinking = thinking
+                    self._last_reasoning = thinking
                 self.last_thinking = thinking if self._thinking == "keep" else ""
                 raw = message.get("content")
                 content = strip_think_blocks(raw) if isinstance(raw, str) else ""
@@ -551,10 +587,15 @@ class OpenAICompatibleClient:
                 ) from exc
 
             if not content:
-                raise LLMFormatError(
-                    "empty content after stripping think blocks "
-                    "(reasoning_content is not used as the answer)"
+                if remain_empty > 0:
+                    remain_empty -= 1
+                    continue
+                fallback = degrade_empty_thinking(
+                    saved_thinking or self._last_reasoning
                 )
+                if self._thinking != "keep":
+                    self.last_thinking = ""
+                return fallback
             return content
 
         raise LLMConnectionError(str(last_error))

@@ -10,6 +10,7 @@ import pytest
 from pocket_agent import llm_client as llm_client_mod
 from pocket_agent.config import AgentConfig
 from pocket_agent.llm_client import (
+    EMPTY_THINK_NOTE,
     LlamaCppClient,
     LLMAbortedError,
     LLMConnectionError,
@@ -84,9 +85,8 @@ def test_generate_parses_content() -> None:
     assert client.last_usage is None
 
 
-def test_generate_rejects_reasoning_content_fallback() -> None:
-    client = LlamaCppClient(AgentConfig())
-    response = httpx.Response(
+def _empty_reasoning_response(reasoning: str) -> httpx.Response:
+    return httpx.Response(
         200,
         json={
             "choices": [
@@ -94,19 +94,38 @@ def test_generate_rejects_reasoning_content_fallback() -> None:
                     "message": {
                         "role": "assistant",
                         "content": "",
-                        "reasoning_content": "北京是中国的首都。",
+                        "reasoning_content": reasoning,
                     }
                 }
             ]
         },
         request=httpx.Request("POST", "http://localhost:8000/v1/chat/completions"),
     )
-    mock_http = _patch_client([response])
-    with (
-        patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http),
-        pytest.raises(LLMFormatError, match="reasoning_content"),
-    ):
-        client.generate("介绍北京")
+
+
+def test_empty_content_retries_then_returns_text() -> None:
+    client = OpenAICompatibleClient(AgentConfig(), thinking="off")
+    mock_http = _patch_client(
+        [_empty_reasoning_response("先想一遍"), _openai_response("正常正文")]
+    )
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        assert client.generate("问") == "正常正文"
+    assert mock_http.stream.call_count == 2
+
+
+def test_empty_content_twice_returns_thinking_tail() -> None:
+    client = OpenAICompatibleClient(AgentConfig(), thinking="strip")
+    reasoning = ("前段推理" * 40) + "要点结尾7381"
+    mock_http = _patch_client(
+        [_empty_reasoning_response(reasoning), _empty_reasoning_response(reasoning)]
+    )
+    with patch("pocket_agent.llm_client.httpx.Client", return_value=mock_http):
+        text = client.generate("问")
+    assert EMPTY_THINK_NOTE in text
+    assert "要点结尾7381" in text
+    assert "[生成回答失败]" not in text
+    assert "empty content" not in text
+    assert len(text) <= 300 + len(EMPTY_THINK_NOTE) + 5
 
 
 def test_generate_strips_think_blocks_from_answer() -> None:

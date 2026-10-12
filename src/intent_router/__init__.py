@@ -53,6 +53,18 @@ _TOOL_HINTS = (
     "创建",
     "更新",
     "查",
+    "几点",
+    "时间",
+    "几点了",
+    "多少度",
+    "星期几",
+)
+_AGENT_FORCE_HINTS = (
+    "几点了",
+    "几点",
+    "多少度",
+    "星期几",
+    "时间",
 )
 _MODES: tuple[IntentMode, ...] = ("qa", "agent", "writer")
 
@@ -89,6 +101,9 @@ class IntentRouter:
         )
         if identity is not None:
             return "qa", 0.95, "rule", "身份问答"
+        force = next((h for h in _AGENT_FORCE_HINTS if h in text), None)
+        if force is not None:
+            return "agent", 0.9, "rule", force
         has_tool = any(h in text for h in _TOOL_HINTS)
         if not has_tool:
             qa_hit = next((kw for kw in _QA_KEYWORDS if kw in text), None)

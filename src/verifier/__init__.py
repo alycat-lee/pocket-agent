@@ -6,6 +6,7 @@ import re
 from difflib import SequenceMatcher
 
 import pocket_agent.prompts as prompt_mod
+from pocket_agent.intent_router import has_tool_hint
 from pocket_agent.knowledge import EMPTY_RESULT, HONEST_PHRASES
 from pocket_agent.prompt_registry import current_registry
 from pocket_agent.prompts import builtin_entries
@@ -69,7 +70,14 @@ def prompt_leak_phrases() -> tuple[str, ...]:
     return tuple(phrase for phrase in _LEAK_CANDIDATES if phrase in blob)
 
 
-def verify(answer: str, task_card: TaskCard, *, evidence: str = "") -> list[str]:
+def verify(
+    answer: str,
+    task_card: TaskCard,
+    *,
+    evidence: str = "",
+    user_input: str = "",
+    real_calls: int | None = None,
+) -> list[str]:
     """返回问题列表；空列表表示通过。"""
     text = answer or ""
     problems: list[str] = []
@@ -94,6 +102,13 @@ def verify(answer: str, task_card: TaskCard, *, evidence: str = "") -> list[str]
         or (evidence and EMPTY_RESULT not in evidence and evidence.strip())
     ):
         problems.extend(_citation_problems(text, evidence))
+    if (
+        task_card.type == "agent"
+        and real_calls is not None
+        and real_calls == 0
+        and has_tool_hint(user_input)
+    ):
+        problems.append("应调用工具但未调用")
     return problems
 
 

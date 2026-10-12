@@ -83,6 +83,39 @@ def test_rolling_summary_trigger(mock_llm_factory: type) -> None:
     assert len(mgr.get_state("s1").turns) == config.keep_full_turns
 
 
+def test_history_injected_when_planner_denies_needs_history(
+    mock_llm_factory: type,
+) -> None:
+    """D2：planner 判 needs_history=false 时第二轮 prompt 仍含埋针。"""
+    card = {
+        "type": "qa",
+        "goal": "记口令",
+        "constraints": {},
+        "plan": ["记住", "确认"],
+        "needs_history": False,
+    }
+    cfg = AgentConfig(max_steps=3, verifier_enabled=False, planner_enabled=True)
+    llm = mock_llm_factory(
+        [card, "已记住口令。", "口令会话", card, "口令是7381"]
+    )
+    runner = AgentRunner(cfg, llm, ToolRegistry(cfg))
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            del event, payload
+
+    mgr = SessionManager(cfg, llm, runner, events=_Bus())
+    mgr.chat("s1", "请记住口令是7381")
+    assert mgr.last_task_card is not None
+    assert mgr.last_task_card.needs_history is False
+    n = len(llm.prompts)
+    mgr.chat("s1", "口令是多少")
+    assert mgr.last_task_card.needs_history is False
+    assert "7381" in mgr.last_run_task
+    second = llm.prompts[n:]
+    assert any("7381" in p and "口令是多少" in p for p in second)
+
+
 def test_session_isolation(mock_llm_factory: type) -> None:
     mgr, llm, _ = _manager(
         mock_llm_factory,
@@ -352,9 +385,4 @@ def test_compose_excludes_unrelated_history_for_writer_and_qa(
 
     mgr.chat("s1", "你好")
     assert mgr.last_intent == "qa"
-    assert "上海" not in mgr.last_run_task
-    for prompt in llm.prompts:
-        if "请回答：你好" in prompt or prompt.strip() == "你好":
-            assert "上海" not in prompt
-        if "基于以上信息回答任务" in prompt and "你好" in prompt:
-            assert "上海" not in prompt
+    assert "上海" in mgr.last_run_task

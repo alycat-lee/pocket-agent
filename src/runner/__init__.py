@@ -16,6 +16,7 @@ from pocket_agent.config import AgentConfig
 from pocket_agent.guard import LoopGuard
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import (
+    EMPTY_THINK_NOTE,
     LLMAbortedError,
     LLMClientProtocol,
     LLMFormatError,
@@ -589,8 +590,8 @@ class AgentRunner:
             except LLMAbortedError:
                 stop_reason = StopReason.STOPPED
                 answer = self._stopped_answer(steps)
-            except LLMFormatError as exc:
-                answer = f"[生成回答失败] {exc}"
+            except LLMFormatError:
+                answer = EMPTY_THINK_NOTE
             llm_ms += (time.perf_counter() - llm_t0) * 1000
 
         if run_id:

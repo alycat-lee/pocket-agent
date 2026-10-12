@@ -4,7 +4,7 @@ from pocket_agent.config import AgentConfig
 from pocket_agent.runner import AgentRunner
 from pocket_agent.session import SessionManager
 from pocket_agent.task import TaskCard
-from pocket_agent.tools import ToolRegistry
+from pocket_agent.tools import ToolRegistry, tool
 from pocket_agent.verifier import (
     DEGRADE_PREFIX,
     attach_degrade,
@@ -76,6 +76,89 @@ def test_parrot_plan_positive_and_negative() -> None:
         "林小满推开门，雨还在下，故事这才真正开始。",
         _card("writer", plan=plan),
     )
+
+
+def test_agent_idle_tools_rejected_qa_writer_exempt() -> None:
+    idle = "应调用工具但未调用"
+    assert idle in verify(
+        "北京大概晴吧。",
+        _card("agent"),
+        user_input="查北京天气",
+        real_calls=0,
+    )
+    assert idle not in verify(
+        "北京晴 25℃。",
+        _card("agent"),
+        user_input="查北京天气",
+        real_calls=1,
+    )
+    assert idle not in verify(
+        "北京大概晴吧。",
+        _card("qa"),
+        user_input="查北京天气",
+        real_calls=0,
+    )
+    assert idle not in verify(
+        "北京大概晴吧。",
+        _card("writer"),
+        user_input="查北京天气",
+        real_calls=0,
+    )
+
+
+def test_now_clock_intent_is_agent(mock_llm_factory: type) -> None:
+    cfg = AgentConfig(max_steps=3, verifier_enabled=False, planner_enabled=False)
+    llm = mock_llm_factory(["现在三点。", "报时"])
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            del event, payload
+
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, ToolRegistry(cfg)), events=_Bus()
+    )
+    mgr.chat("s1", "现在几点了")
+    assert mgr.last_intent == "agent"
+
+
+def test_weather_skip_tools_verify_rejects_and_retries(mock_llm_factory: type) -> None:
+    cfg = AgentConfig(max_steps=3, verifier_enabled=True, answer_max_retries=1)
+    registry = ToolRegistry(cfg)
+
+    @tool(registry, "查询指定城市天气")
+    def get_weather(city: str) -> str:
+        return f"{city}：晴，25℃"
+
+    llm = mock_llm_factory(
+        [
+            {
+                "type": "agent",
+                "goal": "查北京天气",
+                "constraints": {},
+                "plan": ["查询", "回答"],
+                "needs_history": False,
+            },
+            -1,
+            "没查工具就猜北京晴。",
+            "北京今天晴，气温二十五度左右，已经说明。",
+            "天气查询",
+        ]
+    )
+    rejected: list[list[str]] = []
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            if event == "answer.rejected":
+                rejected.append(list(payload.get("reasons") or []))
+
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, registry), events=_Bus()
+    )
+    mgr.chat("s1", "查北京天气")
+    assert rejected
+    assert "应调用工具但未调用" in rejected[0]
+    assert any("应调用工具但未调用" in p for p in llm.prompts)
+    assert mgr.last_intent == "agent"
 
 
 def test_degrade_message() -> None:

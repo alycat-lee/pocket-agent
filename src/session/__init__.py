@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from pocket_agent.agents import DEFAULT_AGENT, AgentService
+from pocket_agent.compressor import ContextCompressor
 from pocket_agent.config import AgentConfig
 from pocket_agent.intent_router import IntentMode, IntentRouter, has_tool_hint
 from pocket_agent.knowledge import (
@@ -19,6 +20,7 @@ from pocket_agent.knowledge import (
 )
 from pocket_agent.ledger import CallLedger
 from pocket_agent.llm_client import (
+    EMPTY_THINK_NOTE,
     LLMAbortedError,
     LLMClientProtocol,
     LLMFormatError,
@@ -43,7 +45,6 @@ from pocket_agent.task import (
 from pocket_agent.verifier import attach_degrade, verify
 from pocket_agent.workspace import WorkspaceManager
 
-_TURN_ANSWER_DIGEST = 120
 _LLM_CALL_PREVIEW = 120
 _DELTA_FLUSH_SEC = 0.040
 _DELTA_FLUSH_CHARS = 32
@@ -53,14 +54,6 @@ _SID_SAFE = re.compile(r"[^\w.\-]+")
 
 def _safe_sid(session_id: str) -> str:
     return _SID_SAFE.sub("_", session_id.strip()) or "default"
-
-
-def _digest_answer(answer: str, limit: int = _TURN_ANSWER_DIGEST) -> str:
-    """轮次摘要：只保留回答短摘，去掉工具步骤式长文。"""
-    text = " ".join((answer or "").split())
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "…"
 
 
 class WriterProtocol(Protocol):
@@ -147,6 +140,7 @@ class SessionManager:
         self._config = config
         self._llm = llm
         self._runner = runner
+        self._compressor = ContextCompressor(config, llm)
         self._events = events
         self._intent_router = intent_router or IntentRouter(llm)
         self._planner = Planner(llm)
@@ -437,7 +431,9 @@ class SessionManager:
         self.last_run_task = run_task
 
         answer = self._dispatch(card, run_task, session_id, permission, state)
-        answer = self._verify_answer(answer, card, run_task, session_id)
+        answer = self._verify_answer(
+            answer, card, run_task, session_id, user_input=user_input
+        )
         if card.type == "qa" and not self._answer_done_emitted:
             self._emit_answer_done(answer, stop_reason="qa")
 
@@ -707,8 +703,8 @@ class SessionManager:
             self.last_result = None
             self._emit_answer_done(answer, stop_reason="stopped")
             return answer
-        except LLMFormatError as exc:
-            answer = f"[生成回答失败] {exc}"
+        except LLMFormatError:
+            answer = EMPTY_THINK_NOTE
         self.last_result = None
         return answer
 
@@ -754,12 +750,28 @@ class SessionManager:
         card: TaskCard,
         run_task: str,
         session_id: str,
+        *,
+        user_input: str = "",
     ) -> str:
         self.last_verify_reasons = []
         evidence = self.last_evidence
         if not self._config.verifier_enabled:
             return self._attach_sources(answer, card, evidence)
-        reasons = verify(answer, card, evidence=evidence)
+        real_calls: int | None = None
+        if self._runner._registry.all():
+            real_calls = 0
+            if self.last_result is not None:
+                real_calls = int(self.last_result.stats.get("real_calls") or 0)
+        hint_text = user_input
+        if self.last_rewritten and self.last_rewritten != user_input:
+            hint_text = f"{user_input}\n{self.last_rewritten}"
+        reasons = verify(
+            answer,
+            card,
+            evidence=evidence,
+            user_input=hint_text,
+            real_calls=real_calls,
+        )
         retries = max(0, int(self._config.answer_max_retries))
         if card.type == "writer":
             retries = 0
@@ -954,17 +966,10 @@ class SessionManager:
         card: TaskCard | None = None,
         mode: IntentMode = "agent",
     ) -> str:
-        """needs_history 才注入会话；实体槽位与技能永远在前。"""
+        """qa/agent 有历史则硬注入；needs_history 只决定是否 rewrite。"""
         active = card or default_card(mode, rewritten)
-        if not active.needs_history:
+        if active.type == "writer" or not state.turns:
             body = rewritten
-        elif active.type == "qa":
-            summary = state.rolling_summary.strip()
-            body = (
-                f"以下是本会话已知信息：\n会话摘要：{summary}\n\n请回答：{rewritten}"
-                if summary
-                else rewritten
-            )
         else:
             body = self._compose_budgeted(state, rewritten)
         prefix = self._context_prefix()
@@ -973,30 +978,15 @@ class SessionManager:
         return f"{prefix}\n\n{body}"
 
     def _compose_budgeted(self, state: SessionState, rewritten: str) -> str:
-        """agent / writer 承接：滚动摘要 + 轮次摘要，不含工具步骤细节。"""
-        budget = max(1, self._config.session_summary_limit)
-        blocks: list[str] = []
-        used = 0
-        summary = state.rolling_summary.strip()
-        if summary:
-            piece = f"会话摘要：{summary}"
-            blocks.append(piece)
-            used += len(piece)
-        for turn in state.turns:
-            digest = (
-                f"用户：{turn.query_rewritten}\n助手：{_digest_answer(turn.answer)}"
-            )
-            extra = len(digest) + (1 if blocks else 0)
-            if used + extra > budget:
-                break
-            blocks.append(digest)
-            used += extra
-        if not blocks:
-            return rewritten
-        known = "\n".join(blocks)
-        if len(known) > budget:
-            known = known[:budget]
-        return f"以下是本会话已知信息：\n{known}\n\n请回答：{rewritten}"
+        """滚动摘要 + 最近 keep_full_turns 轮原文；超预算先砍旧轮。"""
+        keep = max(1, self._config.keep_full_turns)
+        recent = state.turns[-keep:]
+        pairs = [(turn.query_rewritten, turn.answer) for turn in recent]
+        return self._compressor.pack_session_history(
+            summary=state.rolling_summary,
+            turns=pairs,
+            rewritten=rewritten,
+        )
 
     def _history_text(self, state: SessionState) -> str:
         parts: list[str] = []

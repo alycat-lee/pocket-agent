@@ -66,6 +66,21 @@ def test_rule_tool_hint_prevents_qa():
     assert reason == "LLM 分类"
 
 
+def test_clock_and_weather_hints_route_agent():
+    r = IntentRouter(_ScriptedLlm(0))
+    for text, hint in (
+        ("现在几点了", "几点"),
+        ("今天星期几", "星期几"),
+        ("室外多少度", "多少度"),
+    ):
+        mode, _conf, source, reason = r.classify(text)
+        assert mode == "agent", text
+        assert source == "rule", text
+        assert hint in reason, text
+    assert has_tool_hint("现在几点了")
+    assert has_tool_hint("星期几了")
+
+
 def test_llm_fallback_agent():
     r = IntentRouter(_ScriptedLlm(1))
     mode, conf, source, reason = r.classify(

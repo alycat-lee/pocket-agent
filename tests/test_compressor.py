@@ -40,6 +40,23 @@ def test_estimate_tokens_ceil_division(compressor: ContextCompressor) -> None:
     assert compressor.estimate_tokens(text) == math.ceil(100 / 1.5)
 
 
+def test_pack_session_history_keeps_summary_and_newest() -> None:
+    cfg = AgentConfig(prompt_char_budget=90)
+    compressor = ContextCompressor(cfg)
+    packed = compressor.pack_session_history(
+        summary="摘要保底",
+        turns=[
+            ("旧问", "旧答" + ("X" * 80)),
+            ("口令是7381", "已记住"),
+        ],
+        rewritten="口令是多少",
+    )
+    assert "摘要保底" in packed
+    assert "7381" in packed
+    assert "口令是多少" in packed
+    assert "XXXX" not in packed
+
+
 def test_estimate_tokens_monotonic(compressor: ContextCompressor) -> None:
     shorter = "你好世界"
     longer = shorter + "额外内容"

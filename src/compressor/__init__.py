@@ -78,6 +78,40 @@ class ContextCompressor:
         history_block = sep.join(chronological)
         return f"{fixed}{sep}{history_block}"
 
+    def pack_session_history(
+        self,
+        *,
+        summary: str,
+        turns: list[tuple[str, str]],
+        rewritten: str,
+    ) -> str:
+        """注入滚动摘要 + 最近轮原文；超预算先砍旧轮，保摘要与最近轮。"""
+        prefix = "以下是本会话已知信息：\n"
+        tail = f"\n\n请回答：{rewritten}"
+        summary_block = f"会话摘要：{summary.strip()}" if summary.strip() else ""
+        reserved = len(prefix) + len(tail)
+        if summary_block:
+            reserved += len(summary_block) + 1
+        remaining = max(1, self._config.prompt_char_budget - reserved)
+        selected: list[str] = []
+        used = 0
+        for user, assistant in reversed(turns):
+            piece = f"用户：{user}\n助手：{assistant}"
+            extra = len(piece) + (1 if selected else 0)
+            if used + extra > remaining:
+                break
+            selected.append(piece)
+            used += extra
+        selected.reverse()
+        blocks: list[str] = []
+        if summary_block:
+            blocks.append(summary_block)
+        blocks.extend(selected)
+        if not blocks:
+            return rewritten
+        known = "\n".join(blocks)
+        return f"{prefix}{known}{tail}"
+
     def summarize_state(self, history: list[str], keep_last: int = 3) -> str:
         """生成"已完成 N 步：<最近 keep_last 步>"格式摘要。"""
         n = len(history)

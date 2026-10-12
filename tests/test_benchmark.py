@@ -170,6 +170,16 @@ def test_report_format_and_delta(tmp_path: Path) -> None:
     assert last.is_file()
 
 
+def test_d2_d9_d3_tasks_encode_phase45_contracts() -> None:
+    """维度回归：D2/D9 靠跨轮针，D3 含「现在几点了」工具题。"""
+    d2 = {t["id"]: t for t in load_tasks(["d2"])}
+    assert d2["d2-number"]["needle"] == "7381"
+    d9 = {t["id"]: t for t in load_tasks(["d9"])}
+    assert any("上海" in str(t) for t in d9["d9-weather-follow"]["turns"])
+    d3 = {t["id"]: t for t in load_tasks(["d3"])}
+    assert d3["d3-now"]["input"] == "现在几点了"
+
+
 def test_scorer_zero_dup_rate_is_success() -> None:
     task = {
         "id": "t",
