@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 import httpx
 import pytest
 from pocket_agent.config import AgentConfig
+from pocket_agent.events import EventStore
 from pocket_agent.llm_client import LLMFormatError
 from pocket_agent.plugins.agent_loop import AgentLoopPlugin
 from pocket_agent.plugins.session_plugin import SessionPlugin
@@ -19,10 +20,12 @@ from pocket_agent.plugins.tools_core import ToolsCorePlugin
 from pocket_agent.plugins.ui_web import (
     ApprovalBroker,
     UiWebPlugin,
+    attach_event_persistence,
     build_app,
     join_worker_thread,
     probe_llm_full,
     probe_provider,
+    sse_accepts_session,
 )
 from pocket_agent.runtime import Context
 from pocket_agent.tools import ToolRegistry, tool
@@ -151,9 +154,10 @@ def test_sse_chat_event_stream_format() -> None:
     names = [name for name, _ in events]
     assert names[0] == "run.start"
     start_ev = next(p for n, p in events if n == "run.start")
-    for key in ("run_id", "provider_name", "provider_type", "model"):
+    for key in ("run_id", "provider_name", "provider_type", "model", "session_id"):
         assert key in start_ev
         assert start_ev[key]
+    assert start_ev["session_id"] == "s1"
     assert "task.planned" in names
     assert "intent.detected" in names
     intent_ev = next(p for n, p in events if n == "intent.detected")
@@ -250,10 +254,11 @@ def test_sse_get_eventsource_with_overrides() -> None:
     names = [n for n, _ in events]
     assert names[0] == "run.start"
     start_ev = next(p for n, p in events if n == "run.start")
-    for key in ("run_id", "provider_name", "provider_type", "model"):
+    for key in ("run_id", "provider_name", "provider_type", "model", "session_id"):
         assert key in start_ev
         assert start_ev[key]
     assert start_ev["run_id"] == "rid-1"
+    assert start_ev["session_id"] == "es1"
     assert "task.planned" in names
     intent_ev = next(p for n, p in events if n == "intent.detected")
     assert intent_ev["mode"] == "qa"
@@ -560,3 +565,64 @@ def test_sse_finally_join_from_worker_does_not_raise() -> None:
     assert next(gen) == b"chunk"
     assert worker_done.wait(timeout=2)
     assert errors == []
+
+
+def test_sse_accepts_session_filter() -> None:
+    queued: list[dict[str, Any]] = []
+
+    def handler(payload: dict[str, Any]) -> None:
+        if not sse_accepts_session("sess-a", payload):
+            return
+        queued.append(payload)
+
+    handler({"session_id": "sess-b", "x": 1})
+    handler({"session_id": "sess-a", "x": 2})
+    handler({"message": "error without sid"})
+    handler({"session_id": "", "ok": True})
+    assert queued == [
+        {"session_id": "sess-a", "x": 2},
+        {"message": "error without sid"},
+        {"session_id": "", "ok": True},
+    ]
+
+
+def test_events_jsonl_session_id_never_default_or_missing(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "events")
+    ctx = Context()
+    _mount_stack(ctx, [-1, "你好", "标题A", -1, "世界", "标题B"])
+    attach_event_persistence(ctx, store)
+    app = build_app(ctx, broker=ApprovalBroker(2), event_store=store)
+    try:
+        asyncio.run(
+            _stream_post(app, "/chat", {"session_id": "sess-a", "message": "你好"})
+        )
+        asyncio.run(
+            _stream_post(app, "/chat", {"session_id": "sess-b", "message": "你好"})
+        )
+        page_a = asyncio.run(_get_json(app, "/api/sessions/sess-a/events?limit=500"))
+        page_b = asyncio.run(_get_json(app, "/api/sessions/sess-b/events?limit=500"))
+        events_a = page_a["events"]
+        events_b = page_b["events"]
+        assert events_a
+        assert events_b
+        assert any(item["event"] == "run.start" for item in events_a)
+        assert any(item["event"] == "run.start" for item in events_b)
+        for item in events_a:
+            sid = (item.get("data") or {}).get("session_id")
+            assert sid == "sess-a"
+        for item in events_b:
+            sid = (item.get("data") or {}).get("session_id")
+            assert sid == "sess-b"
+        path_a = tmp_path / "events" / "sess-a.jsonl"
+        raw = path_a.read_text(encoding="utf-8")
+        for line in raw.splitlines():
+            rec = json.loads(line)
+            assert rec["data"]["session_id"] == "sess-a"
+            assert rec["data"]["session_id"] != "default"
+        default_path = tmp_path / "events" / "default.jsonl"
+        if default_path.is_file():
+            for line in default_path.read_text(encoding="utf-8").splitlines():
+                rec = json.loads(line)
+                assert rec["data"].get("session_id") not in {"sess-a", "sess-b"}
+    finally:
+        ctx.unmount_all()

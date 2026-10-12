@@ -224,6 +224,7 @@ class Orchestrator:
         self._active: list[AgentRunner] = []
         self._remaining = self._step_budget
         self._run_turn: int | None = None
+        self._run_session_id: str | None = None
 
     def apply_config(self, config: AgentConfig) -> None:
         self._config = config
@@ -250,7 +251,9 @@ class Orchestrator:
         turn: int | None = None,
     ) -> OrchestrationResult:
         prev_turn = self._run_turn
+        prev_sid = self._run_session_id
         self._run_turn = turn
+        self._run_session_id = session_id
         try:
             if depth >= MAX_NESTING:
                 raise OrchestrationDepthError("worker 不得再生 worker")
@@ -275,6 +278,7 @@ class Orchestrator:
             )
         finally:
             self._run_turn = prev_turn
+            self._run_session_id = prev_sid
 
     def _fast_path(
         self,
@@ -770,6 +774,8 @@ class Orchestrator:
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
         if self._events is not None:
             enriched = dict(payload)
+            if self._run_session_id:
+                enriched.setdefault("session_id", self._run_session_id)
             if self._run_turn is not None:
                 enriched.setdefault("turn", self._run_turn)
             self._events.emit(event, enriched)

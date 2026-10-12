@@ -116,6 +116,7 @@ export default function App() {
   } | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const esGenRef = useRef(0);
+  const trajGenRef = useRef(0);
   const tickRef = useRef<number | null>(null);
   const runStarted = useRef<number>(0);
   const turnCounter = useRef(0);
@@ -156,7 +157,9 @@ export default function App() {
   }, []);
 
   const loadTrajectory = useCallback(async (sid: string) => {
+    const gen = ++trajGenRef.current;
     const page = await fetchEvents(sid, null, 50);
+    if (gen !== trajGenRef.current) return;
     const projected = projectEvents(
       page.events.map((e) => ({
         seq: Number(e.id ?? e.seq ?? 0),
@@ -220,6 +223,7 @@ export default function App() {
   useEffect(() => {
     // 切会话：切断上一会话 SSE，避免 EventSource 自动重连再跑一轮
     esGenRef.current += 1;
+    trajGenRef.current += 1;
     if (esRef.current) {
       esRef.current.close();
       esRef.current = null;
@@ -297,6 +301,8 @@ export default function App() {
 
   const handleSse = useCallback(
     (event: string, data: Record<string, unknown>) => {
+      const evSid = String(data.session_id || "");
+      if (evSid && evSid !== sessionId) return;
       setRecords((prev) => upsertLiveEvent(prev, event, data));
 
       if (event === "step.start") {

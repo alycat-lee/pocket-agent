@@ -386,6 +386,12 @@ def _port_in_use(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
+def sse_accepts_session(session_id: str, payload: Mapping[str, Any]) -> bool:
+    """本会话事件入队；无 session_id 的全局/运行级事件（如 error）仍放行。"""
+    sid = str(payload.get("session_id") or "")
+    return (not sid) or sid == session_id
+
+
 def attach_event_persistence(
     ctx: Context,
     store: EventStore,
@@ -1173,6 +1179,7 @@ def build_app(
 
     def _sse_stream(
         run_fn: Callable[[], None],
+        session_id: str,
     ) -> Iterator[bytes]:
         chat_lock.acquire()
         q: queue.Queue[dict[str, Any] | None] = queue.Queue()
@@ -1187,6 +1194,8 @@ def build_app(
 
         def _make_handler(event_name: str) -> Callable[[dict[str, Any]], None]:
             def _handler(payload: dict[str, Any]) -> None:
+                if not sse_accepts_session(session_id, payload):
+                    return
                 payload.setdefault("ts", time.time())
                 q.put({"event": event_name, "data": payload})
 
@@ -1244,7 +1253,7 @@ def build_app(
         agent._run_meta = meta
         if ctx.has("sessions"):
             ctx.require("sessions")._run_meta = meta
-        ctx.emit("run.start", {"run_id": rid, **meta})
+        ctx.emit("run.start", {"run_id": rid, "session_id": session_id, **meta})
         runs[rid] = agent
         # overrides 中的 mode 是意图纠正，不是 AgentConfig 字段
         force_mode = None
@@ -1299,7 +1308,7 @@ def build_app(
             )
 
         return StreamingResponse(
-            _sse_stream(_run),
+            _sse_stream(_run, session_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1349,7 +1358,7 @@ def build_app(
             )
 
         return StreamingResponse(
-            _sse_stream(_run),
+            _sse_stream(_run, session_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1376,7 +1385,7 @@ def build_app(
             )
 
         return StreamingResponse(
-            _sse_stream(_run),
+            _sse_stream(_run, "default"),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

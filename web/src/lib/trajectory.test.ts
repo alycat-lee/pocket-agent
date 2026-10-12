@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { TrajectoryRecord } from "../api/types";
-import { orderRecordsForDisplay, projectEvents } from "./trajectory";
+import {
+  belongsToSession,
+  orderRecordsForDisplay,
+  projectEvents,
+  upsertLiveEvent,
+} from "./trajectory";
 
 function rec(
   partial: Partial<TrajectoryRecord> &
@@ -178,6 +183,28 @@ describe("projectEvents route", () => {
     expect(rows.filter((row) => row.kind === "assistant")).toHaveLength(1);
   });
 
+  it("folds task.step_done into the task card plan_done", () => {
+    const rows = projectEvents([
+      {
+        seq: 1,
+        event: "task.planned",
+        data: {
+          type: "agent",
+          goal: "三步任务",
+          plan: ["一", "二", "三"],
+          plan_done: [false, false, false],
+        },
+      },
+      { seq: 2, event: "task.step_done", data: { index: 0 } },
+      { seq: 3, event: "task.step_done", data: { index: 1 } },
+      { seq: 4, event: "task.step_done", data: { index: 2 } },
+    ]);
+    expect(rows.some((row) => row.event === "task.step_done")).toBe(false);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.kind).toBe("task");
+    expect(rows[0]?.payload.plan_done).toEqual([true, true, true]);
+  });
+
   it("maps rag.empty to other kind with fallback title", () => {
     const rows = projectEvents([
       {
@@ -188,6 +215,24 @@ describe("projectEvents route", () => {
     ]);
     expect(rows[0]?.kind).toBe("other");
     expect(rows[0]?.title).toBe("未检索到资料，由模型自身作答");
+  });
+});
+
+describe("belongsToSession", () => {
+  it("drops other sessions and keeps own or missing sid", () => {
+    expect(belongsToSession({ session_id: "b" }, "a")).toBe(false);
+    expect(belongsToSession({ session_id: "a" }, "a")).toBe(true);
+    expect(belongsToSession({}, "a")).toBe(true);
+    expect(belongsToSession({ session_id: "" }, "a")).toBe(true);
+  });
+
+  it("handleSse path leaves records unchanged for a foreign session", () => {
+    const list = [rec({ id: "u", kind: "user", title: "用户", turn: 1 })];
+    const data = { session_id: "other", model: "leak" };
+    const next = belongsToSession(data, "mine")
+      ? upsertLiveEvent(list, "run.start", data)
+      : list;
+    expect(next).toBe(list);
   });
 });
 

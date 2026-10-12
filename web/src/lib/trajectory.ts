@@ -96,6 +96,14 @@ function runMetaOf(data: Record<string, unknown>): Record<string, string> {
   return meta;
 }
 
+export function belongsToSession(
+  data: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  const evSid = String(data.session_id || "");
+  return !evSid || evSid === sessionId;
+}
+
 export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
   let turn = 0;
   let lastRunMeta: Record<string, string> = {};
@@ -105,6 +113,24 @@ export function projectEvents(raw: RawEvent[]): TrajectoryRecord[] {
     const data = ev.data || {};
     if (ev.event === "run.start") {
       lastRunMeta = runMetaOf(data);
+      continue;
+    }
+    if (ev.event === "task.step_done") {
+      const index = Number(data.index ?? data.step_index ?? -1);
+      for (let i = out.length - 1; i >= 0; i--) {
+        if (out[i].kind !== "task") continue;
+        const rawDone = out[i].payload.plan_done;
+        const planDone = Array.isArray(rawDone) ? rawDone.map(Boolean) : [];
+        if (index >= 0) {
+          while (planDone.length <= index) planDone.push(false);
+          planDone[index] = true;
+        }
+        out[i] = {
+          ...out[i],
+          payload: { ...out[i].payload, plan_done: planDone },
+        };
+        break;
+      }
       continue;
     }
     if (
