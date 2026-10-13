@@ -1,183 +1,146 @@
+<div align="center">
+
 # pocket-agent
 
-> 纲领文件：[能力等效目标体系](pocket-agent-docs/15-能力等效目标体系.md) — 目标维度由三跑道基准衡量（裸 8B / 8B+框架 / 云端）。
+**面向 8G 显存小模型（4B~9B）的工具调用 Agent 框架**
 
-面向 8G 显存本地小模型的工具调用 Agent 框架。
+</div>
 
-模型只做两种原子任务：**单步选择（选择题）** 与 **参数填充（填空题）**；流程、记忆、去重、格式与护栏由代码保证。
+<div align="center">
 
-## 环境要求
+> 不让模型做自由规划。代码持有流程状态机，模型每次只做两种原子任务：
+> 单步选择题（选工具）与填空题（填参数），且每次都在短小、干净、受预算控制的
+> 上下文中完成。其余一切——流程、记忆、去重、格式、护栏——由代码保证。
+>
+> 北极星：**让 8B 级本地小模型通过工程框架获得 32B~100B+ 大模型的上下文与
+> 功能效果，把本地部署门槛降到 8G 显存。**
 
-- Python ≥ 3.10
-- [llama.cpp](https://github.com/ggerganov/llama.cpp) 的 `llama-server`
-- 推荐模型：Qwen3-4B-Instruct（Q4_K_M）
+</div>
 
-## 安装
+---
 
-```bash
-pip install -e ".[dev]"
-```
+## 亮点
 
-核心依赖仅 `httpx`、`pydantic`、`pyyaml`。Web UI：
+- **状态机切分，模型不当大脑当流水线工人**——每个工具步 = 一次选工具（输出一个整数编号）+ 一次填参数（输出合法 JSON）+ 最后一次终答。自由 Agent Loop 依赖的长程规划能力恰恰是小模型最弱的环节，框架把它从模型侧整个拿走。
+- **每次 LLM 调用都是无状态短 Prompt**——上下文由 ContextManager 当次按需拼装，单次调用 Prompt ≤ 配置预算（默认 3500 tokens）。上下文污染、长上下文退化导致的遗忘和重复，在结构上不存在发生的条件。
+- **约束解码，解析失败率为零**——选择步在 llama.cpp 上走 GBNF 语法约束（只能输出 `-1` 或合法编号），参数步走 JSON Schema 约束。格式错误不存在，「解析失败 → 重试」这条小模型最常见的死循环路径被整个删除。
+- **重复调用在账本层拦截，不打给模型**——每次工具调用计算指纹 `md5(tool_name + canonical_json(args))`，命中直接返回缓存结果并记录拦截事件。「北京天气」和「北京市天气」这类语义级重复由可选的相似度去重模块兜底。
+- **一切皆插件**——内核只持有插件运行时，Web 界面、TUI、工具集、知识库、Prompt、甚至 Agent 本身都是可卸载插件（架构理念对齐 DSH 的 Cordis 模型）。
+- **九维能力基准，拒绝凭感觉验收**——D1~D9 九个能力维度 × bare/pocket 两轨对跑、46 个任务；每个开发阶段开头必须写明「移动哪个维度、预期从多少分到多少分」，写不出来就不排期。分数即验收。
+- **真实 Token 计量与全程可观测**——每一次内部 LLM 调用（包括标题生成这类隐藏调用）都进轨迹视图，token 用量取服务端真实值而非估算。
+- **数据全部留在本机**——会话、知识库（sqlite 向量存储）、账本、轨迹全部落盘在本机 Agent 目录，没有任何外发。
 
-```bash
-pip install -e ".[web]"
-# 或开发环境已含 fastapi/uvicorn：
-python cli.py serve --profile web
-```
+## 实测数字（不是目标，是跑出来的）
 
-浏览器打开 `http://127.0.0.1:3000`（需 llama-server）。`profile: headless` 时不加载 `ui-web`、不监听端口。
+基准：46 个任务 × bare（裸模型直答）/ pocket（框架）两轨，本机 llama.cpp + 8B 级 Q4 量化模型，约 40 t/s。
 
-### MCP 桥接（可选）
+**2026-10-12 首次全量交卷**（`benchmark_runs/20261012T080239Z`）：
 
-在 `pocket.yml` 启用 `bridge-mcp`，把外部 MCP server 的工具注册为 `mcp_*`：
+| 维度 | bare | pocket | 说明 |
+|---|---:|---:|---|
+| D1 指令遵循与格式 | 0.60 | **1.00** | 约束解码的直接收益 |
+| D2 上下文与记忆 | **1.00** | 0.20 | 框架曾把裸模型能做的事做砸，见「已知边界」 |
+| D3 工具使用 | 0.00 | **0.30** | 裸模型全灭；框架此时也仅三成 |
+| D4 任务理解与规划 | 0.20 | **1.00** | 任务切分机制的核心证明 |
+| D5 自我校验纠错 | 0.80 | **1.00** | |
+| D6 长程连贯生成 | 0.63 | **1.00** | |
+| D7 知识获取 | 0.00 | **0.67** | 失分题为 web_search 未配置的预期结果 |
+| D8 推理深度 | 0.40 | 0.40 | 框架在纯推理维度没有增益，如实标注 |
+| D9 多轮状态 | 0.40 | 0.20 | 首轮即暴露，后续专攻 |
+| **已测维度均分** | **0.45** | **0.79** | |
 
-```yaml
-- name: bridge-mcp
-  config:
-    mcp_servers:
-      - name: echo
-        transport: stdio
-        command: python
-        args: ["scripts/mock_mcp_echo.py"]
-      # 真实 filesystem MCP 示例（需本机已安装对应 server）：
-      # - name: fs
-      #   transport: stdio
-      #   command: npx
-      #   args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
-```
+**修复后的回归**（按阶段验收表，只列重测维度）：
 
-然后 `python cli.py demo "用 mcp_echo 回显 hello"`（需 llama-server）。
+| 轮次 | D2 | D3 | D9 | 结论 |
+|---|---|---|---|---|
+| Phase 46 回归 | 0.20 → **0.80** | 0.30 → 0.90（严格口径 0.70） | 0.20 → **1.00** | 压线通过；D3 评分口径偏松被当场点名 |
+| Phase 47 回归 | **1.00** | 严格口径 **1.00** | 1.00 → 0.80 | D2/D3/D1 达标；D9 回退 -0.20，唯一失败 `d9-weather-follow`，根因已定位（指代解析在摘要为空时形同虚设），修复排期中 |
 
-## 启动 llama-server
+两轨分差最大的维度（D3 工具使用、D4 规划）是框架的价值证明；pocket 轨自身的低分维度是下一阶段的主攻方向。所有分数可复现：跑法见「开发」一节。
 
-上下文窗口必须足够大（`-c 8192`），否则压缩与预算管理失去意义：
+## 你会看到什么
+
+**轨迹视图**（对齐 DSH 原生 Web UI 的信息架构）：对话区只展示问答；模型请求、工具调用、账本拦截、缓存命中、预算控制全部按时间排进独立的轨迹标签页，绝不内嵌进消息流。
+
+**Agent 目录**：每个 Agent 是一等公民，拥有自己的目录——会话、知识库、配置随 Agent 走，会话丢失类问题在目录体系落地后结构性消失。
+
+**双界面**：Web UI 与 TUI 平级，都是插件，共用同一份会话数据；流式输出逐字到达，不破坏状态机回路的约束解码与验收机制。
+
+## 快速开始
+
+前置：Python 3.10+；llama.cpp server 加载 Q4_K_M 量化小模型（首选 Qwen3-4B-Instruct，8G 显存宽裕）：
 
 ```bash
 llama-server -m qwen3-4b-instruct-q4_k_m.gguf \
   -c 8192 --flash-attn \
   --cache-reuse 256 \
-  --port 8000
+  --port 8080
 ```
 
-服务默认监听 `http://localhost:8000`，框架使用 OpenAI 兼容接口：`http://localhost:8000/v1`。
+> `-c 8192` 是关键：上下文窗口不足是本方案要解决的头号问题，服务端窗口必须够大，
+> 框架的压缩机制是在这个基础上做精细化预算管理，不是替代品。
 
-## Demo
+然后在 `pocket.yml` 里把 `base_url` 指向 `http://127.0.0.1:8080/v1` 即可。联网检索（`web_search`）需要额外配置 searxng 或 serper，不配就是一个如实报错的死工具，不会静默失败。
 
-```bash
-python cli.py demo "查询北京和上海的天气并告诉我温差"
-```
+**用这套文档驱动 Cursor 开发**：本仓库同时是一套完整的开发文档包（34 份，Phase 0~47）：
 
-指定服务地址并打印详细日志：
+1. 新建空项目目录，把 `01`、`02`、`03` 放入 `docs/` 作为 Cursor 的长期上下文（对话中 @ 引用）；
+2. 打开 `05-Cursor开发提示词.md`，从 Phase 0 开始逐阶段把提示词粘贴给 Cursor 执行；
+3. 每个阶段跑该阶段的验收命令，通过再进下一阶段；`04-运行时提示词模板.md` 在 Phase 5 用到。
 
-```bash
-python cli.py demo "用计算器算 25 减 18" \
-  --base-url http://localhost:8000/v1 \
-  --verbose
-```
+## 文档清单
 
-断点续跑（中途 Ctrl+C 后用同一 `run_id` 恢复，已完成步骤走账本缓存）：
-
-```bash
-python cli.py demo "读取 README.md 前两段并总结" --resume demo-1
-# 中断后：
-python cli.py demo "读取 README.md 前两段并总结" --resume demo-1
-```
-
-模型连不上时进入「模型未连接」引导，不会回退假数据。
-
-每步日志格式：
-
-```text
-[Step 1] choose=calculator args={"expression": "25-18"} cache=miss tokens≈820
-```
-
-## 内置核心工具
-
-| 工具 | 说明 |
+| 文档 | 内容 |
 |---|---|
-| `calculator` | `ast` 安全四则运算（禁止 `eval`） |
-| `read_file` | 读取本地文件前 2000 字 |
-| `get_current_time` | 当前时间字符串 |
+| `01~05` | PRD、技术架构、模块实现规格、运行时提示词模板、Cursor 开发提示词（Phase 0~6） |
+| `06~07` | 测试方案（Phase 7~9）、多轮对话与长文本生成 |
+| `08~14` | 插件化架构改造（一切皆插件）、Web 界面与配置外化、体验修复、意图路由、可用性红线、规划与验收主回路 |
+| `15` | **能力等效目标体系**——项目纲领，优先级高于所有功能 Phase：北极星定义、九维能力矩阵、三方对跑基准 |
+| `16~24` | 去 Mock 化、Prompt 插件化与多代理编排、知识外挂与 RAG、Agent 实体与目录体系、会话恢复、流式输出、TUI 插件 |
+| `25` | 与 DSH 的真实差距评估（不含好话版）——每条附代码证据，按「用户实际用起来有多疼」排序 |
+| `26~30` | 写工具与文件操作、shell 工具与权限规则引擎、LLM 请求观测、真实 Token 计量 |
+| `31~34` | 真实基准交卷（46 任务两轨）、两轮基准复盘与残余缺陷修复、D9 指代解析修复 |
 
-## 源码布局
+## 架构决策（为什么这么做）
 
-`src/` 按功能模块分目录（`config/`、`llm_client/`、`tools/`、`runner/` …），经 `pyproject.toml` 的 `package-dir` 映射为导入路径 `pocket_agent.*`。
+**为什么模型只做选择题和填空题。** 小模型工具调用的五大系统性短板——重复调用、输出循环、JSON 解析失败重试、长结果回填后跑偏、多步任务丢失目标——根因全部是「让模型承担了它最弱的长程规划与格式遵循」。把这两件事交给代码（状态机 + 约束解码）后，剩下的原子任务恰好在 4B~9B 模型的能力区间内。
 
-## 库用法
+**为什么每次调用都无状态。** 有状态长上下文是小模型退化的温床：关键信息被稀释、历史被截断后模型「忘记」已调用过工具。无状态短 Prompt + 当次拼装让上下文预算变成显式可控的工程参数，而不是听天由命的窗口剩余量。
 
-```python
-from pocket_agent import AgentConfig, AgentRunner, tool
-from pocket_agent.llm_client import LlamaCppClient
-from pocket_agent.plugins.tools_core import register_core_tools
-from pocket_agent.tools import ToolRegistry
+**为什么插件化对齐 Cordis 而不是自己发明。** 差距评估（文档 25）逐条对比 DSH 后确认：插件运行时 + 一切皆插件是被验证过的形态，Web 界面降级为可卸载插件之后，内核复杂度反而下降。
 
-config = AgentConfig()
-registry = ToolRegistry(config)
-register_core_tools(registry)
-runner = AgentRunner(config, LlamaCppClient(config), registry)
-result = runner.run("用计算器算 25 减 18")
-print(result.answer)
-```
+**为什么验收只看基准分数。** 「凭感觉验收」在本项目被正式废除：每个 Phase 开头必须声明移动的维度与目标分数，完成后重跑对应维度验证。Phase 46 曾出现「数值通过但口径偏松」（D3 的 0.90 严格口径应为 0.70），复盘文档如实记录并在下一轮按严格口径重算——分数体系自身的缺陷也按缺陷处理。
 
+## 已知边界
 
-## 测试
+不粉饰。以下每条都来自实测或代码证据：
 
-```bash
-pytest --cov=pocket_agent --cov-report=term-missing
-ruff check src tests
-```
+- **每步两次 LLM 往返是本地延迟硬伤。** 一个 3 步工具任务 = 至少 7 次串行 LLM 调用，约 40 t/s 的机器上用户要等一两分钟看一个查天气。约束解码换来的格式正确的代价就是延迟翻倍，这个权衡已被测量、被接受、未被解决。
+- **D8 推理深度：框架零增益（0.40 vs 0.40）。** 工程框架补的是上下文与功能，补不了纯推理。这是路线边界，不是待办项。
+- **D2 曾严重回退过。** 首次全量基准中 bare 1.00 / pocket 0.20——框架的知识检索（HashEmbedder 只是字符 2-gram 哈希桶，实测无关问题相似度 0.3928 高于真正相关的 0.3689）误召回后反而压住了会话历史里的针。已通过确定性事实钉修复至 1.00，但「长期记忆交给 8B 模型写滚动摘要不稳」这个根因仍在，靠确定性机制兜底。
+- **web_search 开箱即死。** 默认配置下没有可用的联网检索；D7 的失分题全部源于此，属预期结果而非缺陷，但需要用户自己接 searxng 或 serper。
+- **全局串行锁。** 同一时刻全系统只跑一个会话，第二个请求排队。单人本地工具能忍，但这不是设计，是偷懒（文档 25 原话）。
+- **shell 无沙箱。** 写/执行能力上线后，权限规则引擎是唯一闸门，没有 OS 级隔离。请按这个前提决定放权范围。
+- **部署门槛没有宣传的那么低。** 用户仍需自己找 GGUF、自己起 llama-server、自己配 base_url；项目内没有模型管理与服务托管。
+- **D9 多轮状态曾回退。** Phase 47 中 1.00 → 0.80（`d9-weather-follow`：「这两座城市温差多少？」——指代解析在滚动摘要为空时不触发）。回退被如实记录而非隐藏，修复已排期。
 
-Windows 上若默认 `py -3` 指向 free-threading 构建，请使用：
-
-```bash
-py -3.13 -m pytest --cov=pocket_agent --cov-report=term-missing
-py -3.13 -m ruff check src tests
-```
-
-跑完后清理缓存与测试临时文件：
+## 开发
 
 ```bash
-py -3.13 scripts/clean.py
+# 单元与集成测试（基线：302 passed / 8 skipped）
+python -m pytest
+
+# 全量两轨基准（46 任务 × bare/pocket，约 1~2 小时，挂后台）
+python scripts/eval.py --benchmark --dims d1,d2,d3,d4,d5,d6,d7,d8,d9 \
+  --tracks bare,pocket --base-url http://localhost:8000/v1
+
+# 单维度试水温（约 10 分钟）
+python scripts/eval.py --benchmark --dims d3 --tracks bare,pocket \
+  --base-url http://localhost:8000/v1
 ```
 
-pytest 已默认 `--cache-clear`；Agent 跑完测试/检查后也会自动执行上述清理。
+产物：`benchmark_report.md`（九维对比表 + 雷达图）与 `benchmark_runs/<时间戳>/details.json`（每任务每轨完整回答与逐项评分）。中途报错不中断整轮，错误本身也是数据。
 
-### 长文本生成
+## 许可证
 
-```bash
-py -3.13 scripts/write.py "新能源汽车行业分析" --chars 3000 \
-  --material tests/fixtures/report.txt --output article.md
-py -3.13 scripts/eval.py --writer
-```
-
-### 真机集成与评测
-
-需先启动 llama-server（`-c 8192 --flash-attn --cache-reuse 256 --port 8000`）：
-
-```bash
-py -3.13 -m pytest tests/test_integration.py -v --integration
-py -3.13 scripts/eval.py --runs 3
-py -3.13 scripts/eval.py --runs 3 --baseline
-py -3.13 scripts/eval.py --writer
-py -3.13 scripts/eval.py --benchmark --dims d1,d2,d3
-```
-
-集成测试默认跳过，必须显式加 `--integration`。
-
-### 专项压测
-
-```bash
-py -3.13 -m pytest --stress -v
-py -3.13 scripts/stress_test.py
-```
-
-`scripts/stress_test.py` 会打印长结果压缩耗时表，并给出 `-c 4096` 窗口边界真机验证指引。
-
-## 文档
-
-- `docs/01-项目需求文档.md`
-- `docs/02-技术架构设计.md`
-- `docs/03-模块实现规格.md`
-- `pocket-agent-docs/04-运行时提示词模板.md`
-- `pocket-agent-docs/05-Cursor开发提示词.md`
+待定（仓库尚未发布 LICENSE 文件；发布前请补上）。
