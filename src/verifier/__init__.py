@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from difflib import SequenceMatcher
 
@@ -45,6 +46,22 @@ _NUMBERED_ACTION = re.compile(
 )
 _TRUNCATED_TAIL = re.compile(r"[，,:：]\s*$")
 _PLACEHOLDER_LEAK = re.compile(r"（此处|\(此处|可能需要更多的信息")
+_JSON_FENCE = re.compile(
+    r"^```(?:json)?\s*\r?\n?(.*?)\r?\n?```\s*$",
+    re.DOTALL | re.IGNORECASE,
+)
+_JSON_BLOCK = re.compile(r"```json\s*\r?\n?(.*?)```", re.DOTALL | re.IGNORECASE)
+_NUMBERED_ITEM = re.compile(r"^\s*\d+[.、]", re.MULTILINE)
+_INT_ONLY = re.compile(r"\s*-?\d+\s*")
+_INTERNAL_LEAKS = (
+    "format_error",
+    "cannot parse int",
+    "invalid json",
+    "[工具错误]",
+    "[格式错误]",
+    "generate_int",
+    "generate_json",
+)
 
 _LEAK_CANDIDATES = (
     "可用工具",
@@ -104,7 +121,7 @@ def verify(
         problems.append("字数不足")
     if len(text.strip()) < 20 and task_card.type == "writer":
         problems.append("回答过短")
-    if _parrot_plan(text, task_card.plan):
+    if _parrot_plan(text, task_card.plan) or _json_exec_plan(text):
         problems.append("复读计划")
     if task_card.needs_knowledge and (
         getattr(task_card, "knowledge_mode", "none") == "strict"
@@ -122,6 +139,8 @@ def verify(
         problems.append("正式回答为空")
     if _execution_log_leaked(text):
         problems.append("执行日志泄漏")
+    if _format_violation(text, user_input):
+        problems.append("格式违反")
     return problems
 
 
@@ -174,6 +193,9 @@ def attach_degrade(answer: str, reasons: list[str]) -> str:
 
 def _execution_log_leaked(text: str) -> bool:
     body = text or ""
+    hay = body.lower()
+    if any(token in body or token in hay for token in _INTERNAL_LEAKS):
+        return True
     if "[缓存]" in body or "args={" in body:
         return True
     streak = 0
@@ -188,7 +210,9 @@ def _execution_log_leaked(text: str) -> bool:
         return True
     if _TRUNCATED_TAIL.search(body):
         return True
-    return bool(_PLACEHOLDER_LEAK.search(body))
+    if _PLACEHOLDER_LEAK.search(body):
+        return True
+    return _truncated_json(body)
 
 
 def _phrase_leaked(phrase: str, text: str) -> bool:
@@ -211,3 +235,81 @@ def _parrot_plan(answer: str, plan: list[str]) -> bool:
         return False
     ratio = SequenceMatcher(None, joined, answer.strip()).ratio()
     return ratio > 0.80
+
+
+def _collect_keys(obj: object) -> set[str]:
+    keys: set[str] = set()
+    if isinstance(obj, dict):
+        keys.update(str(k) for k in obj)
+        for value in obj.values():
+            keys.update(_collect_keys(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            keys.update(_collect_keys(item))
+    return keys
+
+
+def _json_exec_plan(text: str) -> bool:
+    for match in _JSON_BLOCK.finditer(text or ""):
+        try:
+            data = json.loads(match.group(1))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        keys = _collect_keys(data)
+        if "step" in keys and ("tool" in keys or "args" in keys):
+            return True
+    return False
+
+
+def _unbalanced_brackets(text: str) -> bool:
+    curly = 0
+    square = 0
+    for char in text:
+        if char == "{":
+            curly += 1
+        elif char == "}":
+            curly -= 1
+        elif char == "[":
+            square += 1
+        elif char == "]":
+            square -= 1
+        if curly < 0 or square < 0:
+            return True
+    return curly != 0 or square != 0
+
+
+def _truncated_json(text: str) -> bool:
+    body = text or ""
+    if "```json" in body.lower() and _unbalanced_brackets(body):
+        return True
+    tail = body[-20:]
+    return '"step":' in tail or '"args":' in tail
+
+
+def _is_pure_json(text: str) -> bool:
+    body = (text or "").strip()
+    fenced = _JSON_FENCE.match(body)
+    if fenced:
+        body = fenced.group(1).strip()
+    try:
+        json.loads(body)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _format_violation(answer: str, user_input: str) -> bool:
+    req = user_input or ""
+    text = answer or ""
+    if any(token in req for token in ("只输出整数", "只输出数字", "只答数字")):
+        return _INT_ONLY.fullmatch(text) is None
+    if "只输出 JSON" in req or "只输出JSON对象" in req:
+        return not _is_pure_json(text)
+    if "只回答" in req or "只输出" in req:
+        body = text.strip()
+        if len(body) > 30:
+            return True
+        if "\n-" in text or "**" in text:
+            return True
+        return _NUMBERED_ITEM.search(text) is not None
+    return False

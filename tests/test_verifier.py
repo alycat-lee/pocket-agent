@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pocket_agent.config import AgentConfig
 from pocket_agent.llm_client import EMPTY_THINK_NOTE
-from pocket_agent.runner import AgentRunner
+from pocket_agent.runner import AgentRunner, RunResult, StepRecord, StopReason
 from pocket_agent.session import SessionManager
 from pocket_agent.task import TaskCard
 from pocket_agent.tools import ToolRegistry, tool
@@ -187,6 +187,36 @@ def test_execution_log_real_d3_failures() -> None:
     assert verify("北京：晴，25℃", card) == []
 
 
+def test_quality_gate_real_dirty_answers() -> None:
+    card = _card("agent")
+    now_leak = (
+        '现在无法报时。format_error: cannot parse int from '
+        '\'{"value":\' leftover generate_int'
+    )
+    three_city = (
+        "```json\n"
+        "[\n"
+        '  {"step": 1, "tool": "get_weather", "args": {"city": "北京"}},\n'
+        '  {"step": 2, "tool": "get_weather", "args": {"city": "上海"}},\n'
+        '  {"step": 3, "tool": "get_weather", "args": {"city": "广州"}},\n'
+        '  {"step": 4'
+    )
+    shop = "2. **冷藏保存**：将新鲜的梨及时放入冰箱冷藏，以保持其新鲜和品质。"
+    assert "执行日志泄漏" in verify(now_leak, card)
+    reasons_plan = verify(three_city, card)
+    assert "执行日志泄漏" in reasons_plan or "复读计划" in reasons_plan
+    assert "格式违反" in verify(
+        shop,
+        _card("qa"),
+        user_input="我一共买了几种水果？只输出整数。",
+    )
+    assert verify("北京：晴，25℃", card) == []
+    assert verify("温差是7℃。", card) == []
+    assert (
+        verify("2", _card("qa"), user_input="只输出整数") == []
+    )
+
+
 def test_cache_marker_triggers_verify_retry(mock_llm_factory: type) -> None:
     cfg = AgentConfig(max_steps=3, verifier_enabled=True, answer_max_retries=1)
     llm = mock_llm_factory(
@@ -319,3 +349,30 @@ def test_verifier_retry_exhausted_appends_degrade(mock_llm_factory: type) -> Non
     assert DEGRADE_PREFIX in answer
     assert "思维链泄漏" in answer
     assert mgr.last_verify_reasons == ["思维链泄漏"]
+
+
+def test_format_violation_fallback_extracts_first_digit(
+    mock_llm_factory: type,
+) -> None:
+    cfg = AgentConfig(max_steps=3, verifier_enabled=True)
+    llm = mock_llm_factory(["占位"])
+    mgr = SessionManager(cfg, llm, AgentRunner(cfg, llm, ToolRegistry(cfg)))
+    mgr.last_result = RunResult(
+        answer="脏",
+        steps=[
+            StepRecord(
+                step=1,
+                tool_name="shop",
+                args={},
+                result="苹果、梨，共2种",
+                from_cache=False,
+            )
+        ],
+        stop_reason=StopReason.MODEL_DONE,
+        stats={},
+    )
+    cleaned = mgr._fallback_answer(
+        "2. **冷藏保存**：将新鲜的梨及时放入冰箱冷藏。",
+        ["格式违反"],
+    )
+    assert cleaned == "2"

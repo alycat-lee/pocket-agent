@@ -864,8 +864,9 @@ class SessionManager:
             self._emit_rejected(session_id, reasons)
             history_text = self._tool_result_text() or evidence or "（无）"
             prompt = FINAL_ANSWER.format(task=run_task, history_text=history_text)
+            restated = f"\n用户原话要求：{user_input}" if user_input.strip() else ""
             prompt = self._wrap_system(
-                f"{prompt}\n\n验收未通过：{'；'.join(reasons)}\n"
+                f"{prompt}\n\n验收未通过：{'；'.join(reasons)}{restated}\n"
                 "请根据已有结果直接回答用户，不要复述执行过程。"
             )
             try:
@@ -913,6 +914,11 @@ class SessionManager:
         return "\n".join(parts).strip()
 
     def _fallback_answer(self, answer: str, reasons: list[str]) -> str:
+        if "格式违反" in reasons:
+            blob = self._tool_result_text()
+            match = re.search(r"-?\d+", blob)
+            if match:
+                return match.group(0)
         if "正式回答为空" in reasons:
             parts = self._tool_result_text()
             if parts:
