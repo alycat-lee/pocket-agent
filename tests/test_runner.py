@@ -273,3 +273,67 @@ def test_choose_format_error_retries_without_step(mock_llm_factory: type) -> Non
     result = AgentRunner(config, llm, registry).run("查北京天气")
     assert all(s.tool_name != "(format_error)" for s in result.steps)
     assert result.steps[0].tool_name == "get_weather"
+
+
+def test_same_tool_consecutive_cache_injects_loop_note(
+    mock_llm_factory: type,
+) -> None:
+    config = AgentConfig(max_steps=10, max_consecutive_intercepts=5)
+    llm = mock_llm_factory(
+        [
+            0,
+            {"city": "北京"},
+            0,
+            {"city": "北京"},
+            -1,
+            "北京晴",
+        ]
+    )
+    bus = _Bus()
+    result = AgentRunner(
+        config, llm, _weather_registry(config), events=bus
+    ).run("查北京天气")
+    assert result.steps[1].from_cache is True
+    assert "无新信息" in result.steps[1].result
+    assert result.steps[1].tool_name == "get_weather"
+    assert result.stats["intercepts"] == 1
+    reasons = [
+        payload.get("reason")
+        for name, payload in bus.events
+        if name == "step.intercepted"
+    ]
+    assert "cache_loop" in reasons
+
+
+def test_interleaved_cache_hits_are_not_loop_intercepted(
+    mock_llm_factory: type,
+) -> None:
+    config = AgentConfig(max_steps=10, max_consecutive_intercepts=10)
+    llm = mock_llm_factory(
+        [
+            0,
+            {"city": "北京"},
+            1,
+            {"expression": "1+1"},
+            0,
+            {"city": "北京"},
+            1,
+            {"expression": "1+1"},
+            -1,
+            "交错缓存完成",
+        ]
+    )
+    bus = _Bus()
+    result = AgentRunner(
+        config, llm, _weather_registry(config), events=bus
+    ).run("查北京天气并计算")
+    reasons = [
+        payload.get("reason")
+        for name, payload in bus.events
+        if name == "step.intercepted"
+    ]
+    assert "cache_loop" not in reasons
+    assert result.steps[2].from_cache is True
+    assert "无新信息" not in result.steps[2].result
+    assert result.steps[3].from_cache is True
+    assert "无新信息" not in result.steps[3].result

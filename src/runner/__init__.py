@@ -30,6 +30,11 @@ from pocket_agent.tools import Tool, ToolRegistry, filter_tools_by_domain
 
 logger = logging.getLogger(__name__)
 
+_CACHE_LOOP_NOTE = (
+    "[缓存命中，无新信息] 此调用与上一步重复。"
+    "请改用其他工具或其他参数，或直接给出最终回答。"
+)
+
 # 写类工具审批：payload → True 批准 / False 拒绝（含超时）
 ApprovalGate = Callable[[dict[str, Any]], bool]
 
@@ -409,6 +414,12 @@ class AgentRunner:
                     "step.intercepted",
                     {"reason": "ledger_cache", "tool": tool.name, **meta},
                 )
+                if steps and steps[-1].tool_name == tool.name:
+                    result = _CACHE_LOOP_NOTE
+                    self._emit(
+                        "step.intercepted",
+                        {"reason": "cache_loop", "tool": tool.name, **meta},
+                    )
             else:
                 from_cache = False
                 verdict, rule = evaluate(

@@ -10,6 +10,7 @@ from pocket_agent.verifier import (
     DEGRADE_PREFIX,
     attach_degrade,
     prompt_leak_phrases,
+    strip_empty_links,
     verify,
 )
 
@@ -376,3 +377,65 @@ def test_format_violation_fallback_extracts_first_digit(
         ["格式违反"],
     )
     assert cleaned == "2"
+
+
+def test_missing_domain_tool_weather_and_exemptions() -> None:
+    weather = "查询北京和上海的天气并告诉我温差"
+    agent = _card("agent")
+    qa = _card("qa")
+    reasons = verify(
+        "无法计算温差",
+        agent,
+        user_input=weather,
+        real_calls=1,
+        tool_names=["calculator"],
+    )
+    assert any("领域工具缺失" in item for item in reasons)
+    assert (
+        "领域工具缺失"
+        not in " ".join(
+            verify(
+                "北京晴 25℃",
+                agent,
+                user_input=weather,
+                real_calls=1,
+                tool_names=["get_weather"],
+            )
+        )
+    )
+    assert (
+        "领域工具缺失"
+        not in " ".join(
+            verify(
+                "无法计算温差",
+                qa,
+                user_input=weather,
+                real_calls=1,
+                tool_names=["calculator"],
+            )
+        )
+    )
+    assert (
+        "领域工具缺失"
+        not in " ".join(
+            verify(
+                "42",
+                agent,
+                user_input="1+1等于几",
+                real_calls=1,
+                tool_names=["calculator"],
+            )
+        )
+    )
+
+
+def test_strip_empty_links_and_keep_weather() -> None:
+    assert strip_empty_links("夜[](nightingale)") == "夜"
+    assert strip_empty_links("北京：晴，25℃") == "北京：晴，25℃"
+    assert strip_empty_links("[北京](https://example.com)") == "[北京](https://example.com)"
+
+
+def test_hallucinated_file_ref_rejected() -> None:
+    card = _card("agent")
+    assert "幻觉文件引用" in verify("当前缺少所需的文件才能继续。", card)
+    assert "幻觉文件引用" not in verify("北京：晴，25℃", card)

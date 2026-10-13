@@ -145,6 +145,29 @@ def detect_tool_domains(task: str) -> set[str]:
     return {name for name, hints in _DOMAIN_HINTS if any(h in body for h in hints)}
 
 
+def tool_name_domain(name: str) -> str:
+    """按工具名推断 domain，供 verifier 在无注册表时判断领域覆盖。"""
+    lowered = (name or "").strip().lower()
+    if "weather" in lowered:
+        return "weather"
+    if lowered in {"get_current_time"} or lowered.endswith("_time"):
+        return "time"
+    if lowered == "calculator" or "calc" in lowered:
+        return "math"
+    if any(
+        token in lowered
+        for token in ("file", "list_dir", "grep")
+    ):
+        return "file"
+    if "command" in lowered:
+        return "shell"
+    if lowered in {"search_knowledge", "wiki_lookup"}:
+        return "knowledge"
+    if lowered == "web_search":
+        return "web"
+    return "general"
+
+
 def filter_tools_by_domain(task: str, tools: list[Tool]) -> list[Tool]:
     """命中直接数据领域且未命中知识领域时，去掉 knowledge/web；不得返回空表。"""
     if not tools:

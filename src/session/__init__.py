@@ -43,7 +43,7 @@ from pocket_agent.task import (
     default_card,
     infer_knowledge_mode,
 )
-from pocket_agent.verifier import attach_degrade, verify
+from pocket_agent.verifier import attach_degrade, strip_empty_links, verify
 from pocket_agent.workspace import WorkspaceManager
 
 _LLM_CALL_PREVIEW = 120
@@ -838,6 +838,7 @@ class SessionManager:
     ) -> str:
         self.last_verify_reasons = []
         evidence = self.last_evidence
+        answer = strip_empty_links(answer)
         if not self._config.verifier_enabled:
             return self._attach_sources(answer, card, evidence, user_input=user_input)
         real_calls: int | None = None
@@ -848,12 +849,14 @@ class SessionManager:
         hint_text = user_input
         if self.last_rewritten and self.last_rewritten != user_input:
             hint_text = f"{user_input}\n{self.last_rewritten}"
+        tool_names = self._result_tool_names()
         reasons = verify(
             answer,
             card,
             evidence=evidence,
             user_input=hint_text,
             real_calls=real_calls,
+            tool_names=tool_names,
         )
         retries = max(0, int(self._config.answer_max_retries))
         if card.type == "writer":
@@ -865,8 +868,10 @@ class SessionManager:
             history_text = self._tool_result_text() or evidence or "（无）"
             prompt = FINAL_ANSWER.format(task=run_task, history_text=history_text)
             restated = f"\n用户原话要求：{user_input}" if user_input.strip() else ""
+            missing = next((r for r in reasons if r.startswith("领域工具缺失")), "")
+            domain_note = f"\n{missing}，请改用对应领域工具获取数据后再回答。" if missing else ""
             prompt = self._wrap_system(
-                f"{prompt}\n\n验收未通过：{'；'.join(reasons)}{restated}\n"
+                f"{prompt}\n\n验收未通过：{'；'.join(reasons)}{restated}{domain_note}\n"
                 "请根据已有结果直接回答用户，不要复述执行过程。"
             )
             try:
@@ -880,7 +885,7 @@ class SessionManager:
                     response=retry_text,
                     elapsed_ms=elapsed_ms,
                 )
-                answer = retry_text or answer
+                answer = strip_empty_links(retry_text or answer)
             except LLMAbortedError:
                 break
             except LLMFormatError:
@@ -891,16 +896,27 @@ class SessionManager:
                 evidence=evidence,
                 user_input=hint_text,
                 real_calls=real_calls,
+                tool_names=tool_names,
             )
             attempt += 1
         if reasons:
             self.last_verify_reasons = list(reasons)
             self._emit_rejected(session_id, reasons)
-            cleaned = self._fallback_answer(answer, reasons)
+            cleaned = strip_empty_links(self._fallback_answer(answer, reasons))
             return self._attach_sources(
                 cleaned, card, evidence, user_input=user_input
             )
         return self._attach_sources(answer, card, evidence, user_input=user_input)
+
+    def _result_tool_names(self) -> list[str] | None:
+        result = self.last_result
+        if result is None:
+            return None
+        return [
+            s.tool_name
+            for s in result.steps
+            if s.tool_name and s.tool_name != "(format_error)"
+        ]
 
     def _tool_result_text(self) -> str:
         result = self.last_result

@@ -13,6 +13,7 @@ from pocket_agent.llm_client import EMPTY_THINK_NOTE
 from pocket_agent.prompt_registry import current_registry
 from pocket_agent.prompts import builtin_entries
 from pocket_agent.task import TaskCard
+from pocket_agent.tools import detect_tool_domains, tool_name_domain
 
 DEGRADE_PREFIX = "该回答未通过验收："
 
@@ -53,6 +54,9 @@ _JSON_FENCE = re.compile(
 _JSON_BLOCK = re.compile(r"```json\s*\r?\n?(.*?)```", re.DOTALL | re.IGNORECASE)
 _NUMBERED_ITEM = re.compile(r"^\s*\d+[.、]", re.MULTILINE)
 _INT_ONLY = re.compile(r"\s*-?\d+\s*")
+_EMPTY_LINK = re.compile(r"\[\]\([^)]*\)")
+_ANSWER_DOMAINS = frozenset({"weather", "time"})
+_DOMAIN_LABEL = {"weather": "天气", "time": "时间"}
 _INTERNAL_LEAKS = (
     "format_error",
     "cannot parse int",
@@ -96,6 +100,11 @@ def prompt_leak_phrases() -> tuple[str, ...]:
     return tuple(phrase for phrase in _LEAK_CANDIDATES if phrase in blob)
 
 
+def strip_empty_links(text: str) -> str:
+    """去掉空标签 Markdown 残片 []() / [](url)，保留 [text](url)。"""
+    return _EMPTY_LINK.sub("", text or "")
+
+
 def verify(
     answer: str,
     task_card: TaskCard,
@@ -103,6 +112,7 @@ def verify(
     evidence: str = "",
     user_input: str = "",
     real_calls: int | None = None,
+    tool_names: list[str] | None = None,
 ) -> list[str]:
     """返回问题列表；空列表表示通过。"""
     text = answer or ""
@@ -141,6 +151,16 @@ def verify(
         problems.append("执行日志泄漏")
     if _format_violation(text, user_input):
         problems.append("格式违反")
+    missing = _missing_domain_tool(
+        user_input,
+        card_type=task_card.type,
+        real_calls=real_calls,
+        tool_names=tool_names,
+    )
+    if missing:
+        problems.append(missing)
+    if _hallucinated_file_ref(text):
+        problems.append("幻觉文件引用")
     return problems
 
 
@@ -296,6 +316,36 @@ def _is_pure_json(text: str) -> bool:
     except (json.JSONDecodeError, TypeError, ValueError):
         return False
     return True
+
+
+def _missing_domain_tool(
+    user_input: str,
+    *,
+    card_type: str,
+    real_calls: int | None,
+    tool_names: list[str] | None,
+) -> str | None:
+    if card_type != "agent" or real_calls is None or real_calls <= 0:
+        return None
+    if tool_names is None:
+        return None
+    needed = detect_tool_domains(user_input) & _ANSWER_DOMAINS
+    if not needed:
+        return None
+    have = {tool_name_domain(name) for name in tool_names}
+    missing = [d for d in ("weather", "time") if d in needed and d not in have]
+    if not missing:
+        return None
+    labels = "、".join(_DOMAIN_LABEL[d] for d in missing)
+    return f"领域工具缺失：{labels}工具"
+
+
+def _hallucinated_file_ref(text: str) -> bool:
+    body = text or ""
+    for match in re.finditer("缺少", body):
+        if "文件" in body[match.start() : match.start() + 20]:
+            return True
+    return False
 
 
 def _format_violation(answer: str, user_input: str) -> bool:
