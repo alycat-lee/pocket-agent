@@ -137,11 +137,21 @@ def _extras(mgr: SessionManager) -> dict[str, Any]:
     return extras
 
 
+_PSEUDO_STEPS = frozenset({"(format_error)", "(domain_gate)"})
+
+
 def _dup_call_rate(real_calls: int, steps: list[Any]) -> float:
-    """重复真实调用：同一工具+同一参数被真实执行多次。失败/缓存不计入去重分母。"""
-    fps = {
-        f"{s.tool_name}:{sorted((s.args or {}).items())}"
+    """重复真实调用：同一工具+同一参数被真实执行多次。
+
+    只统计非缓存、非伪步；real_calls 保留兼容调用方，不参与计算。
+    """
+    del real_calls
+    fps = [
+        f"{s.tool_name}:{sorted((getattr(s, 'args', None) or {}).items())}"
         for s in steps
-        if getattr(s, "tool_name", "") != "(format_error)" and not getattr(s, "error", None)
-    }
-    return 0.0 if real_calls == len(fps) else 1.0
+        if getattr(s, "tool_name", "") not in _PSEUDO_STEPS
+        and not getattr(s, "from_cache", False)
+    ]
+    if not fps:
+        return 0.0
+    return (len(fps) - len(set(fps))) / len(fps)

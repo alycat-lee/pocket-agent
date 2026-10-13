@@ -767,6 +767,12 @@ class SessionManager:
                         },
                     )
                 if not has_history:
+                    web_text = self._web_search_fallback(search_query)
+                    if not _is_empty_retrieval(web_text) and _web_covers_query(
+                        search_query, web_text
+                    ):
+                        evidence = web_text
+                        self.last_evidence = evidence
                     prompt = FINAL_ANSWER_QA.format(
                         task=run_task, evidence=evidence
                     )
@@ -808,6 +814,21 @@ class SessionManager:
         text = self._knowledge.search_text(query)
         self.last_evidence = text
         return text
+
+    def _web_search_fallback(self, query: str) -> str:
+        """代码层直调已注册 web_search，不经 LLM、不经账本。"""
+        registry = getattr(self._runner, "_registry", None)
+        if registry is None:
+            return EMPTY_RESULT
+        try:
+            tool = registry.get("web_search")
+        except KeyError:
+            return EMPTY_RESULT
+        try:
+            raw = tool.fn(query=query)
+        except Exception:  # noqa: BLE001 — 联网失败按空资料处理
+            return EMPTY_RESULT
+        return str(raw or "")
 
     def _remember_tool_evidence(self, steps: list[StepRecord]) -> None:
         lines: list[str] = []
@@ -1245,6 +1266,48 @@ class SessionManager:
 def _is_empty_retrieval(text: str) -> bool:
     body = (text or "").strip()
     return (not body) or any(phrase in body for phrase in HONEST_PHRASES)
+
+
+_ENTITY_BOOK = re.compile(r"《([^》]+)》")
+_ENTITY_LATIN = re.compile(r"[A-Za-z]{4,}")
+_ENTITY_CN = re.compile(r"[\u4e00-\u9fff]{4,}")
+_CN_SPLIT = re.compile(
+    r"目前|多少|哪些|哪个|什么|怎么|有哪|只答|几月几日|哪一年|哪年"
+)
+
+
+def _extract_query_entities(query: str) -> list[str]:
+    body = query or ""
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(item: str, *, min_len: int = 4) -> None:
+        text = item.strip()
+        if len(text) >= min_len and text not in seen:
+            seen.add(text)
+            ordered.append(text)
+
+    for match in _ENTITY_BOOK.finditer(body):
+        add(match.group(1), min_len=1)
+    for match in _ENTITY_LATIN.finditer(body):
+        add(match.group(0))
+    for match in _ENTITY_CN.finditer(body):
+        run = match.group(0)
+        add(run)
+        for part in _CN_SPLIT.split(run):
+            if len(part) >= 4:
+                add(part)
+                for i in range(len(part) - 3):
+                    add(part[i : i + 4])
+    return ordered
+
+
+def _web_covers_query(query: str, evidence: str) -> bool:
+    entities = _extract_query_entities(query)
+    if not entities:
+        return True
+    blob = evidence or ""
+    return any(token in blob for token in entities)
 
 
 def apply_fact_pins(existing: list[str], user_input: str) -> list[str]:

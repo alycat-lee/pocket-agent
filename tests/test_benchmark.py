@@ -225,19 +225,91 @@ def test_d3_tasks_declare_expected_and_forbidden_tools() -> None:
     assert d3["d3-now"]["expected_tools"] == ["get_current_time"]
 
 
-def test_dup_rate_ignores_fill_errors() -> None:
+def test_dup_rate_error_plus_cache_is_zero() -> None:
     from types import SimpleNamespace
 
     from benchmark.runners.pocket import _dup_call_rate
 
     steps = [
-        SimpleNamespace(tool_name="get_weather", args={"city": "北京"}, error=None),
-        SimpleNamespace(tool_name="get_weather", args={"city": "上海"}, error=None),
-        SimpleNamespace(tool_name="get_weather", args={}, error="invalid json"),
-        SimpleNamespace(tool_name="(format_error)", args={}, error="bad"),
+        SimpleNamespace(
+            tool_name="read_file",
+            args={"path": "a.txt"},
+            error="文件不存在：a.txt",
+            from_cache=False,
+        ),
+        SimpleNamespace(
+            tool_name="read_file",
+            args={"path": "a.txt"},
+            error="文件不存在：a.txt",
+            from_cache=True,
+        ),
     ]
     assert _dup_call_rate(2, steps) == 0.0
-    assert _dup_call_rate(3, steps) == 1.0
+
+
+def test_dup_rate_same_fingerprint_twice_is_half() -> None:
+    from types import SimpleNamespace
+
+    from benchmark.runners.pocket import _dup_call_rate
+
+    step = SimpleNamespace(
+        tool_name="get_weather",
+        args={"city": "北京"},
+        error=None,
+        from_cache=False,
+    )
+    assert _dup_call_rate(2, [step, step]) == 0.5
+
+
+def test_dup_rate_ignores_domain_gate_pseudo_step() -> None:
+    from types import SimpleNamespace
+
+    from benchmark.runners.pocket import _dup_call_rate
+
+    steps = [
+        SimpleNamespace(
+            tool_name="(domain_gate)",
+            args={},
+            error=None,
+            from_cache=False,
+        ),
+        SimpleNamespace(
+            tool_name="get_weather",
+            args={"city": "北京"},
+            error=None,
+            from_cache=False,
+        ),
+        SimpleNamespace(
+            tool_name="(format_error)",
+            args={},
+            error="bad",
+            from_cache=False,
+        ),
+    ]
+    assert _dup_call_rate(1, steps) == 0.0
+
+
+def test_dup_rate_all_cache_is_zero() -> None:
+    from types import SimpleNamespace
+
+    from benchmark.runners.pocket import _dup_call_rate
+
+    steps = [
+        SimpleNamespace(
+            tool_name="get_weather",
+            args={"city": "北京"},
+            error=None,
+            from_cache=True,
+        ),
+        SimpleNamespace(
+            tool_name="get_weather",
+            args={"city": "北京"},
+            error=None,
+            from_cache=True,
+        ),
+    ]
+    assert _dup_call_rate(0, steps) == 0.0
+    assert _dup_call_rate(0, []) == 0.0
 
 
 def test_scorer_zero_dup_rate_is_success() -> None:

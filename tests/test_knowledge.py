@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -22,7 +23,7 @@ from pocket_agent.knowledge import (
     wants_bare_answer,
 )
 from pocket_agent.knowledge.embed import LocalEmbedder
-from pocket_agent.knowledge.web import is_blocked_url
+from pocket_agent.knowledge.web import _parse_ddg_html, is_blocked_url, web_search
 from pocket_agent.llm_client import LLMFormatError
 from pocket_agent.plugins.agent_loop import AgentLoopPlugin
 from pocket_agent.plugins.knowledge_plugin import KnowledgePlugin
@@ -37,6 +38,7 @@ from pocket_agent.tools import ToolRegistry
 from pocket_agent.verifier import extract_claims, verify
 
 HANDBOOK = Path(__file__).resolve().parent / "fixtures" / "handbook.md"
+DDG_SAMPLE = Path(__file__).resolve().parent / "fixtures" / "ddg_sample.html"
 
 
 class _FakeLlm:
@@ -329,6 +331,75 @@ def test_source_format_and_ssrf_block() -> None:
     assert is_blocked_url("http://169.254.169.254/latest/meta-data")
     assert is_blocked_url("file:///etc/passwd")
     assert not is_blocked_url("https://zh.wikipedia.org/wiki/Test")
+
+
+class _HttpResp:
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+class _HttpClient:
+    def __init__(
+        self,
+        resp: _HttpResp | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._resp = resp
+        self._error = error
+
+    def __enter__(self) -> Any:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        del args
+
+    def get(
+        self,
+        url: str,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> _HttpResp:
+        del url, params, headers
+        if self._error is not None:
+            raise self._error
+        assert self._resp is not None
+        return self._resp
+
+
+def test_duckduckgo_parses_fixture_html() -> None:
+    html = DDG_SAMPLE.read_text(encoding="utf-8")
+    items = _parse_ddg_html(html)
+    assert len(items) == 3
+    assert items[0][0] == "2026 Chinese New Year"
+    assert "17 February" in items[0][2]
+    with patch(
+        "pocket_agent.knowledge.web.httpx.Client",
+        return_value=_HttpClient(_HttpResp(200, html)),
+    ):
+        text = web_search("2026春节")
+    assert "[来源：网页搜索]" in text
+    assert "2026 Chinese New Year" in text
+    assert "Spring Festival 2026" in text
+    assert text.count("[来源：网页搜索]") == 3
+
+
+def test_duckduckgo_timeout_403_empty_are_empty_result() -> None:
+    with patch(
+        "pocket_agent.knowledge.web.httpx.Client",
+        return_value=_HttpClient(error=httpx.TimeoutException("timed out")),
+    ):
+        assert web_search("春节") == EMPTY_RESULT
+    with patch(
+        "pocket_agent.knowledge.web.httpx.Client",
+        return_value=_HttpClient(_HttpResp(403, "forbidden")),
+    ):
+        assert web_search("春节") == EMPTY_RESULT
+    with patch(
+        "pocket_agent.knowledge.web.httpx.Client",
+        return_value=_HttpClient(_HttpResp(200, "<html><body></body></html>")),
+    ):
+        assert web_search("春节") == EMPTY_RESULT
 
 
 def test_knowledge_crud_api(tmp_path: Path) -> None:

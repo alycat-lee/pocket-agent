@@ -615,3 +615,96 @@ def test_qa_followup_appends_grounding_note(mock_llm_factory: type) -> None:
     note = "只能依据对话历史中的具体信息作答"
     assert any(note in p for p in llm.prompts)
     assert "禁止说" in next(p for p in llm.prompts if note in p)
+
+
+def _qa_mgr_with_web(
+    mock_llm_factory: type,
+    responses: list[object],
+    web_fn: Any,
+) -> tuple[SessionManager, object, list[str]]:
+    cfg = AgentConfig(
+        max_steps=3,
+        planner_enabled=False,
+        verifier_enabled=False,
+    )
+    registry = ToolRegistry(cfg)
+    calls: list[str] = []
+
+    @tool(registry, "搜索网页标题摘要", domain="web")
+    def web_search(query: str) -> str:
+        calls.append(query)
+        return web_fn(query)
+
+    llm = mock_llm_factory(responses)
+    mgr = SessionManager(
+        cfg,
+        llm,
+        AgentRunner(cfg, llm, registry),
+        events=_SilentBus(),
+        knowledge=None,
+    )
+    return mgr, llm, calls
+
+
+def test_qa_web_fallback_fills_evidence_when_no_history(
+    mock_llm_factory: type,
+) -> None:
+    hits = "[来源：网页搜索] 2026年春节 — 公历2月17日农历春节"
+
+    def _web(query: str) -> str:
+        del query
+        return hits
+
+    mgr, llm, calls = _qa_mgr_with_web(
+        mock_llm_factory, ["2月17日", "春节"], _web
+    )
+    mgr.chat("s1", "2026 年中国农历春节是公历几月几日？只答日期。", force_mode="qa")
+    assert calls
+    assert mgr.last_evidence is not None
+    assert "[来源：网页搜索]" in mgr.last_evidence
+    assert any("[来源：网页搜索]" in p for p in llm.prompts)
+
+
+def test_qa_web_fallback_skipped_when_history_exists(
+    mock_llm_factory: type,
+) -> None:
+    def _web(query: str) -> str:
+        del query
+        return "[来源：网页搜索] 垃圾"
+
+    mgr, _llm, calls = _qa_mgr_with_web(
+        mock_llm_factory, ["你好呀", "闲聊", "未找到相关资料", "市值"], _web
+    )
+    mgr.chat("s1", "你好", force_mode="qa")
+    assert calls == []
+    mgr.chat("s1", "紫晶河水母币目前市值多少？", force_mode="qa")
+    assert calls == []
+
+
+def test_qa_web_fallback_rejects_unrelated_hits(
+    mock_llm_factory: type,
+) -> None:
+    def _web(query: str) -> str:
+        del query
+        return "[来源：网页搜索] 上证指数 — 今日股市上涨两点"
+
+    mgr, llm, calls = _qa_mgr_with_web(
+        mock_llm_factory, ["未找到相关资料", "市值"], _web
+    )
+    mgr.chat("s1", "紫晶河水母币目前市值多少？", force_mode="qa")
+    assert calls
+    assert mgr.last_evidence == EMPTY_RESULT
+    assert any("未找到相关资料" in p for p in llm.prompts)
+
+
+def test_qa_strict_does_not_call_web(mock_llm_factory: type) -> None:
+    def _web(query: str) -> str:
+        del query
+        return "[来源：网页搜索] 不该出现"
+
+    mgr, _llm, calls = _qa_mgr_with_web(
+        mock_llm_factory, ["标题"], _web
+    )
+    answer = mgr.chat("s1", "根据文档介绍星核协议", force_mode="qa")
+    assert calls == []
+    assert answer == EMPTY_RESULT
