@@ -73,6 +73,29 @@ _PIN_SLOT_PREFIX: tuple[tuple[str, str], ...] = (
     ("codename", "项目代号是"),
 )
 
+_DEICTIC_RE = re.compile(
+    r"(这两|这两个|这两座|这两件|这几|那个|它们|他们|她们|"
+    r"一共|总共|之前|刚才|上面|上述|改名后|现在.*叫|"
+    r"温差|相差|比较一下|比起来)"
+)
+_PRONOUN_RE = re.compile(r"(?:^|[，。,.\s])(?:它|他|她)")
+_GROUNDING_NOTE = (
+    "回答要求：只能依据对话历史中的具体信息作答；"
+    "历史中有的数据必须直接使用，禁止说\"通常\"\"取决于\"\"建议查询\"这类回避性措辞；"
+    "信息确实没有时才说明不知道。"
+)
+_HISTORY_MARKERS = ("以下是本会话已知信息：", "用户：")
+
+
+def has_deictic_reference(text: str) -> bool:
+    """输入含指代/汇总性词时，有历史就必须 rewrite。"""
+    raw = text or ""
+    return bool(_DEICTIC_RE.search(raw) or _PRONOUN_RE.search(raw))
+
+
+def _has_history_block(text: str) -> bool:
+    return any(marker in (text or "") for marker in _HISTORY_MARKERS)
+
 
 def _safe_sid(session_id: str) -> str:
     return _SID_SAFE.sub("_", session_id.strip()) or "default"
@@ -449,9 +472,12 @@ class SessionManager:
             )
 
         if rewritten is None:
-            if card.needs_history and card.type == "agent":
+            needs_rewrite = card.needs_history or (
+                bool(state.turns) and has_deictic_reference(user_input)
+            )
+            if needs_rewrite and card.type == "agent":
                 rewritten = self._rewrite_if_needed(state, user_input)
-            elif card.needs_history and card.type == "qa":
+            elif needs_rewrite and card.type == "qa":
                 rewritten = self._rewrite_if_needed(
                     state, user_input, summary_only=True
                 )
@@ -750,6 +776,8 @@ class SessionManager:
                 )
             else:
                 prompt = FINAL_ANSWER_QA.format(task=run_task, evidence=evidence)
+        if has_history and _has_history_block(run_task):
+            prompt = f"{prompt.rstrip()}\n{_GROUNDING_NOTE}"
         prompt = self._wrap_system(prompt)
         try:
             answer = self._generate_user_text(prompt, session_id)
@@ -1030,9 +1058,11 @@ class SessionManager:
             return user_input
         if summary_only:
             summary = state.rolling_summary.strip()
-            if not summary:
+            history_text = (
+                f"摘要：{summary}" if summary else self._history_text(state)
+            )
+            if not history_text.strip():
                 return user_input
-            history_text = f"摘要：{summary}"
         else:
             history_text = self._history_text(state)
         prompt = REWRITE_QUERY.format(

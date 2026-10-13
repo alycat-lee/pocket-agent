@@ -39,6 +39,12 @@ _CLAIM_STOP = {
 }
 
 _STEP_LOG_LINE = re.compile(r"^\d+\.\s+[A-Za-z_][A-Za-z0-9_]*")
+_NUMBERED_ACTION = re.compile(
+    r"^\s*\d+[.、]\s*.*(工具|调用|生成|读取|保存到)",
+    re.MULTILINE,
+)
+_TRUNCATED_TAIL = re.compile(r"[，,:：]\s*$")
+_PLACEHOLDER_LEAK = re.compile(r"（此处|\(此处|可能需要更多的信息")
 
 _LEAK_CANDIDATES = (
     "可用工具",
@@ -167,17 +173,22 @@ def attach_degrade(answer: str, reasons: list[str]) -> str:
 
 
 def _execution_log_leaked(text: str) -> bool:
-    if "[缓存]" in text or "args={" in text:
+    body = text or ""
+    if "[缓存]" in body or "args={" in body:
         return True
     streak = 0
-    for line in (text or "").splitlines():
+    for line in body.splitlines():
         if _STEP_LOG_LINE.match(line.strip()):
             streak += 1
             if streak >= 2:
                 return True
         elif line.strip():
             streak = 0
-    return False
+    if len(_NUMBERED_ACTION.findall(body)) >= 2:
+        return True
+    if _TRUNCATED_TAIL.search(body):
+        return True
+    return bool(_PLACEHOLDER_LEAK.search(body))
 
 
 def _phrase_leaked(phrase: str, text: str) -> bool:

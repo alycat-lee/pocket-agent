@@ -7,7 +7,12 @@ from pocket_agent.config import AgentConfig
 from pocket_agent.knowledge import EMPTY_RESULT, KnowledgeBase
 from pocket_agent.knowledge.embed import HashEmbedder
 from pocket_agent.runner import AgentRunner
-from pocket_agent.session import SessionManager, apply_fact_pins, extract_fact_pins
+from pocket_agent.session import (
+    SessionManager,
+    apply_fact_pins,
+    extract_fact_pins,
+    has_deictic_reference,
+)
 from pocket_agent.tools import ToolRegistry, tool
 
 
@@ -500,3 +505,113 @@ def test_augment_irrelevant_hit_does_not_force_not_found(
     qa_prompts = [p for p in llm.prompts if "检索资料" in p]
     for prompt in qa_prompts:
         assert "必须回答「未找到相关资料」" not in prompt
+
+
+def _qa_card(goal: str = "问答") -> dict[str, Any]:
+    return {
+        "type": "qa",
+        "goal": goal,
+        "constraints": {},
+        "plan": ["答"],
+        "needs_history": False,
+    }
+
+
+class _SilentBus:
+    def emit(self, event: str, payload: dict) -> None:
+        del event, payload
+
+
+def test_has_deictic_reference_phrases() -> None:
+    assert has_deictic_reference("这两座城市温差多少？")
+    assert has_deictic_reference("它们一共多少度")
+    assert has_deictic_reference("他现在怎样")
+    assert not has_deictic_reference("口令是多少")
+    assert not has_deictic_reference("上海天气怎么样")
+    assert not has_deictic_reference("给他一杯水")
+
+
+def test_deictic_followup_rewrites_with_full_history(
+    mock_llm_factory: type,
+) -> None:
+    """有历史 + 指代追问：即使 planner 判 false 也 rewrite，且用完整历史。"""
+    card = _qa_card("问天气")
+    cfg = AgentConfig(max_steps=3, verifier_enabled=False, planner_enabled=True)
+    llm = mock_llm_factory(
+        [
+            card,
+            "北京晴 25℃，上海多云 18℃。",
+            "天气标题",
+            card,
+            "北京和上海温差多少？",
+            "温差 7℃。",
+        ]
+    )
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, ToolRegistry(cfg)), events=_SilentBus()
+    )
+    mgr.chat("s1", "北京和上海今天几度")
+    assert mgr.rewrite_call_count == 0
+    assert mgr.get_state("s1").rolling_summary == ""
+    n = len(llm.prompts)
+    mgr.chat("s1", "这两座城市温差多少？")
+    assert mgr.rewrite_call_count == 1
+    assert mgr.last_task_card is not None
+    assert mgr.last_task_card.needs_history is False
+    rewrite_prompts = [p for p in llm.prompts[n:] if "最新输入" in p]
+    assert rewrite_prompts
+    assert "北京晴 25℃" in rewrite_prompts[0]
+    assert "用户：" in rewrite_prompts[0]
+    assert "助手：" in rewrite_prompts[0]
+
+
+def test_plain_followup_skips_rewrite_when_planner_denies(
+    mock_llm_factory: type,
+) -> None:
+    card = _qa_card()
+    cfg = AgentConfig(max_steps=3, verifier_enabled=False, planner_enabled=True)
+    llm = mock_llm_factory(
+        [card, "北京晴 25℃。", "天气标题", card, "上海多云 18℃。"]
+    )
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, ToolRegistry(cfg)), events=_SilentBus()
+    )
+    mgr.chat("s1", "北京今天几度")
+    assert mgr.rewrite_call_count == 0
+    mgr.chat("s1", "上海今天几度")
+    assert mgr.rewrite_call_count == 0
+    assert mgr.last_task_card is not None
+    assert mgr.last_task_card.needs_history is False
+
+
+def test_first_turn_deictic_skips_rewrite(mock_llm_factory: type) -> None:
+    mgr, llm, _ = _manager(mock_llm_factory, ["不知道指哪两座城市。"])
+    mgr.chat("s1", "这两座城市温差多少？")
+    assert mgr.rewrite_call_count == 0
+    assert not any("最新输入" in p for p in llm.prompts)
+
+
+def test_qa_followup_appends_grounding_note(mock_llm_factory: type) -> None:
+    card = _qa_card("问天气")
+    cfg = AgentConfig(max_steps=3, verifier_enabled=False, planner_enabled=True)
+    llm = mock_llm_factory(
+        [
+            card,
+            "北京晴 25℃。",
+            "天气标题",
+            card,
+            "上海多云 18℃。",
+            card,
+            "北京和上海温差多少？",
+            "温差 7℃。",
+        ]
+    )
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, ToolRegistry(cfg)), events=_SilentBus()
+    )
+    mgr.chat("s1", "北京今天几度")
+    mgr.chat("s1", "上海今天几度")
+    mgr.chat("s1", "这两座城市温差多少？")
+    note = "只能依据对话历史中的具体信息作答"
+    assert any(note in p for p in llm.prompts)
+    assert "禁止说" in next(p for p in llm.prompts if note in p)

@@ -169,6 +169,24 @@ def test_execution_log_leak_rejected() -> None:
     assert "执行日志泄漏" not in verify("北京今天晴，气温二十五度左右。", card)
 
 
+def test_execution_log_real_d3_failures() -> None:
+    card = _card("agent")
+    plan_echo = (
+        "1. 生成JSON文件：使用generate_json工具，参数设置为{...}，"
+        "将结果保存到data/Beijing_weather.json中。\n\n"
+        "2. 读取文件：调用read_file工具，"
+    )
+    placeholder = (
+        "现在的时间是北京和上海的当地时间……"
+        "（此处可能需要更多的信息，如您的位置或所需城市名称）"
+    )
+    reasons_plan = verify(plan_echo, card)
+    assert "执行日志泄漏" in reasons_plan or "复读计划" in reasons_plan
+    reasons_ph = verify(placeholder, card)
+    assert "执行日志泄漏" in reasons_ph or "复读计划" in reasons_ph
+    assert verify("北京：晴，25℃", card) == []
+
+
 def test_cache_marker_triggers_verify_retry(mock_llm_factory: type) -> None:
     cfg = AgentConfig(max_steps=3, verifier_enabled=True, answer_max_retries=1)
     llm = mock_llm_factory(
