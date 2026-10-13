@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from pocket_agent.config import AgentConfig
@@ -92,7 +93,7 @@ def test_step_events_carry_authoritative_turn(mock_llm_factory: type) -> None:
 
 def test_answer_done_carries_last_usage(mock_llm_factory: type) -> None:
     config = AgentConfig(max_steps=10)
-    llm = mock_llm_factory([-1, "两地对比完毕"])
+    llm = mock_llm_factory([-1, -1, "两地对比完毕"])
     llm.last_usage = {
         "prompt_tokens": 24,
         "completion_tokens": 165,
@@ -337,3 +338,99 @@ def test_interleaved_cache_hits_are_not_loop_intercepted(
     assert "无新信息" not in result.steps[2].result
     assert result.steps[3].from_cache is True
     assert "无新信息" not in result.steps[3].result
+
+
+def test_weather_early_done_inserts_domain_gate_then_continues(
+    mock_llm_factory: type,
+) -> None:
+    config = AgentConfig(max_steps=10, max_consecutive_intercepts=5)
+    llm = mock_llm_factory(
+        [
+            -1,
+            0,
+            {"city": "北京"},
+            -1,
+            "北京晴 25℃",
+        ]
+    )
+    bus = _Bus()
+    result = AgentRunner(
+        config, llm, _weather_registry(config), events=bus
+    ).run("查北京天气")
+    gate = [s for s in result.steps if s.tool_name == "(domain_gate)"]
+    assert len(gate) == 1
+    assert "还没有调用对应工具" in gate[0].result
+    assert any(s.tool_name == "get_weather" for s in result.steps)
+    reasons = [
+        payload.get("reason")
+        for name, payload in bus.events
+        if name == "step.intercepted"
+    ]
+    assert "domain_gate" in reasons
+
+
+def test_weather_second_early_done_skips_domain_gate(
+    mock_llm_factory: type,
+) -> None:
+    config = AgentConfig(max_steps=10, max_consecutive_intercepts=5)
+    llm = mock_llm_factory([-1, -1, "未能查到天气"])
+    result = AgentRunner(config, llm, _weather_registry(config)).run("查北京天气")
+    gate = [s for s in result.steps if s.tool_name == "(domain_gate)"]
+    assert len(gate) == 1
+    assert result.stop_reason == StopReason.MODEL_DONE
+    assert result.answer == "未能查到天气"
+
+
+def test_weather_after_get_weather_no_domain_gate(
+    mock_llm_factory: type,
+) -> None:
+    config = AgentConfig(max_steps=10)
+    llm = mock_llm_factory([0, {"city": "北京"}, -1, "北京晴"])
+    result = AgentRunner(config, llm, _weather_registry(config)).run("查北京天气")
+    assert all(s.tool_name != "(domain_gate)" for s in result.steps)
+    assert result.steps[0].tool_name == "get_weather"
+
+
+def test_non_domain_task_no_domain_gate(mock_llm_factory: type) -> None:
+    config = AgentConfig(max_steps=5)
+    llm = mock_llm_factory([-1, "闲聊回答"])
+    result = AgentRunner(config, llm, _weather_registry(config)).run("你好")
+    assert all(s.tool_name != "(domain_gate)" for s in result.steps)
+    assert result.answer == "闲聊回答"
+
+
+def test_read_file_missing_sets_error_and_consecutive_hint(
+    mock_llm_factory: type,
+    tmp_path: Any,
+) -> None:
+    config = AgentConfig(max_steps=8, max_consecutive_intercepts=10)
+    registry = ToolRegistry(config)
+
+    @tool(registry, "读取本地文件", domain="file")
+    def read_file(path: str) -> str:
+        target = Path(path)
+        if not target.is_file():
+            return f"文件不存在：{path}"
+        return target.read_text(encoding="utf-8")[:2000]
+
+    missing_a = str(tmp_path / "nope-a.txt")
+    missing_b = str(tmp_path / "nope-b.txt")
+    llm = mock_llm_factory(
+        [
+            0,
+            {"path": missing_a},
+            0,
+            {"path": missing_b},
+            -1,
+            "读文件失败",
+        ]
+    )
+    result = AgentRunner(config, llm, registry).run("读取工作区文件")
+    reads = [s for s in result.steps if s.tool_name == "read_file"]
+    assert len(reads) == 2
+    assert reads[0].error is not None and "文件不存在" in reads[0].error
+    assert reads[0].result.startswith("文件不存在")
+    assert "该路径不存在" not in reads[0].result
+    assert reads[1].error is not None and "文件不存在" in reads[1].error
+    assert "该路径不存在" in reads[1].result
+    assert "其他工具" in reads[1].result

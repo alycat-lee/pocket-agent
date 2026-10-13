@@ -249,6 +249,35 @@ def _write_registry(tmp_path: Path) -> tuple[ToolRegistry, Path]:
     return registry, sandbox
 
 
+def test_fenced_read_file_missing_sets_error_and_hint(tmp_path: Path) -> None:
+    registry, _sandbox = _write_registry(tmp_path)
+    llm = _FakeLlm(
+        [
+            0,
+            {"path": "a.md"},
+            0,
+            {"path": "b.md"},
+            -1,
+            "done",
+        ]
+    )
+    result = AgentRunner(
+        AgentConfig(
+            max_steps=6,
+            tool_recall_threshold=20,
+            max_consecutive_intercepts=10,
+        ),
+        llm,
+        registry,
+    ).run("读取文件 a.md 与 b.md", session_id="s1")
+    reads = [s for s in result.steps if s.tool_name == "read_file"]
+    assert len(reads) == 2
+    assert reads[0].error is not None and "文件不存在" in reads[0].error
+    assert reads[1].error is not None and "文件不存在" in reads[1].error
+    assert "该路径不存在" in reads[1].result
+    assert "其他工具" in reads[1].result
+
+
 def test_runner_write_denied_does_not_create_file(tmp_path: Path) -> None:
     registry, sandbox = _write_registry(tmp_path)
     bus = _Bus()

@@ -43,7 +43,7 @@ from pocket_agent.task import (
     default_card,
     infer_knowledge_mode,
 )
-from pocket_agent.verifier import attach_degrade, strip_empty_links, verify
+from pocket_agent.verifier import honest_missing_data_note, strip_empty_links, verify
 from pocket_agent.workspace import WorkspaceManager
 
 _LLM_CALL_PREVIEW = 120
@@ -902,7 +902,9 @@ class SessionManager:
         if reasons:
             self.last_verify_reasons = list(reasons)
             self._emit_rejected(session_id, reasons)
-            cleaned = strip_empty_links(self._fallback_answer(answer, reasons))
+            cleaned = strip_empty_links(
+                self._fallback_answer(answer, reasons, user_input=user_input)
+            )
             return self._attach_sources(
                 cleaned, card, evidence, user_input=user_input
             )
@@ -915,7 +917,7 @@ class SessionManager:
         return [
             s.tool_name
             for s in result.steps
-            if s.tool_name and s.tool_name != "(format_error)"
+            if s.tool_name and s.tool_name not in ("(format_error)", "(domain_gate)")
         ]
 
     def _tool_result_text(self) -> str:
@@ -929,7 +931,16 @@ class SessionManager:
         ]
         return "\n".join(parts).strip()
 
-    def _fallback_answer(self, answer: str, reasons: list[str]) -> str:
+    def _fallback_answer(
+        self,
+        answer: str,
+        reasons: list[str],
+        *,
+        user_input: str = "",
+    ) -> str:
+        missing_note = honest_missing_data_note(user_input, reasons)
+        if missing_note:
+            return missing_note
         if "格式违反" in reasons:
             blob = self._tool_result_text()
             match = re.search(r"-?\d+", blob)
@@ -943,7 +954,7 @@ class SessionManager:
             for marker in ("[生成回答失败]", "[格式错误]"):
                 body = body.replace(marker, "")
             return body.strip() or "未能生成正式回答"
-        return attach_degrade(answer, reasons)
+        return answer or ""
 
     def _attach_sources(
         self,

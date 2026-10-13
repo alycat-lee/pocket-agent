@@ -101,6 +101,7 @@ def test_demo_read_file_and_time(tmp_path: Path) -> None:
     path.write_text("你好" * 2000, encoding="utf-8")
     content = registry.get("read_file").fn(path=str(path))
     assert len(content) == 2000
-    assert "不存在" in registry.get("read_file").fn(path=str(tmp_path / "missing.txt"))
+    missing = registry.get("read_file").fn(path=str(tmp_path / "missing.txt"))
+    assert missing.startswith("文件不存在")
     now = registry.get("get_current_time").fn()
     assert len(now) >= 19

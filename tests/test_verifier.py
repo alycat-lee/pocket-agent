@@ -9,6 +9,7 @@ from pocket_agent.tools import ToolRegistry, tool
 from pocket_agent.verifier import (
     DEGRADE_PREFIX,
     attach_degrade,
+    honest_missing_data_note,
     prompt_leak_phrases,
     strip_empty_links,
     verify,
@@ -140,6 +141,7 @@ def test_weather_skip_tools_verify_rejects_and_retries(mock_llm_factory: type) -
                 "plan": ["查询", "回答"],
                 "needs_history": False,
             },
+            -1,
             -1,
             "没查工具就猜北京晴。",
             "北京今天晴，气温二十五度左右，已经说明。",
@@ -347,8 +349,7 @@ def test_verifier_retry_exhausted_appends_degrade(mock_llm_factory: type) -> Non
 
     mgr = SessionManager(cfg, llm, runner, events=_Bus())
     answer = mgr.chat("s1", "你好")
-    assert DEGRADE_PREFIX in answer
-    assert "思维链泄漏" in answer
+    assert DEGRADE_PREFIX not in answer
     assert mgr.last_verify_reasons == ["思维链泄漏"]
 
 
@@ -439,3 +440,56 @@ def test_hallucinated_file_ref_rejected() -> None:
     card = _card("agent")
     assert "幻觉文件引用" in verify("当前缺少所需的文件才能继续。", card)
     assert "幻觉文件引用" not in verify("北京：晴，25℃", card)
+
+
+def test_missing_tool_fallback_honest_without_degrade_banner(
+    mock_llm_factory: type,
+) -> None:
+    cfg = AgentConfig(max_steps=5, verifier_enabled=True, answer_max_retries=0)
+    registry = ToolRegistry(cfg)
+
+    @tool(registry, "查询指定城市天气", domain="weather")
+    def get_weather(city: str) -> str:
+        return f"{city}：晴，25℃"
+
+    rejected: list[list[str]] = []
+
+    class _Bus:
+        def emit(self, event: str, payload: dict) -> None:
+            if event == "answer.rejected":
+                rejected.append(list(payload.get("reasons") or []))
+
+    llm = mock_llm_factory(["占位"])
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, registry), events=_Bus()
+    )
+    mgr.last_result = RunResult(
+        answer="无法计算温差",
+        steps=[
+            StepRecord(
+                step=1,
+                tool_name="calculator",
+                args={"expression": "1"},
+                result="1",
+                from_cache=False,
+            )
+        ],
+        stop_reason=StopReason.MODEL_DONE,
+        stats={"real_calls": 1},
+    )
+    weather = "查询北京和上海的天气并告诉我温差"
+    out = mgr._verify_answer(
+        "无法计算温差",
+        _card("agent"),
+        weather,
+        "s1",
+        user_input=weather,
+    )
+    assert DEGRADE_PREFIX not in out
+    assert "未能获取实时数据" in out
+    assert "天气" in out
+    assert rejected
+    assert any("领域工具缺失" in item for item in rejected[0])
+    note = honest_missing_data_note(weather, ["领域工具缺失：天气工具"])
+    assert note is not None
+    assert "未调用天气工具" in note

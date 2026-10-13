@@ -26,7 +26,13 @@ from pocket_agent.llm_client import (
 from pocket_agent.permissions import evaluate
 from pocket_agent.prompts import CHOOSE_TOOL, FILL_ARGS, FINAL_ANSWER, SYSTEM_BASE
 from pocket_agent.tool_context import set_session_id
-from pocket_agent.tools import Tool, ToolRegistry, filter_tools_by_domain
+from pocket_agent.tools import (
+    Tool,
+    ToolRegistry,
+    detect_tool_domains,
+    filter_tools_by_domain,
+    tool_name_domain,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,50 @@ _CACHE_LOOP_NOTE = (
     "[缓存命中，无新信息] 此调用与上一步重复。"
     "请改用其他工具或其他参数，或直接给出最终回答。"
 )
+_MISSING_READ_NOTE = "该路径不存在。请确认文件路径，或改用其他工具获取数据。"
+_ANSWER_DOMAINS = frozenset({"weather", "time"})
+_DOMAIN_LABEL = {"weather": "天气", "time": "时间"}
+_PSEUDO_TOOLS = frozenset({"(format_error)", "(domain_gate)"})
+
+
+def _missing_answer_domains(
+    task: str,
+    steps: list[StepRecord],
+    candidates: list[Tool],
+) -> list[str]:
+    needed = detect_tool_domains(task) & _ANSWER_DOMAINS
+    if not needed:
+        return []
+    used = {
+        tool_name_domain(record.tool_name)
+        for record in steps
+        if record.tool_name not in _PSEUDO_TOOLS
+    }
+    pool = {tool_name_domain(item.name) for item in candidates} | {
+        item.domain for item in candidates
+    }
+    return [d for d in ("weather", "time") if d in needed and d not in used and d in pool]
+
+
+def _mark_missing_read_file(
+    tool_name: str,
+    result: str,
+    error: str | None,
+    steps: list[StepRecord],
+) -> tuple[str, str | None]:
+    if tool_name != "read_file" or not (result or "").startswith("文件不存在"):
+        return result, error
+    marked = result if error is None else error
+    prev = steps[-1] if steps else None
+    prev_missing = (
+        prev is not None
+        and prev.tool_name == "read_file"
+        and (prev.result or "").startswith("文件不存在")
+    )
+    if prev_missing:
+        result = f"{result}{_MISSING_READ_NOTE}"
+    return result, marked
+
 
 # 写类工具审批：payload → True 批准 / False 拒绝（含超时）
 ApprovalGate = Callable[[dict[str, Any]], bool]
@@ -214,6 +264,7 @@ class AgentRunner:
         start_step = 1
         prompt_tokens_max = 0
         intercepts = 0
+        domain_gate_fired = False
         stop_reason = StopReason.MAX_STEPS
         llm_ms = 0.0
         tool_ms = 0.0
@@ -313,6 +364,45 @@ class AgentRunner:
             llm_ms += (time.perf_counter() - llm_t0) * 1000
 
             if choice == -1:
+                missing = _missing_answer_domains(task, steps, candidates)
+                if missing and not domain_gate_fired:
+                    domain_gate_fired = True
+                    intercepts += 1
+                    labels = "/".join(_DOMAIN_LABEL[d] for d in missing)
+                    result = (
+                        f"[未完成] 任务要求查询{labels}，但你还没有调用对应工具。"
+                        "下一步必须选择对应工具，获取真实数据后才能作答。"
+                    )
+                    meta = self._step_fields(
+                        step=step,
+                        t0=t0,
+                        prompt_tokens_est=choose_tokens,
+                        current_tool="(domain_gate)",
+                    )
+                    self._emit(
+                        "step.intercepted",
+                        {"reason": "domain_gate", "tool": "(domain_gate)", **meta},
+                    )
+                    steps.append(
+                        StepRecord(
+                            step=step,
+                            tool_name="(domain_gate)",
+                            args={},
+                            result=result,
+                            from_cache=False,
+                        )
+                    )
+                    if run_id:
+                        self._dump_checkpoint(run_id, steps, active_ledger)
+                    verdict = self._guard.on_step(
+                        step,
+                        "domain_gate:-1",
+                        intercepted=True,
+                    )
+                    if verdict.should_stop:
+                        stop_reason = StopReason(verdict.reason)
+                        break
+                    continue
                 stop_reason = StopReason.MODEL_DONE
                 break
             if choice < 0 or choice >= len(candidates):
@@ -396,6 +486,7 @@ class AgentRunner:
 
             cached = active_ledger.check(tool.name, args)
             error: str | None = None
+            cache_loop = False
             if cached is not None:
                 result = cached
                 from_cache = True
@@ -414,12 +505,7 @@ class AgentRunner:
                     "step.intercepted",
                     {"reason": "ledger_cache", "tool": tool.name, **meta},
                 )
-                if steps and steps[-1].tool_name == tool.name:
-                    result = _CACHE_LOOP_NOTE
-                    self._emit(
-                        "step.intercepted",
-                        {"reason": "cache_loop", "tool": tool.name, **meta},
-                    )
+                cache_loop = bool(steps and steps[-1].tool_name == tool.name)
             else:
                 from_cache = False
                 verdict, rule = evaluate(
@@ -534,6 +620,24 @@ class AgentRunner:
                 tool_ms += (time.perf_counter() - tool_t0) * 1000
                 result = self._compressor.compress_result(str(raw_result))
                 active_ledger.save(tool.name, args, result)
+
+            result, error = _mark_missing_read_file(tool.name, result, error, steps)
+            if cache_loop:
+                result = _CACHE_LOOP_NOTE
+                self._emit(
+                    "step.intercepted",
+                    {
+                        "reason": "cache_loop",
+                        "tool": tool.name,
+                        **self._step_fields(
+                            step=step,
+                            t0=t0,
+                            prompt_tokens_est=fill_tokens,
+                            current_tool=tool.name,
+                        ),
+                    },
+                )
+            if not from_cache:
                 self._emit(
                     "step.tool_call",
                     {

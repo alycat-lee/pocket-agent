@@ -211,6 +211,22 @@ def attach_degrade(answer: str, reasons: list[str]) -> str:
     return f"{body}\n\n{note}"
 
 
+def honest_missing_data_note(user_input: str, reasons: list[str]) -> str | None:
+    """缺工具数据时的上屏说明；None 表示不是这类失败。"""
+    domain_reason = next((item for item in reasons if item.startswith("领域工具缺失")), "")
+    idle = "应调用工具但未调用" in reasons
+    if not domain_reason and not idle:
+        return None
+    if domain_reason.startswith("领域工具缺失：") and domain_reason.endswith("工具"):
+        labels = domain_reason[len("领域工具缺失：") : -len("工具")]
+    else:
+        needed = detect_tool_domains(user_input) & _ANSWER_DOMAINS
+        labels = "、".join(_DOMAIN_LABEL[d] for d in ("weather", "time") if d in needed)
+    if not labels:
+        labels = "对应"
+    return f"未能获取实时数据（未调用{labels}工具），以上回答不保证准确。"
+
+
 def _execution_log_leaked(text: str) -> bool:
     body = text or ""
     hay = body.lower()
