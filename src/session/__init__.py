@@ -10,7 +10,13 @@ from typing import Any, Protocol
 from pocket_agent.agents import DEFAULT_AGENT, AgentService
 from pocket_agent.compressor import ContextCompressor
 from pocket_agent.config import AgentConfig
-from pocket_agent.intent_router import IntentMode, IntentRouter, has_tool_hint
+from pocket_agent.intent_router import (
+    IntentMode,
+    IntentRouter,
+    has_tool_hint,
+    wants_live_web,
+    wants_live_web_qa,
+)
 from pocket_agent.knowledge import (
     EMPTY_RESULT,
     HONEST_PHRASES,
@@ -488,7 +494,9 @@ class SessionManager:
         run_task = self._compose_run_task(state, rewritten, card=card)
         self.last_run_task = run_task
 
-        answer = self._dispatch(card, run_task, session_id, permission, state)
+        answer = self._dispatch(
+            card, run_task, session_id, permission, state, user_input=user_input
+        )
         answer = self._verify_answer(
             answer, card, run_task, session_id, user_input=user_input
         )
@@ -572,6 +580,8 @@ class SessionManager:
         new_type = card.type
         if ruled is not None and ruled[0] == "writer":
             new_type = "writer"
+        elif wants_live_web_qa(user_input):
+            new_type = "qa"
         elif card.type == "qa" and has_tool_hint(user_input):
             new_type = "agent"
         plan = list(card.plan)
@@ -603,6 +613,8 @@ class SessionManager:
         session_id: str,
         permission: str,
         state: SessionState,
+        *,
+        user_input: str = "",
     ) -> str:
         if card.type == "qa":
             return self._run_qa(
@@ -611,6 +623,7 @@ class SessionManager:
                 session_id,
                 query=self.last_rewritten,
                 has_history=bool(state.turns),
+                user_input=user_input,
             )
         if self._orchestrator is not None and self._orchestrator.should_orchestrate(card):
             return self._run_orchestrated(
@@ -746,43 +759,54 @@ class SessionManager:
         *,
         query: str = "",
         has_history: bool = False,
+        user_input: str = "",
     ) -> str:
         prompt = run_task
         search_query = (query or "").strip()
+        current = (user_input or search_query).strip()
+        live = wants_live_web(current)
         if card.needs_knowledge:
             evidence = self._retrieve(search_query)
-            if _is_empty_retrieval(evidence):
-                if card.knowledge_mode != "augment":
-                    answer = EMPTY_RESULT
-                    self.last_result = None
-                    self._emit_answer_done(answer, stop_reason="qa")
-                    return answer
-                if self._events is not None:
-                    self._events.emit(
-                        "rag.empty",
-                        {
-                            "session_id": session_id,
-                            "turn": self._active_turn,
-                            "query": search_query,
-                        },
-                    )
-                if not has_history:
-                    web_text = self._web_search_fallback(search_query)
-                    if not _is_empty_retrieval(web_text) and _web_covers_query(
-                        search_query, web_text
-                    ):
-                        evidence = web_text
-                        self.last_evidence = evidence
-                    prompt = FINAL_ANSWER_QA.format(
-                        task=run_task, evidence=evidence
-                    )
+            empty_local = _is_empty_retrieval(evidence)
+            if empty_local and card.knowledge_mode != "augment":
+                answer = EMPTY_RESULT
+                self.last_result = None
+                self._emit_answer_done(answer, stop_reason="qa")
+                return answer
+            if empty_local and self._events is not None:
+                self._events.emit(
+                    "rag.empty",
+                    {
+                        "session_id": session_id,
+                        "turn": self._active_turn,
+                        "query": search_query,
+                    },
+                )
+            skip_web = has_history and not live
+            got_web = False
+            if (
+                card.knowledge_mode == "augment"
+                and not skip_web
+                and (empty_local or live)
+            ):
+                web_text = self._web_search_fallback(search_query)
+                if not _is_empty_retrieval(web_text) and _web_covers_query(
+                    search_query, web_text
+                ):
+                    evidence = web_text
+                    self.last_evidence = evidence
+                    got_web = True
+            if skip_web and empty_local and not got_web:
+                pass
+            elif got_web or empty_local:
+                prompt = FINAL_ANSWER_QA.format(task=run_task, evidence=evidence)
             elif has_history and card.knowledge_mode == "augment":
                 prompt = FINAL_ANSWER_QA_AUGMENT.format(
                     task=run_task, evidence=evidence
                 )
             else:
                 prompt = FINAL_ANSWER_QA.format(task=run_task, evidence=evidence)
-        if has_history and _has_history_block(run_task):
+        if has_history and _has_history_block(run_task) and not live:
             prompt = f"{prompt.rstrip()}\n{_GROUNDING_NOTE}"
         prompt = self._wrap_system(prompt)
         try:
@@ -1272,8 +1296,10 @@ _ENTITY_BOOK = re.compile(r"《([^》]+)》")
 _ENTITY_LATIN = re.compile(r"[A-Za-z]{4,}")
 _ENTITY_CN = re.compile(r"[\u4e00-\u9fff]{4,}")
 _CN_SPLIT = re.compile(
-    r"目前|多少|哪些|哪个|什么|怎么|有哪|只答|几月几日|哪一年|哪年"
+    r"目前|多少|哪些|哪个|什么|怎么|有哪|只答|几月几日|哪一年|哪年|"
+    r"今天|今日|最新|实时|搜索|查询|查找|帮我|一下"
 )
+_LIVE_WEB_COVER = ("新闻", "头条", "要闻")
 
 
 def _extract_query_entities(query: str) -> list[str]:
@@ -1303,11 +1329,19 @@ def _extract_query_entities(query: str) -> list[str]:
 
 
 def _web_covers_query(query: str, evidence: str) -> bool:
-    entities = _extract_query_entities(query)
-    if not entities:
-        return True
     blob = evidence or ""
-    return any(token in blob for token in entities)
+    body = query or ""
+    entities = [
+        token
+        for token in _extract_query_entities(body)
+        if not any(cover in token for cover in _LIVE_WEB_COVER)
+    ]
+    if entities:
+        return any(token in blob for token in entities)
+    if any(cover in body for cover in _LIVE_WEB_COVER):
+        lowered = blob.lower()
+        return any(cover in blob for cover in _LIVE_WEB_COVER) or "news" in lowered
+    return True
 
 
 def apply_fact_pins(existing: list[str], user_input: str) -> list[str]:

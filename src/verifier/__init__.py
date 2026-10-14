@@ -55,8 +55,9 @@ _JSON_BLOCK = re.compile(r"```json\s*\r?\n?(.*?)```", re.DOTALL | re.IGNORECASE)
 _NUMBERED_ITEM = re.compile(r"^\s*\d+[.、]", re.MULTILINE)
 _INT_ONLY = re.compile(r"\s*-?\d+\s*")
 _EMPTY_LINK = re.compile(r"\[\]\([^)]*\)")
-_ANSWER_DOMAINS = frozenset({"weather", "time"})
-_DOMAIN_LABEL = {"weather": "天气", "time": "时间"}
+_ANSWER_DOMAIN_ORDER = ("weather", "time", "web")
+_ANSWER_DOMAINS = frozenset(_ANSWER_DOMAIN_ORDER)
+_DOMAIN_LABEL = {"weather": "天气", "time": "时间", "web": "网页"}
 _INTERNAL_LEAKS = (
     "format_error",
     "cannot parse int",
@@ -221,7 +222,7 @@ def honest_missing_data_note(user_input: str, reasons: list[str]) -> str | None:
         labels = domain_reason[len("领域工具缺失：") : -len("工具")]
     else:
         needed = detect_tool_domains(user_input) & _ANSWER_DOMAINS
-        labels = "、".join(_DOMAIN_LABEL[d] for d in ("weather", "time") if d in needed)
+        labels = "、".join(_DOMAIN_LABEL[d] for d in _ANSWER_DOMAIN_ORDER if d in needed)
     if not labels:
         labels = "对应"
     return f"未能获取实时数据（未调用{labels}工具），以上回答不保证准确。"
@@ -349,7 +350,7 @@ def _missing_domain_tool(
     if not needed:
         return None
     have = {tool_name_domain(name) for name in tool_names}
-    missing = [d for d in ("weather", "time") if d in needed and d not in have]
+    missing = [d for d in _ANSWER_DOMAIN_ORDER if d in needed and d not in have]
     if not missing:
         return None
     labels = "、".join(_DOMAIN_LABEL[d] for d in missing)

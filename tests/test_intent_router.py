@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pocket_agent.intent_router import IntentRouter, has_tool_hint
+from pocket_agent.intent_router import (
+    IntentRouter,
+    has_tool_hint,
+    wants_live_web,
+    wants_live_web_qa,
+)
 from pocket_agent.llm_client import LLMFormatError
 
 _CASES_PATH = Path(__file__).parent / "fixtures" / "intent_cases.json"
@@ -130,6 +135,20 @@ def test_fallback_empty_input():
     assert conf == 0.5
     assert source == "fallback"
     assert reason == "空输入"
+
+
+def test_live_web_news_routes_qa_not_agent():
+    r = IntentRouter(_ScriptedLlm(1))
+    for text in ("今天有什么新闻", "搜索最新新闻", "网上搜今日头条", "获取今日新闻"):
+        mode, conf, source, reason = r.classify(text)
+        assert mode == "qa", text
+        assert conf == 0.9
+        assert source == "rule"
+        assert reason
+        assert wants_live_web(text)
+        assert wants_live_web_qa(text)
+    assert not wants_live_web_qa("查北京天气")
+    assert has_tool_hint("搜索最新新闻")
 
 
 def test_accident_sentence_routes_to_writer():

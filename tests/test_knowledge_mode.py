@@ -45,6 +45,8 @@ def test_infer_knowledge_mode_three_tiers() -> None:
     assert infer_knowledge_mode("知识库里有没有星核协议") == "strict"
     assert infer_knowledge_mode("今年市值多少") == "augment"
     assert infer_knowledge_mode("谁是作者") == "augment"
+    assert infer_knowledge_mode("今天有什么新闻") == "augment"
+    assert infer_knowledge_mode("搜索最新头条") == "augment"
 
 
 def test_who_are_you_asks_model_not_kb(mock_llm_factory: type) -> None:

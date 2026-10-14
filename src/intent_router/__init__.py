@@ -66,12 +66,44 @@ _AGENT_FORCE_HINTS = (
     "星期几",
     "时间",
 )
+_LIVE_WEB_HINTS = (
+    "新闻",
+    "头条",
+    "要闻",
+    "联网",
+    "网页搜索",
+    "网上搜",
+    "搜索网页",
+)
+_LIVE_WEB_BLOCK = (
+    "天气",
+    "气温",
+    "温度",
+    "几点",
+    "星期几",
+    "读取文件",
+    "写入文件",
+    "运行命令",
+)
 _MODES: tuple[IntentMode, ...] = ("qa", "agent", "writer")
 
 
 def has_tool_hint(text: str) -> bool:
     """用户原文是否带工具线索（查/天气/读取等）。"""
     return any(h in (text or "") for h in _TOOL_HINTS)
+
+
+def wants_live_web(text: str) -> bool:
+    """用户原文是否在要实时网页/新闻，而不是本地文件或天气。"""
+    return any(h in (text or "") for h in _LIVE_WEB_HINTS)
+
+
+def wants_live_web_qa(text: str) -> bool:
+    """新闻/联网检索应走 QA 确定性回退，不指望小模型自己选 web_search。"""
+    body = text or ""
+    if not wants_live_web(body):
+        return False
+    return not any(h in body for h in _LIVE_WEB_BLOCK)
 
 
 class IntentRouter:
@@ -104,6 +136,9 @@ class IntentRouter:
         force = next((h for h in _AGENT_FORCE_HINTS if h in text), None)
         if force is not None:
             return "agent", 0.9, "rule", force
+        if wants_live_web_qa(text):
+            hit = next((h for h in _LIVE_WEB_HINTS if h in text), "联网")
+            return "qa", 0.9, "rule", hit
         has_tool = any(h in text for h in _TOOL_HINTS)
         if not has_tool:
             qa_hit = next((kw for kw in _QA_KEYWORDS if kw in text), None)

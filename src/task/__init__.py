@@ -46,6 +46,9 @@ _KNOWLEDGE_HINTS = (
     "资料",
     "几月几日",
     "哪个国家",
+    "新闻",
+    "头条",
+    "要闻",
 )
 _IDENTITY_HINTS = (
     "你是谁",
@@ -82,6 +85,9 @@ _AUGMENT_HINTS = (
     "谁是",
     "谁写",
     "作者",
+    "新闻",
+    "头条",
+    "要闻",
 )
 _KNOWLEDGE_MODES: tuple[KnowledgeMode, ...] = ("none", "augment", "strict")
 DEFAULT_WRITER_PLAN: list[str] = [

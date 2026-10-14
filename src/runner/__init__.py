@@ -41,8 +41,9 @@ _CACHE_LOOP_NOTE = (
     "请改用其他工具或其他参数，或直接给出最终回答。"
 )
 _MISSING_READ_NOTE = "该路径不存在。请确认文件路径，或改用其他工具获取数据。"
-_ANSWER_DOMAINS = frozenset({"weather", "time"})
-_DOMAIN_LABEL = {"weather": "天气", "time": "时间"}
+_ANSWER_DOMAIN_ORDER = ("weather", "time", "web")
+_ANSWER_DOMAINS = frozenset(_ANSWER_DOMAIN_ORDER)
+_DOMAIN_LABEL = {"weather": "天气", "time": "时间", "web": "网页"}
 _PSEUDO_TOOLS = frozenset({"(format_error)", "(domain_gate)"})
 
 
@@ -62,7 +63,7 @@ def _missing_answer_domains(
     pool = {tool_name_domain(item.name) for item in candidates} | {
         item.domain for item in candidates
     }
-    return [d for d in ("weather", "time") if d in needed and d not in used and d in pool]
+    return [d for d in _ANSWER_DOMAIN_ORDER if d in needed and d not in used and d in pool]
 
 
 def _mark_missing_read_file(

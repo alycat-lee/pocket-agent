@@ -673,12 +673,130 @@ def test_qa_web_fallback_skipped_when_history_exists(
         return "[来源：网页搜索] 垃圾"
 
     mgr, _llm, calls = _qa_mgr_with_web(
-        mock_llm_factory, ["你好呀", "闲聊", "未找到相关资料", "市值"], _web
+        mock_llm_factory,
+        ["好的，已记住。", "确认", "那辆车是红色的", "红色"],
+        _web,
+    )
+    mgr.chat("s1", "请记住那辆车是红色的。只需确认。", force_mode="qa")
+    assert calls == []
+    mgr.chat("s1", "它是什么颜色的？", force_mode="qa")
+    assert calls == []
+
+
+def test_qa_web_fallback_after_chitchat_still_searches(
+    mock_llm_factory: type,
+) -> None:
+    hits = "[来源：网页搜索] 今日新闻 — 多国发布最新要闻摘要"
+
+    def _web(query: str) -> str:
+        del query
+        return hits
+
+    mgr, llm, calls = _qa_mgr_with_web(
+        mock_llm_factory, ["你好呀", "闲聊", "今日要闻摘要", "新闻"], _web
     )
     mgr.chat("s1", "你好", force_mode="qa")
     assert calls == []
-    mgr.chat("s1", "紫晶河水母币目前市值多少？", force_mode="qa")
-    assert calls == []
+    mgr.chat("s1", "今天有什么新闻", force_mode="qa")
+    assert calls
+    assert mgr.last_evidence is not None
+    assert "[来源：网页搜索]" in mgr.last_evidence
+    assert any("[来源：网页搜索]" in p for p in llm.prompts)
+
+
+def test_planner_search_news_grounds_to_qa(
+    mock_llm_factory: type,
+) -> None:
+    hits = "[来源：网页搜索] 今日新闻 — 头条摘要"
+
+    def _web(query: str) -> str:
+        del query
+        return hits
+
+    cfg = AgentConfig(max_steps=3, planner_enabled=True, verifier_enabled=False)
+    registry = ToolRegistry(cfg)
+    calls: list[str] = []
+
+    @tool(registry, "搜索网页标题摘要", domain="web")
+    def web_search(query: str) -> str:
+        calls.append(query)
+        return _web(query)
+
+    llm = mock_llm_factory(
+        [
+            {
+                "type": "agent",
+                "goal": "搜索最新新闻",
+                "constraints": {},
+                "plan": ["选工具", "作答"],
+                "needs_history": False,
+            },
+            "今日要闻摘要",
+            "新闻",
+        ]
+    )
+    mgr = SessionManager(
+        cfg, llm, AgentRunner(cfg, llm, registry), events=_SilentBus()
+    )
+    mgr.chat("s1", "搜索最新新闻")
+    assert mgr.last_task_card is not None
+    assert mgr.last_task_card.type == "qa"
+    assert mgr.last_intent == "qa"
+    assert calls
+    assert mgr.last_evidence is not None
+    assert "[来源：网页搜索]" in mgr.last_evidence
+
+
+def test_qa_web_fallback_accepts_english_news_hits(
+    mock_llm_factory: type,
+) -> None:
+    hits = "[来源：网页搜索] BBC News — Breaking world headlines today"
+
+    def _web(query: str) -> str:
+        del query
+        return hits
+
+    mgr, llm, calls = _qa_mgr_with_web(
+        mock_llm_factory, ["今日要闻", "新闻"], _web
+    )
+    mgr.chat("s1", "搜索今天最新新闻", force_mode="qa")
+    assert calls
+    assert mgr.last_evidence is not None
+    assert "[来源：网页搜索]" in mgr.last_evidence
+    assert any("[来源：网页搜索]" in p for p in llm.prompts)
+
+
+def test_qa_web_fallback_news_overrides_local_hits(
+    tmp_path: Path,
+    mock_llm_factory: type,
+) -> None:
+    kb = KnowledgeBase(tmp_path / "kb.sqlite", HashEmbedder())
+    kb.ingest("手册.md", "内部流程与会议纪要，不含外界新闻。", source="手册.md")
+    hits = "[来源：网页搜索] 今日新闻 — 国际头条摘要"
+
+    cfg = AgentConfig(
+        max_steps=3, planner_enabled=False, verifier_enabled=False
+    )
+    registry = ToolRegistry(cfg)
+    calls: list[str] = []
+
+    @tool(registry, "搜索网页标题摘要", domain="web")
+    def web_search(query: str) -> str:
+        calls.append(query)
+        return hits
+
+    llm = mock_llm_factory(["今日国际头条摘要", "新闻"])
+    mgr = SessionManager(
+        cfg,
+        llm,
+        AgentRunner(cfg, llm, registry),
+        events=_SilentBus(),
+        knowledge=kb,
+    )
+    mgr.chat("s1", "今天有什么新闻", force_mode="qa")
+    assert calls
+    assert mgr.last_evidence is not None
+    assert "[来源：网页搜索]" in mgr.last_evidence
 
 
 def test_qa_web_fallback_rejects_unrelated_hits(

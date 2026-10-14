@@ -391,6 +391,33 @@ def test_weather_after_get_weather_no_domain_gate(
     assert result.steps[0].tool_name == "get_weather"
 
 
+def test_news_early_done_inserts_web_domain_gate(
+    mock_llm_factory: type,
+) -> None:
+    config = AgentConfig(max_steps=10, max_consecutive_intercepts=5)
+    registry = ToolRegistry(config)
+
+    @tool(registry, "搜索网页标题摘要", domain="web")
+    def web_search(query: str) -> str:
+        return f"[来源：网页搜索] {query} — 头条"
+
+    llm = mock_llm_factory(
+        [
+            -1,
+            0,
+            {"query": "今日新闻"},
+            -1,
+            "今日要闻摘要",
+        ]
+    )
+    bus = _Bus()
+    result = AgentRunner(config, llm, registry, events=bus).run("今天有什么新闻")
+    gate = [s for s in result.steps if s.tool_name == "(domain_gate)"]
+    assert len(gate) == 1
+    assert "网页" in gate[0].result
+    assert any(s.tool_name == "web_search" for s in result.steps)
+
+
 def test_non_domain_task_no_domain_gate(mock_llm_factory: type) -> None:
     config = AgentConfig(max_steps=5)
     llm = mock_llm_factory([-1, "闲聊回答"])

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pocket_agent.config import AgentConfig
 from pocket_agent.plugins.tools_core import register_core_tools
-from pocket_agent.tools import ToolRegistry, tool
+from pocket_agent.tools import ToolRegistry, detect_tool_domains, tool
 
 from fixtures.fixture_tools import register_fixture_tools
 
@@ -105,3 +105,9 @@ def test_demo_read_file_and_time(tmp_path: Path) -> None:
     assert missing.startswith("文件不存在")
     now = registry.get("get_current_time").fn()
     assert len(now) >= 19
+
+
+def test_detect_tool_domains_news_is_web() -> None:
+    assert "web" in detect_tool_domains("今天有什么新闻")
+    assert "weather" in detect_tool_domains("查北京天气")
+    assert "web" not in detect_tool_domains("查北京天气")
